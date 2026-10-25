@@ -1,3 +1,4 @@
+// OpenAI-Codex
 export type Mode = "legacy" | "enhanced" | "fivem";
 export type Sub = "mods" | "lspdfr" | "client" | "server" | "converter";
 
@@ -47,6 +48,7 @@ export type ModFormat =
   | { AddOnPack: { pack_name: string } }
   | "Zip"
   | "SevenZip"
+  | "Rar"
   | { Unsupported: string };
 
 export interface PlannedFile {

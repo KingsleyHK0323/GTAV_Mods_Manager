@@ -24,6 +24,9 @@ import { TermsGate } from "./pages/TermsGate";
 import { OnboardingGate } from "./pages/OnboardingGate";
 import { applyTheme, type Theme } from "./lib/theme";
 
+// OpenAI-Codex: Keep FiveM Server gated until the user re-enables support.
+const FIVEM_SERVER_SUPPORTED = false;
+
 /* The accent is switched by setting data-mode on the app root and letting the
    stylesheet do the rest — mockup.css carries a [data-mode="…"] rule per mode
    that assigns --accent and --accent-soft. The previous approach wrote an
@@ -47,7 +50,13 @@ function pageFor(mode: Mode, sub: Sub) {
   if (mode === "enhanced" && sub === "mods") return <EnhancedSpPage />;
   if (mode === "enhanced" && sub === "lspdfr") return <EnhancedLspdfrPage />;
   if (mode === "fivem" && sub === "client") return <FiveMClientPage />;
-  if (mode === "fivem" && sub === "server") return <FiveMServerPage />;
+  if (mode === "fivem" && sub === "server") {
+    return FIVEM_SERVER_SUPPORTED ? (
+      <FiveMServerPage />
+    ) : (
+      <PlaceholderPage title="FiveM · Server" comingSoon />
+    );
+  }
   if (mode === "fivem" && sub === "converter") return <FiveMConverterPage />;
   const titles: Record<string, string> = {
     "legacy-lspdfr": "LSPDFR · Legacy",

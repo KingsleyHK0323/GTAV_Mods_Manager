@@ -15,7 +15,7 @@ use crate::error::CoreResult;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const PROFILE_SCHEMA_SQL: &str = include_str!("profile_schema.sql");
-const CURRENT_SCHEMA_VERSION: i32 = 13;
+const CURRENT_SCHEMA_VERSION: i32 = 14;
 
 /// Resolves the default database file location under the OS-appropriate app-data
 /// directory (via the `directories` crate), e.g.
@@ -362,6 +362,71 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
             )?;
         }
     }
+    if user_version < 14 {
+        // Add RAR to the source type constraint without dropping mod history or
+        // rows in installed_mod_file, install_event, or profile_mod. SQLite cannot
+        // edit a CHECK constraint in place, so rebuild the parent table with foreign
+        // key checks temporarily disabled and restore its AUTOINCREMENT high-water
+        // mark after copying the existing rows.
+        let foreign_keys_enabled: bool =
+            conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+        if foreign_keys_enabled {
+            conn.pragma_update(None, "foreign_keys", false)?;
+        }
+
+        let migration = conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TEMP TABLE _gtavmm_installed_mod_v13_sequence (seq INTEGER);
+             INSERT INTO _gtavmm_installed_mod_v13_sequence (seq)
+                 SELECT seq FROM sqlite_sequence WHERE name = 'installed_mod';
+             CREATE TABLE installed_mod_v14 (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name         TEXT NOT NULL,
+                 source_type  TEXT NOT NULL CHECK (source_type IN ('oiv', 'zip', 'sevenzip', 'rar', 'folder', 'asi', 'dll', 'menyoo_xml')),
+                 install_path TEXT NOT NULL,
+                 installed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 status       TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'uninstalled')) DEFAULT 'active',
+                 notes        TEXT,
+                 link         TEXT,
+                 source_path  TEXT,
+                 mode         TEXT,
+                 mode_inferred INTEGER NOT NULL DEFAULT 0,
+                 category     TEXT
+             );
+             INSERT INTO installed_mod_v14 (
+                 id, name, source_type, install_path, installed_at, status, notes, link,
+                 source_path, mode, mode_inferred, category
+             ) SELECT
+                 id, name, source_type, install_path, installed_at, status, notes, link,
+                 source_path, mode, mode_inferred, category
+               FROM installed_mod;
+             DROP TABLE installed_mod;
+             ALTER TABLE installed_mod_v14 RENAME TO installed_mod;
+             UPDATE sqlite_sequence
+                SET seq = MAX(seq, COALESCE((
+                    SELECT seq FROM _gtavmm_installed_mod_v13_sequence LIMIT 1
+                ), 0))
+              WHERE name = 'installed_mod';
+             INSERT INTO sqlite_sequence (name, seq)
+             SELECT 'installed_mod', seq
+               FROM _gtavmm_installed_mod_v13_sequence
+              WHERE NOT EXISTS (
+                    SELECT 1 FROM sqlite_sequence WHERE name = 'installed_mod'
+              );
+             DROP TABLE _gtavmm_installed_mod_v13_sequence;
+             COMMIT;",
+        );
+        if migration.is_err() {
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+        let restore_foreign_keys = if foreign_keys_enabled {
+            conn.pragma_update(None, "foreign_keys", true)
+        } else {
+            Ok(())
+        };
+        migration?;
+        restore_foreign_keys?;
+    }
     if user_version < CURRENT_SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     }
@@ -458,5 +523,110 @@ mod tests {
         let conn = open_in_memory().unwrap();
         // Re-running should not error (CREATE TABLE IF NOT EXISTS + version gate).
         run_migrations(&conn).unwrap();
+    }
+
+    #[test]
+    fn v14_allows_rar_and_preserves_mod_children_and_autoincrement_sequence() {
+        let conn = open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE installed_mod_v13 (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name         TEXT NOT NULL,
+                 source_type  TEXT NOT NULL CHECK (source_type IN ('oiv', 'zip', 'sevenzip', 'folder', 'asi', 'dll', 'menyoo_xml')),
+                 install_path TEXT NOT NULL,
+                 installed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 status       TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'uninstalled')) DEFAULT 'active',
+                 notes        TEXT,
+                 link         TEXT,
+                 source_path  TEXT,
+                 mode         TEXT,
+                 mode_inferred INTEGER NOT NULL DEFAULT 0,
+                 category     TEXT
+             );
+             INSERT INTO installed_mod_v13 (
+                 id, name, source_type, install_path, installed_at, status, notes, link,
+                 source_path, mode, mode_inferred, category
+             ) SELECT
+                 id, name, source_type, install_path, installed_at, status, notes, link,
+                 source_path, mode, mode_inferred, category
+               FROM installed_mod;
+             DROP TABLE installed_mod;
+             ALTER TABLE installed_mod_v13 RENAME TO installed_mod;
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (id, name, source_type, install_path, status, mode, mode_inferred)
+             VALUES (41, 'Existing mod', 'zip', '/game', 'active', 'legacy-sp', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq = 99 WHERE name = 'installed_mod'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash)
+             VALUES (41, '/game/mod.asi', 'hash')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO install_event (installed_mod_id, event_type, success)
+             VALUES (41, 'install', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO profile (id, name) VALUES (3, 'Default')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO profile_mod (profile_id, installed_mod_id) VALUES (3, 41)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 13).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let existing: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT source_type, mode, category FROM installed_mod WHERE id = 41",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(existing, ("zip".into(), "legacy-sp".into(), None));
+        let child_counts: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = 41),
+                    (SELECT COUNT(*) FROM install_event WHERE installed_mod_id = 41),
+                    (SELECT COUNT(*) FROM profile_mod WHERE installed_mod_id = 41)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(child_counts, (1, 1, 1));
+
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status)
+             VALUES ('RAR mod', 'rar', '/game', 'active')",
+            [],
+        )
+        .unwrap();
+        let rar_id: i64 = conn.last_insert_rowid();
+        assert!(rar_id >= 100, "migration must preserve the AUTOINCREMENT high-water mark");
+
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+        let foreign_keys_enabled: bool =
+            conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+        assert!(foreign_keys_enabled);
     }
 }

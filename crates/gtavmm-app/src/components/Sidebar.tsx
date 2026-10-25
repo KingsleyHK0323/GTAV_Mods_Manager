@@ -8,12 +8,14 @@ interface ModeGroupDef {
   /** Enhanced's mod ecosystem isn't mature enough yet — show it greyed out with a
    *  lock/"coming soon" badge instead of a working nav entry until that changes. */
   locked?: boolean;
+  // OpenAI-Codex: Keep unsupported pages visible without making them navigable.
+  unsupportedSubs?: Sub[];
 }
 
 const MODE_GROUPS: ModeGroupDef[] = [
   { mode: "legacy", subs: ["mods", "lspdfr"] },
   { mode: "enhanced", subs: ["mods", "lspdfr"], locked: true },
-  { mode: "fivem", subs: ["client", "server", "converter"] },
+  { mode: "fivem", subs: ["client", "server", "converter"], unsupportedSubs: ["server"] },
 ];
 
 /** Nav labels reuse the `nav.*` translation keys; "mods" maps to "sp_mods" since the
@@ -93,21 +95,37 @@ export function Sidebar({
                   <span className="mode-dot"></span> {t(`nav.${group.mode}`)}
                 </button>
                 <div className="sub-tabs">
-                  {group.subs.map((s) => (
-                    <button
-                      key={s}
-                      className={
-                        group.mode === "legacy" && s === "lspdfr"
-                          ? "sub-btn lspdfr-btn"
-                          : "sub-btn"
-                      }
-                      type="button"
-                      data-active={String(group.mode === mode && s === sub)}
-                      onClick={() => onSelect(group.mode, s)}
-                    >
-                      {t(`nav.${subLabelKey(s)}`)}
-                    </button>
-                  ))}
+                  {group.subs.map((s) => {
+                    const unsupported = group.unsupportedSubs?.includes(s) ?? false;
+                    return (
+                      <button
+                        key={s}
+                        className={
+                          group.mode === "legacy" && s === "lspdfr"
+                            ? "sub-btn lspdfr-btn"
+                            : "sub-btn"
+                        }
+                        type="button"
+                        disabled={unsupported}
+                        title={unsupported ? t("nav.coming_soon") : undefined}
+                        aria-label={
+                          unsupported
+                            ? `${t(`nav.${subLabelKey(s)}`)} — ${t("nav.coming_soon")}`
+                            : undefined
+                        }
+                        data-active={String(group.mode === mode && s === sub)}
+                        data-disabled={String(unsupported)}
+                        onClick={() => {
+                          if (!unsupported) onSelect(group.mode, s);
+                        }}
+                      >
+                        {t(`nav.${subLabelKey(s)}`)}
+                        {unsupported && (
+                          <span className="coming-soon-badge">{t("nav.coming_soon")}</span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )

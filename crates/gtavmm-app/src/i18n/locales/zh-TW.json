@@ -116,9 +116,9 @@
   "installWizard": {
     "title": "安裝 Mod",
     "pick_title": "選擇 mod 檔案",
-    "pick_body_sp": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z）。會依這台機器偵測到的版本（Legacy/Enhanced）套用一般單機版慣例。",
-    "pick_body_lspdfr": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z）。這裡套用 LSPDFR 慣例——受管理的 .dll callout/外掛會裝到 `Plugins\\`，不是 SHVDN 的 `scripts\\`。",
-    "pick_body_fivem-client": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z）。會安裝到上面設定的 FiveM 用戶端資料夾——如果還沒填，請先設定。",
+    "pick_body_sp": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。會依這台機器偵測到的版本（Legacy/Enhanced）套用一般單機版慣例。",
+    "pick_body_lspdfr": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。這裡套用 LSPDFR 慣例——受管理的 .dll callout/外掛會裝到 `Plugins\\`，不是 SHVDN 的 `scripts\\`。",
+    "pick_body_fivem-client": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。會安裝到上面設定的 FiveM 用戶端資料夾——如果還沒填，請先設定。",
     "pick_button": "選擇檔案…",
     "analyzing": "分析中…",
     "row_format": "格式",

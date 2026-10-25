@@ -1,6 +1,16 @@
 import { Icon } from "../components/IconSprite";
+import { useTranslation } from "react-i18next";
 
-export function PlaceholderPage({ title }: { title: string }) {
+// OpenAI-Codex: Distinguish temporarily unsupported pages from unfinished ports.
+export function PlaceholderPage({
+  title,
+  comingSoon = false,
+}: {
+  title: string;
+  comingSoon?: boolean;
+}) {
+  const { t } = useTranslation();
+
   return (
     <section className="view" data-shown="true">
       <div className="page-head">
@@ -13,12 +23,14 @@ export function PlaceholderPage({ title }: { title: string }) {
           <span className="glyph">
             <Icon name="bar-chart" />
           </span>
-          <h3>Not ported yet</h3>
-          <p>
-            This workspace exists in the HTML design mockup but hasn't been rebuilt in the
-            real React app yet — see <span className="mono">16-UI-Page-Structure.md</span> for
-            the plan.
-          </p>
+          <h3>{comingSoon ? t("nav.coming_soon") : "Not ported yet"}</h3>
+          {!comingSoon && (
+            <p>
+              This workspace exists in the HTML design mockup but hasn't been rebuilt in the
+              real React app yet — see <span className="mono">16-UI-Page-Structure.md</span> for
+              the plan.
+            </p>
+          )}
         </div>
       </div>
     </section>

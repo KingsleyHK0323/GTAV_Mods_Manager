@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! The install pipeline state machine: Analyzing (done by the caller via
 //! `mod_analyzer::classify`) → ConflictCheck → Backing_Up → Writing → Verifying →
@@ -118,6 +119,7 @@ fn source_type_str(format: &ModFormat) -> CoreResult<&'static str> {
         ModFormat::FolderReplacer | ModFormat::AddOnPack { .. } => "folder",
         ModFormat::Zip => "zip",
         ModFormat::SevenZip => "sevenzip",
+        ModFormat::Rar => "rar",
         ModFormat::Unsupported(reason) => {
             return Err(CoreError::UnsupportedFormat {
                 reason: reason.clone(),
@@ -422,13 +424,13 @@ mod tests {
         let source = write_source(dir.path(), "cool_mod.asi", b"payload");
         let backup_root = dir.path().join("backups");
 
-        let plan = ModPlan {
-            format: ModFormat::Asi,
-            files: vec![PlannedFile {
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
                 source: source.clone(),
                 target: game_root.join("cool_mod.asi"),
             }],
-        };
+        );
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let outcome = install(
@@ -470,13 +472,13 @@ mod tests {
         let source = write_source(dir.path(), "cool_mod.asi", b"payload");
         let backup_root = dir.path().join("backups");
 
-        let plan = ModPlan {
-            format: ModFormat::Asi,
-            files: vec![PlannedFile {
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
                 source: source.clone(),
                 target: game_root.join("cool_mod.asi"),
             }],
-        };
+        );
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let outcome = install(
@@ -614,13 +616,13 @@ mod tests {
         std::fs::create_dir_all(&game_root).unwrap();
         let source = write_source(dir.path(), "GTA5.exe", b"malicious");
 
-        let plan = ModPlan {
-            format: ModFormat::Asi, // format doesn't matter; target name is what's checked
-            files: vec![PlannedFile {
+        let plan = ModPlan::new(
+            ModFormat::Asi, // format doesn't matter; target name is what's checked
+            vec![PlannedFile {
                 source: source.clone(),
                 target: game_root.join("GTA5.exe"),
             }],
-        };
+        );
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let outcome = install(
@@ -670,13 +672,13 @@ mod tests {
         }
 
         let source = write_source(dir.path(), "shared.dll", b"new version");
-        let plan = ModPlan {
-            format: ModFormat::NativeDll,
-            files: vec![PlannedFile {
+        let plan = ModPlan::new(
+            ModFormat::NativeDll,
+            vec![PlannedFile {
                 source: source.clone(),
                 target: existing_target.clone(),
             }],
-        };
+        );
 
         let outcome = install(
             &mut conn,
@@ -717,13 +719,13 @@ mod tests {
         .unwrap();
 
         let source = write_source(dir.path(), "shared.dll", b"new version");
-        let plan = ModPlan {
-            format: ModFormat::NativeDll,
-            files: vec![PlannedFile {
+        let plan = ModPlan::new(
+            ModFormat::NativeDll,
+            vec![PlannedFile {
                 source: source.clone(),
                 target: existing_target.clone(),
             }],
-        };
+        );
 
         let outcome = install(
             &mut conn,
@@ -770,15 +772,15 @@ mod tests {
         .unwrap();
 
         let source = write_source(dir.path(), "dlc.rpf", b"payload");
-        let plan = ModPlan {
-            format: ModFormat::AddOnPack {
+        let plan = ModPlan::new(
+            ModFormat::AddOnPack {
                 pack_name: "MyAddonCar".to_string(),
             },
-            files: vec![PlannedFile {
+            vec![PlannedFile {
                 source: source.clone(),
                 target: game_root.join("mods/update/x64/dlcpacks/MyAddonCar/dlc.rpf"),
             }],
-        };
+        );
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let outcome = install(

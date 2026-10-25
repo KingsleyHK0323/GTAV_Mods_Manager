@@ -1,3 +1,4 @@
+// OpenAI-Codex
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -74,7 +75,7 @@ export function InstallWizard({
 
   async function pickAndAnalyze() {
     try {
-      const picked = await pickFile(["asi", "dll", "xml", "zip", "7z", "oiv"], t("installWizard.pick_title"));
+      const picked = await pickFile(["asi", "dll", "xml", "zip", "7z", "rar", "oiv"], t("installWizard.pick_title"));
       if (!picked) return;
       setPath(picked);
       setStep("analyzing");

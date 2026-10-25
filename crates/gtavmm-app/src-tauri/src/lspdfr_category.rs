@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Guessing which LSPDFR category a mod falls into, from the files it installs.
 //!
@@ -46,16 +47,16 @@ mod tests {
     use std::path::PathBuf;
 
     fn plan(targets: &[&str]) -> ModPlan {
-        ModPlan {
-            format: ModFormat::FolderReplacer,
-            files: targets
+        ModPlan::new(
+            ModFormat::FolderReplacer,
+            targets
                 .iter()
                 .map(|t| PlannedFile {
                     source: PathBuf::from("src"),
                     target: PathBuf::from(t),
                 })
                 .collect(),
-        }
+        )
     }
 
     #[test]

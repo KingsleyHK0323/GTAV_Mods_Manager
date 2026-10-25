@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Classifies a mod package (file/folder/archive) into a plan of `(source, target)`
 //! file mappings, per the format table in the MVP spec: `.asi`/`.dll` (native and
-//! managed)/`.xml` (Menyoo)/folder replacers/`.zip`/`.7z` fully supported; `.oiv` and
-//! `.rar` explicitly reported as unsupported (no silent partial handling).
+//! managed)/`.xml` (Menyoo)/folder replacers/`.zip`/`.7z` fully supported; `.rar` uses
+//! bounded, read-only extraction for unencrypted single-volume archives; `.oiv` is
+//! reported as unsupported (no silent partial handling).
 //!
 //! **`.oiv` scope decision (2026-08-27)**: this project never attempts to install any
 //! `.oiv` package itself, regardless of complexity — even the simple, non-RPF-editing
@@ -20,7 +22,10 @@ pub mod dlc;
 mod menyoo;
 mod pe;
 
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::error::{CoreError, CoreResult};
 
@@ -43,6 +48,7 @@ pub enum ModFormat {
     },
     Zip,
     SevenZip,
+    Rar,
     Unsupported(String),
 }
 
@@ -56,6 +62,23 @@ pub struct PlannedFile {
 pub struct ModPlan {
     pub format: ModFormat,
     pub files: Vec<PlannedFile>,
+    #[serde(skip)]
+    staging_dir: Option<Arc<tempfile::TempDir>>,
+}
+
+impl ModPlan {
+    pub fn new(format: ModFormat, files: Vec<PlannedFile>) -> Self {
+        Self {
+            format,
+            files,
+            staging_dir: None,
+        }
+    }
+
+    fn with_staging_dir(mut self, staging_dir: tempfile::TempDir) -> Self {
+        self.staging_dir = Some(Arc::new(staging_dir));
+        self
+    }
 }
 
 /// `scripts\` subfolder name for ScriptHookVDotNet managed assemblies. Re-exported
@@ -73,9 +96,9 @@ pub(crate) const MODS_SUBFOLDER: &str = "mods";
 /// adding a new mode (Enhanced SP, LSPDFR, FiveM) additive: implement a new
 /// `ModeProvider`, and none of the dispatch logic here needs to change.
 ///
-/// Archives (`.zip`/`.7z`) are extracted into a temp directory and then recursed into
-/// as a folder; the returned plan's `source` paths point into that temp directory, so
-/// callers must copy files out of it before it (or its `TempDir` guard) is dropped.
+/// Archives (`.zip`/`.7z`/`.rar`) are extracted into a temp directory and then recursed
+/// into as a folder; the returned plan's `source` paths point into that temp directory,
+/// so callers must copy files out of it before it (or its `TempDir` guard) is dropped.
 pub fn classify(
     input: &Path,
     provider: &dyn crate::providers::ModeProvider,
@@ -99,12 +122,8 @@ pub fn classify(
         Some("xml") => classify_menyoo_xml(input, provider),
         Some("zip") => classify_zip(input, provider),
         Some("7z") => classify_seven_zip(input, provider),
+        Some("rar") => classify_rar(input, provider),
         Some("oiv") => classify_oiv(input),
-        Some("rar") => Ok(unsupported(
-            "rar",
-            "RAR archives are not supported (no pure-Rust decoder available). Please \
-             extract this mod manually and point the manager at the extracted folder.",
-        )),
         Some(other) => Ok(unsupported(
             other,
             &format!("Unrecognized mod file type: .{other}"),
@@ -116,20 +135,20 @@ pub fn classify(
 }
 
 fn unsupported(tag: &str, message: &str) -> ModPlan {
-    ModPlan {
-        format: ModFormat::Unsupported(format!("{tag}: {message}")),
-        files: Vec::new(),
-    }
+    ModPlan::new(
+        ModFormat::Unsupported(format!("{tag}: {message}")),
+        Vec::new(),
+    )
 }
 
 fn single_file_plan(source: &Path, target: PathBuf, format: ModFormat) -> ModPlan {
-    ModPlan {
+    ModPlan::new(
         format,
-        files: vec![PlannedFile {
+        vec![PlannedFile {
             source: source.to_path_buf(),
             target,
         }],
-    }
+    )
 }
 
 fn classify_dll(
@@ -219,10 +238,7 @@ fn classify_folder_with_name_hint(
         })
         .collect();
 
-    Ok(ModPlan {
-        format: ModFormat::FolderReplacer,
-        files,
-    })
+    Ok(ModPlan::new(ModFormat::FolderReplacer, files))
 }
 
 fn classify_add_on_pack(
@@ -248,10 +264,7 @@ fn classify_add_on_pack(
         })
         .collect();
 
-    Ok(ModPlan {
-        format: ModFormat::AddOnPack { pack_name: name },
-        files,
-    })
+    Ok(ModPlan::new(ModFormat::AddOnPack { pack_name: name }, files))
 }
 
 fn extract_zip(input: &Path) -> CoreResult<tempfile::TempDir> {
@@ -266,6 +279,188 @@ fn extract_zip(input: &Path) -> CoreResult<tempfile::TempDir> {
             reason: format!("failed to extract zip archive: {e}"),
         })?;
     Ok(temp_dir)
+}
+
+const MAX_RAR_ENTRY_COUNT: usize = 10_000;
+const MAX_RAR_HEADER_COUNT: u64 = 20_000;
+const MAX_RAR_HEADER_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_RAR_MEMBER_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_RAR_TOTAL_OUTPUT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_RAR_READER_WORKSPACE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RAR_DICTIONARY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RAR_BUFFERED_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn rar_read_options() -> rars::ArchiveReadOptions<'static> {
+    rars::ArchiveReadOptions::new()
+        .with_max_header_count(MAX_RAR_HEADER_COUNT)
+        .with_max_header_bytes(MAX_RAR_HEADER_BYTES)
+        .with_max_member_output_bytes(MAX_RAR_MEMBER_OUTPUT_BYTES)
+        .with_max_total_output_bytes(MAX_RAR_TOTAL_OUTPUT_BYTES)
+        .with_max_reader_workspace_bytes(MAX_RAR_READER_WORKSPACE_BYTES)
+        .with_rar50_dictionary_size_limit(MAX_RAR_DICTIONARY_BYTES)
+        .with_rar50_buffered_decode_limit(MAX_RAR_BUFFERED_DECODE_BYTES)
+}
+
+fn unsupported_rar(reason: impl std::fmt::Display) -> CoreError {
+    CoreError::UnsupportedFormat {
+        reason: format!("unsupported or unsafe RAR archive: {reason}"),
+    }
+}
+
+/// Converts an archive entry name into a safe relative Windows/Linux path.
+/// Both slash styles are treated as separators on every host so validation stays
+/// consistent with the target platforms.
+fn rar_entry_relative_path(decoded_name: &[u8], is_directory: bool) -> CoreResult<PathBuf> {
+    let name = std::str::from_utf8(decoded_name)
+        .map_err(|_| unsupported_rar("entry names must decode to UTF-8"))?;
+    if name.contains('\0') {
+        return Err(unsupported_rar("entry names cannot contain NUL bytes"));
+    }
+
+    let normalized = name.replace('\\', "/");
+    let normalized = if is_directory {
+        normalized.strip_suffix('/').unwrap_or(&normalized)
+    } else if normalized.ends_with('/') {
+        return Err(unsupported_rar("a file entry cannot end with a path separator"));
+    } else {
+        &normalized
+    };
+
+    if normalized.is_empty() || normalized.starts_with('/') || normalized.contains(':') {
+        return Err(unsupported_rar("entry path must be relative and cannot use a drive or stream prefix"));
+    }
+
+    let mut relative = PathBuf::new();
+    for component in normalized.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(unsupported_rar("entry path contains an empty or traversal component"));
+        }
+        if matches!(component.chars().last(), Some(' ' | '.'))
+            || component.chars().any(|ch| {
+                ch.is_control() || matches!(ch, '<' | '>' | '"' | '|' | '?' | '*')
+            })
+            || is_reserved_windows_component(component)
+        {
+            return Err(unsupported_rar("entry path contains a name unsafe on Windows"));
+        }
+        relative.push(component);
+    }
+    Ok(relative)
+}
+
+fn is_reserved_windows_component(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or_default();
+    let stem = stem.to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix)
+                .is_some_and(|suffix| {
+                    (suffix.len() == 1
+                        && suffix.as_bytes()[0].is_ascii_digit()
+                        && suffix.as_bytes()[0] != b'0')
+                        || matches!(suffix, "¹" | "²" | "³")
+                })
+        })
+}
+
+fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
+    let mut source = std::fs::File::open(input)?;
+    let source_len = source.metadata()?.len();
+    let scan_len = source_len.min(rars::SFX_SCAN_LIMIT as u64) as usize;
+    let mut scan = vec![0; scan_len];
+    source.read_exact(&mut scan)?;
+    let signature = rars::ArchiveReader::detect(&scan).map_err(unsupported_rar)?;
+    if signature.family == rars::ArchiveFamily::Rar13 {
+        return Err(unsupported_rar(
+            "RAR 1.3/1.4 archives are not supported because this decoder family does not apply the configured parsing limits",
+        ));
+    }
+
+    let archive = rars::ArchiveReader::read_reader_with_options(source, rar_read_options())
+        .map_err(unsupported_rar)?;
+
+    let mut entries = HashMap::new();
+    let mut collision_keys = HashSet::new();
+    let mut total_unpacked = 0_u64;
+    for member in archive.members() {
+        if entries.len() >= MAX_RAR_ENTRY_COUNT {
+            return Err(unsupported_rar(format!(
+                "archive contains more than {MAX_RAR_ENTRY_COUNT} entries"
+            )));
+        }
+        if member.meta.is_encrypted {
+            return Err(unsupported_rar("encrypted entries are not supported"));
+        }
+        if member.meta.is_split_before || member.meta.is_split_after {
+            return Err(unsupported_rar("split or multi-volume entries are not supported"));
+        }
+        if member.meta.is_redirection || member.is_legacy_unix_symlink() {
+            return Err(unsupported_rar(
+                "symbolic links and redirected entries are not supported",
+            ));
+        }
+
+        let decoded_name = member.decoded_name(None).map_err(unsupported_rar)?;
+        let relative = rar_entry_relative_path(&decoded_name, member.meta.is_directory)?;
+        let collision_key = relative.to_string_lossy().replace('\\', "/").to_lowercase();
+        if !collision_keys.insert(collision_key) {
+            return Err(unsupported_rar(
+                "archive contains duplicate paths or Windows case-insensitive collisions",
+            ));
+        }
+        if !member.meta.is_directory {
+            if member.meta.unpacked_size > MAX_RAR_MEMBER_OUTPUT_BYTES {
+                return Err(unsupported_rar("a file exceeds the per-file extraction limit"));
+            }
+            total_unpacked = total_unpacked
+                .checked_add(member.meta.unpacked_size)
+                .ok_or_else(|| unsupported_rar("total uncompressed size overflows"))?;
+            if total_unpacked > MAX_RAR_TOTAL_OUTPUT_BYTES {
+                return Err(unsupported_rar("archive exceeds the total extraction limit"));
+            }
+        }
+        entries.insert(member.meta.name, (relative, member.meta.is_directory));
+    }
+
+    let temp_dir = tempfile::tempdir()?;
+    archive
+        .extract_to_with_options(rar_read_options(), |meta| {
+            let (relative, is_directory) = entries
+                .get(&meta.name)
+                .ok_or(rars::Error::InvalidHeader("RAR entry was not prevalidated"))?;
+            let output_path = temp_dir.path().join(relative);
+            if *is_directory || meta.is_directory {
+                std::fs::create_dir_all(&output_path)?;
+                return Ok(Box::new(std::io::sink()));
+            }
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(output_path)?;
+            Ok(Box::new(output))
+        })
+        .map_err(unsupported_rar)?;
+
+    Ok(temp_dir)
+}
+
+fn classify_rar(
+    input: &Path,
+    provider: &dyn crate::providers::ModeProvider,
+) -> CoreResult<ModPlan> {
+    let temp_dir = extract_rar(input)?;
+    let name_hint = input.file_stem().and_then(|s| s.to_str());
+    let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
+    if matches!(plan.format, ModFormat::FolderReplacer) {
+        plan.format = ModFormat::Rar;
+    }
+    if plan.files.is_empty() {
+        return Ok(plan);
+    }
+    Ok(plan.with_staging_dir(temp_dir))
 }
 
 fn classify_zip(
@@ -435,6 +630,17 @@ mod tests {
         writer.finish().unwrap();
     }
 
+    /// Builds a genuine, unencrypted single-volume RAR 5 archive for classifier tests.
+    fn write_test_rar(rar_path: &Path, entries: &[(&str, &[u8])]) {
+        let mut builder = rars::Builder::new(rars::ArchiveVersion::Rar50);
+        for (name, content) in entries {
+            builder
+                .add_bytes(name.as_bytes().to_vec(), content.to_vec(), None, None)
+                .unwrap();
+        }
+        std::fs::write(rar_path, builder.to_bytes().unwrap()).unwrap();
+    }
+
     #[test]
     fn zip_with_dlc_rpf_at_its_root_uses_the_archive_filename_as_pack_name() {
         // Real-world sample: an add-on vehicle zip with dlc.rpf directly at the zip
@@ -502,15 +708,71 @@ mod tests {
     }
 
     #[test]
-    fn rar_is_reported_unsupported_not_an_error() {
+    fn invalid_rar_is_rejected_with_a_format_error() {
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         let mod_file = dir.path().join("archive.rar");
         std::fs::write(&mod_file, b"fake rar").unwrap();
 
-        let plan = classify(&mod_file, &provider(&game_root)).unwrap();
-        assert!(matches!(plan.format, ModFormat::Unsupported(_)));
-        assert!(plan.files.is_empty());
+        assert!(matches!(
+            classify(&mod_file, &provider(&game_root)),
+            Err(CoreError::UnsupportedFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn rar_with_a_plain_replacer_folder_is_classified_and_staged_until_plan_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let rar_path = dir.path().join("replacer.rar");
+        write_test_rar(
+            &rar_path,
+            &[("update/x64/dlcpacks/thing.rpf", b"payload")],
+        );
+
+        let plan = classify(&rar_path, &provider(&game_root)).unwrap();
+        assert_eq!(plan.format, ModFormat::Rar);
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(std::fs::read(&plan.files[0].source).unwrap(), b"payload");
+        let staged_file = plan.files[0].source.clone();
+        drop(plan);
+        assert!(!staged_file.exists(), "RAR staging should be removed with its plan");
+    }
+
+    #[test]
+    fn rar_rejects_windows_case_insensitive_path_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let rar_path = dir.path().join("collisions.rar");
+        write_test_rar(
+            &rar_path,
+            &[
+                ("update/x64/thing.rpf", b"first"),
+                ("UPDATE/X64/THING.RPF", b"second"),
+            ],
+        );
+
+        assert!(matches!(
+            classify(&rar_path, &provider(&game_root)),
+            Err(CoreError::UnsupportedFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn rar_entry_paths_reject_traversal_and_accept_separators_and_utf8() {
+        assert!(rar_entry_relative_path(b"../outside.txt", false).is_err());
+        assert!(rar_entry_relative_path(b"..\\outside.txt", false).is_err());
+        assert!(rar_entry_relative_path(b"C:\\outside.txt", false).is_err());
+        assert_eq!(
+            rar_entry_relative_path(b"update\\x64\\thing.rpf", false).unwrap(),
+            Path::new("update").join("x64").join("thing.rpf")
+        );
+        assert_eq!(
+            rar_entry_relative_path("mods/警車.rpf".as_bytes(), false).unwrap(),
+            Path::new("mods").join("警車.rpf")
+        );
     }
 
     #[test]

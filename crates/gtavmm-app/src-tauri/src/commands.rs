@@ -289,6 +289,17 @@ pub fn inspect_mod_for_settings_impl(
     inspect_mod_impl(effective_game_path.as_deref(), mode, path)
 }
 
+/// OpenAI-Codex: Resolve an inspect path under the DB lock, then return it unlocked.
+fn effective_game_path_for_inspect(
+    conn: &std::sync::Mutex<Connection>,
+    game_path: Option<&str>,
+    mode: &str,
+) -> Result<Option<String>, String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    let core_mode = mode_from_str(mode)?;
+    effective_game_path_impl(&conn, game_path, core_mode)
+}
+
 #[tauri::command]
 pub fn inspect_mod(
     state: tauri::State<crate::AppState>,
@@ -296,11 +307,8 @@ pub fn inspect_mod(
     mode: String,
     path: String,
 ) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
-    let effective_game_path = {
-        let conn = state.conn.lock().map_err(|e| e.to_string())?;
-        let core_mode = mode_from_str(&mode)?;
-        effective_game_path_impl(&conn, game_path.as_deref(), core_mode)?
-    };
+    let effective_game_path =
+        effective_game_path_for_inspect(&state.conn, game_path.as_deref(), &mode)?;
     inspect_mod_impl(effective_game_path.as_deref(), &mode, &path)
 }
 
@@ -1936,6 +1944,25 @@ mod tests {
         assert_eq!(plan.files[0].target, saved_game_dir.path().join("SomeMod.asi"));
     }
 
+    // OpenAI-Codex: Cover LSPDFR alias, FiveM explicit roots, and preview lock release.
+    #[test]
+    fn mode_from_str_preserves_the_bare_lspdfr_provider_alias() {
+        assert_eq!(mode_from_str("lspdfr").unwrap(), gtavmm_core::providers::Mode::Lspdfr);
+    }
+
+    #[test]
+    fn inspect_path_lookup_releases_the_database_lock_before_classification() {
+        let connection = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        complete_onboarding_impl(&connection, saved_game_dir.path().to_str()).unwrap();
+        let connection = std::sync::Mutex::new(connection);
+
+        let path = effective_game_path_for_inspect(&connection, None, "legacy-sp").unwrap();
+
+        assert_eq!(path.as_deref(), saved_game_dir.path().to_str());
+        assert!(connection.try_lock().is_ok());
+    }
+
     #[test]
     fn inspect_mod_impl_rejects_a_page_that_does_not_match_the_game_edition() {
         let game_dir = fake_enhanced_game_root();
@@ -1986,6 +2013,47 @@ mod tests {
         .unwrap();
 
         assert!(path.is_none());
+    }
+
+    #[test]
+    fn fivem_preview_uses_the_explicit_client_path_instead_of_the_saved_gta_path() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let client_dir = tempfile::tempdir().unwrap();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("ClientMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let plan = inspect_mod_for_settings_impl(
+            &conn,
+            client_dir.path().to_str(),
+            "fivem-client",
+            asi_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.files[0].target, client_dir.path().join("ClientMod.asi"));
+    }
+
+    #[test]
+    fn fivem_preview_rejects_a_missing_explicit_client_path_even_with_a_saved_gta_path() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("ClientMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let err = inspect_mod_for_settings_impl(
+            &conn,
+            None,
+            "fivem-client",
+            asi_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("fivem-client requires an explicit client directory"), "{err}");
     }
 
     #[test]
@@ -2144,6 +2212,86 @@ mod tests {
         .unwrap();
 
         assert!(saved_game_dir.path().join("SomeMod.asi").exists());
+    }
+
+    #[test]
+    fn fivem_install_uses_the_explicit_client_path_instead_of_the_saved_gta_path() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let client_dir = tempfile::tempdir().unwrap();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("ClientMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        install_mod_impl(
+            &mut conn,
+            client_dir.path().to_str(),
+            "fivem-client",
+            asi_path.to_str().unwrap(),
+            None,
+            false,
+            backup_dir.path(),
+        )
+        .unwrap();
+
+        assert!(client_dir.path().join("ClientMod.asi").exists());
+        assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
+    }
+
+    #[test]
+    fn fivem_install_rejects_a_missing_explicit_client_path_without_using_gta_path() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("ClientMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let err = install_mod_impl(
+            &mut conn,
+            None,
+            "fivem-client",
+            asi_path.to_str().unwrap(),
+            None,
+            false,
+            backup_dir.path(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("fivem-client requires an explicit client directory"), "{err}");
+        assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fivem_install_rejects_a_nonexistent_client_path_without_using_gta_path() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let parent_dir = tempfile::tempdir().unwrap();
+        let missing_client_dir = parent_dir.path().join("missing-client");
+        let mod_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("ClientMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let err = install_mod_impl(
+            &mut conn,
+            missing_client_dir.to_str(),
+            "fivem-client",
+            asi_path.to_str().unwrap(),
+            None,
+            false,
+            backup_dir.path(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("is not an existing FiveM client directory"), "{err}");
+        assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
 
     #[test]

@@ -12,6 +12,7 @@ Enhanced single-player mods, LSPDFR, and FiveM.
 <!-- Updated by OpenAI-Codex: recycle-bin restores use recorded roots and preserve incomplete snapshots. -->
 <!-- OpenAI-Codex: Translation supports provider-specific AI adapters and refuses output collisions. -->
 <!-- OpenAI-Codex: GTA install previews and installs require a configured path and reject edition mismatches. -->
+<!-- OpenAI-Codex: FiveM Server is temporarily unavailable in the desktop App. -->
 
 The **core engine (`gtavmm-core`) and CLI (`gtavmm-cli`) are functional and tested** — install,
 uninstall, enable/disable, conflict detection, recycle bin, full backups, multi-profile
@@ -26,7 +27,8 @@ The **desktop app (`gtavmm-app`, Tauri + React) is under active development, not
 complete**. It has a working shell (sidebar navigation, i18n with English/Traditional Chinese)
 and pages wired to backend commands, including Legacy SP mod listing; FiveM Client mod listing
 with detail, lifecycle controls, a mode-filtered recycle bin, and a locally remembered client
-folder; the FiveM server load-order tool; and the SP→FiveM converter. Legacy SP and Legacy
+folder; the FiveM Server load-order page, which remains in source but is temporarily unavailable
+in the App; and the SP→FiveM converter. Legacy SP and Legacy
 LSPDFR support batch enable/disable from the installed-mod list. GTA SP/LSPDFR previews and
 installs require a configured game path and refuse page/edition mismatches instead of falling
 back to automatic detection.
@@ -44,8 +46,12 @@ implemented vs. planned.
 Recycle-bin entries record their target root and the exact files they snapshot. Restore keeps the
 entry intact when a recorded snapshot is missing.
 
-**Known gap**: `.rar` archives are explicitly detected and rejected (no pure-Rust decoder
-exists for the format) rather than silently mishandled — see the mod format notes in the Wiki.
+The installer can extract unencrypted, single-volume RAR 1.5+ archives for Legacy SP,
+Legacy LSPDFR, and FiveM Client when entry names are UTF-8 or carry Unicode name metadata.
+RAR 1.3/1.4, legacy names that require an unspecified code page, symbolic links, redirected
+entries, and multi-volume archives are rejected. Extraction uses a temporary staging
+directory with path validation and limits of 10,000 entries, 2 GiB per file, and 8 GiB total;
+archives outside those limits must be extracted manually before installation.
 
 ## License
 

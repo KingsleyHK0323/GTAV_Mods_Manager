@@ -1,4 +1,5 @@
 [package]
+# OpenAI-Codex
 name = "gtavmm-core"
 version.workspace = true
 edition.workspace = true
@@ -13,6 +14,7 @@ serde_json.workspace = true
 quick-xml.workspace = true
 zip.workspace = true
 sevenz-rust.workspace = true
+rars.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 sha1.workspace = true
@@ -41,3 +43,4 @@ keyring = { workspace = true, features = ["sync-secret-service"] }
 [dev-dependencies]
 assert_fs = "1"
 predicates = "3"
+rars = { workspace = true, features = ["write"] }

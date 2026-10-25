@@ -116,9 +116,9 @@
   "installWizard": {
     "title": "Install Mod",
     "pick_title": "Choose a mod file",
-    "pick_body_sp": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z). This targets plain single-player conventions for whichever edition (Legacy/Enhanced) is detected on this machine.",
-    "pick_body_lspdfr": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z). This targets LSPDFR conventions — managed .dll callouts/plugins go to `Plugins\\`, not SHVDN's `scripts\\`.",
-    "pick_body_fivem-client": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z). This targets the FiveM client folder set above — set that first if it's empty.",
+    "pick_body_sp": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets plain single-player conventions for whichever edition (Legacy/Enhanced) is detected on this machine.",
+    "pick_body_lspdfr": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets LSPDFR conventions — managed .dll callouts/plugins go to `Plugins\\`, not SHVDN's `scripts\\`.",
+    "pick_body_fivem-client": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets the FiveM client folder set above — set that first if it's empty.",
     "pick_button": "Choose file…",
     "analyzing": "Analyzing…",
     "row_format": "Format",
