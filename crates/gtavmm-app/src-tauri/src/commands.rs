@@ -263,10 +263,13 @@ fn resolve_page_target(
     conn: &Connection,
     game_path: Option<&str>,
     mode: &str,
-) -> Result<(
-    std::path::PathBuf,
-    Box<dyn gtavmm_core::providers::ModeProvider>,
-), String> {
+) -> Result<
+    (
+        std::path::PathBuf,
+        Box<dyn gtavmm_core::providers::ModeProvider>,
+    ),
+    String,
+> {
     let page = crate::page_mode::PageMode::parse(mode)?;
     let core_mode = page.provider_mode();
     let effective_game_path = effective_game_path_impl(conn, game_path, core_mode)?;
@@ -694,7 +697,12 @@ pub fn generate_config_translation_draft_impl(
     let stem = source_path
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
-        .ok_or_else(|| format!("could not determine a file name for {}", source_path.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "could not determine a file name for {}",
+                source_path.display()
+            )
+        })?;
     let output_path = source_path.with_file_name(format!("{stem}.{target_language}.{extension}"));
     match std::fs::symlink_metadata(&output_path) {
         Ok(_) => {
@@ -1086,8 +1094,7 @@ pub fn check_framework_impl(
     let page = crate::page_mode::PageMode::parse(mode)?;
     if !matches!(
         page,
-        crate::page_mode::PageMode::LegacyLspdfr
-            | crate::page_mode::PageMode::EnhancedLspdfr
+        crate::page_mode::PageMode::LegacyLspdfr | crate::page_mode::PageMode::EnhancedLspdfr
     ) {
         return Err("framework checks require an LSPDFR page".to_string());
     }
@@ -1410,7 +1417,7 @@ pub fn export_mods_to_xlsx_impl(
         std::path::Path::new(output_path),
         page.as_str(),
     )
-        .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1584,9 +1591,8 @@ pub fn uninstall_mod_for_page_impl(
     let result = gtavmm_core::uninstall::uninstall(conn, mod_id, &game_root, recycle_bin_root)
         .map_err(|e| e.to_string());
     if let Err(reason) = &result {
-        let _ = gtavmm_core::app_log::error(&format!(
-            "uninstall_mod failed for id {mod_id}: {reason}"
-        ));
+        let _ =
+            gtavmm_core::app_log::error(&format!("uninstall_mod failed for id {mod_id}: {reason}"));
     }
     result
 }
@@ -1975,15 +1981,14 @@ mod tests {
         std::fs::write(&asi_path, b"fake asi bytes").unwrap();
         complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
 
-        let plan = inspect_mod_for_settings_impl(
-            &conn,
-            None,
-            "legacy-sp",
-            asi_path.to_str().unwrap(),
-        )
-        .unwrap();
+        let plan =
+            inspect_mod_for_settings_impl(&conn, None, "legacy-sp", asi_path.to_str().unwrap())
+                .unwrap();
 
-        assert_eq!(plan.files[0].target, saved_game_dir.path().join("SomeMod.asi"));
+        assert_eq!(
+            plan.files[0].target,
+            saved_game_dir.path().join("SomeMod.asi")
+        );
     }
 
     #[test]
@@ -2057,7 +2062,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.files[0].target, explicit_game_dir.path().join("SomeMod.asi"));
+        assert_eq!(
+            plan.files[0].target,
+            explicit_game_dir.path().join("SomeMod.asi")
+        );
     }
 
     #[test]
@@ -2069,21 +2077,22 @@ mod tests {
         std::fs::write(&asi_path, b"fake asi bytes").unwrap();
         complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
 
-        let plan = inspect_mod_for_settings_impl(
-            &conn,
-            None,
-            "sp",
-            asi_path.to_str().unwrap(),
-        )
-        .unwrap();
+        let plan =
+            inspect_mod_for_settings_impl(&conn, None, "sp", asi_path.to_str().unwrap()).unwrap();
 
-        assert_eq!(plan.files[0].target, saved_game_dir.path().join("SomeMod.asi"));
+        assert_eq!(
+            plan.files[0].target,
+            saved_game_dir.path().join("SomeMod.asi")
+        );
     }
 
     // OpenAI-Codex: Cover LSPDFR alias, FiveM explicit roots, and preview lock release.
     #[test]
     fn mode_from_str_preserves_the_bare_lspdfr_provider_alias() {
-        assert_eq!(mode_from_str("lspdfr").unwrap(), gtavmm_core::providers::Mode::Lspdfr);
+        assert_eq!(
+            mode_from_str("lspdfr").unwrap(),
+            gtavmm_core::providers::Mode::Lspdfr
+        );
     }
 
     #[test]
@@ -2092,7 +2101,10 @@ mod tests {
 
         let err = export_mods_to_xlsx_impl(&conn, "unused.xlsx", "legacy-lspdfr").unwrap_err();
 
-        assert!(err.contains("only available for the Legacy SP page"), "{err}");
+        assert!(
+            err.contains("only available for the Legacy SP page"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2128,8 +2140,8 @@ mod tests {
         let invalid_path = invalid_parent.path().join("missing-game");
         complete_onboarding_impl(&conn, invalid_path.to_str()).unwrap();
 
-        let err = inspect_mod_for_settings_impl(&conn, None, "legacy-sp", "missing.asi")
-            .unwrap_err();
+        let err =
+            inspect_mod_for_settings_impl(&conn, None, "legacy-sp", "missing.asi").unwrap_err();
 
         assert!(err.contains("supported GTA V install"), "{err}");
     }
@@ -2138,10 +2150,13 @@ mod tests {
     fn inspect_mod_for_settings_rejects_when_no_gta_path_is_configured() {
         let conn = gtavmm_core::db::open_in_memory().unwrap();
 
-        let err = inspect_mod_for_settings_impl(&conn, None, "legacy-sp", "missing.asi")
-            .unwrap_err();
+        let err =
+            inspect_mod_for_settings_impl(&conn, None, "legacy-sp", "missing.asi").unwrap_err();
 
-        assert!(err.contains("Choose a GTA V installation path in Settings"), "{err}");
+        assert!(
+            err.contains("Choose a GTA V installation path in Settings"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2150,12 +2165,8 @@ mod tests {
         let saved_game_dir = fake_game_root();
         complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
 
-        let path = effective_game_path_impl(
-            &conn,
-            None,
-            gtavmm_core::providers::Mode::FivemClient,
-        )
-        .unwrap();
+        let path = effective_game_path_impl(&conn, None, gtavmm_core::providers::Mode::FivemClient)
+            .unwrap();
 
         assert!(path.is_none());
     }
@@ -2178,7 +2189,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.files[0].target, client_dir.path().join("ClientMod.asi"));
+        assert_eq!(
+            plan.files[0].target,
+            client_dir.path().join("ClientMod.asi")
+        );
     }
 
     #[test]
@@ -2190,15 +2204,14 @@ mod tests {
         std::fs::write(&asi_path, b"fake asi bytes").unwrap();
         complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
 
-        let err = inspect_mod_for_settings_impl(
-            &conn,
-            None,
-            "fivem-client",
-            asi_path.to_str().unwrap(),
-        )
-        .unwrap_err();
+        let err =
+            inspect_mod_for_settings_impl(&conn, None, "fivem-client", asi_path.to_str().unwrap())
+                .unwrap_err();
 
-        assert!(err.contains("fivem-client requires an explicit client directory"), "{err}");
+        assert!(
+            err.contains("fivem-client requires an explicit client directory"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2406,7 +2419,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("fivem-client requires an explicit client directory"), "{err}");
+        assert!(
+            err.contains("fivem-client requires an explicit client directory"),
+            "{err}"
+        );
         assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
@@ -2434,7 +2450,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("is not an existing FiveM client directory"), "{err}");
+        assert!(
+            err.contains("is not an existing FiveM client directory"),
+            "{err}"
+        );
         assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
@@ -2458,7 +2477,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("Choose a GTA V installation path in Settings"), "{err}");
+        assert!(
+            err.contains("Choose a GTA V installation path in Settings"),
+            "{err}"
+        );
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
 

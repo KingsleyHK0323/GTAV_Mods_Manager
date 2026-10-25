@@ -37,11 +37,7 @@ const COLUMN_HEADERS: [&str; 7] = [
     "Link",
 ];
 
-fn load_rows(
-    conn: &Connection,
-    uninstalled: bool,
-    mode: Option<&str>,
-) -> CoreResult<Vec<ModRow>> {
+fn load_rows(conn: &Connection, uninstalled: bool, mode: Option<&str>) -> CoreResult<Vec<ModRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, source_type, installed_at, status, notes, link \
          FROM installed_mod \
@@ -129,11 +125,7 @@ pub fn export_for_mode(conn: &Connection, output_path: &Path, mode: &str) -> Cor
     export_filtered(conn, output_path, Some(mode))
 }
 
-fn export_filtered(
-    conn: &Connection,
-    output_path: &Path,
-    mode: Option<&str>,
-) -> CoreResult<()> {
+fn export_filtered(conn: &Connection, output_path: &Path, mode: Option<&str>) -> CoreResult<()> {
     let installed = load_rows(conn, false, mode)?;
     let uninstalled = load_rows(conn, true, mode)?;
 

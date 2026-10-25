@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Formatted the Rust source files reported by GitHub Actions so the workspace formatting check passes.
 - Preserved explicit LSPDFR game-root layouts in mod folders and archives, including one `Grand Theft Auto V` wrapper, while keeping ordinary replacer files under `mods` and refusing ambiguous DLL packages.
 - Marked App full backups with their GTA V edition, blocked unmarked or mismatched restores, and kept readable backups available when another archive is damaged.
 - Made page-target resolution require a concrete App page so provider aliases cannot bypass edition checks.

@@ -398,7 +398,10 @@ fn classify_add_on_pack(
         })
         .collect();
 
-    Ok(ModPlan::new(ModFormat::AddOnPack { pack_name: name }, files))
+    Ok(ModPlan::new(
+        ModFormat::AddOnPack { pack_name: name },
+        files,
+    ))
 }
 
 fn extract_zip(input: &Path) -> CoreResult<tempfile::TempDir> {
@@ -455,27 +458,35 @@ fn rar_entry_relative_path(decoded_name: &[u8], is_directory: bool) -> CoreResul
     let normalized = if is_directory {
         normalized.strip_suffix('/').unwrap_or(&normalized)
     } else if normalized.ends_with('/') {
-        return Err(unsupported_rar("a file entry cannot end with a path separator"));
+        return Err(unsupported_rar(
+            "a file entry cannot end with a path separator",
+        ));
     } else {
         &normalized
     };
 
     if normalized.is_empty() || normalized.starts_with('/') || normalized.contains(':') {
-        return Err(unsupported_rar("entry path must be relative and cannot use a drive or stream prefix"));
+        return Err(unsupported_rar(
+            "entry path must be relative and cannot use a drive or stream prefix",
+        ));
     }
 
     let mut relative = PathBuf::new();
     for component in normalized.split('/') {
         if component.is_empty() || component == "." || component == ".." {
-            return Err(unsupported_rar("entry path contains an empty or traversal component"));
+            return Err(unsupported_rar(
+                "entry path contains an empty or traversal component",
+            ));
         }
         if matches!(component.chars().last(), Some(' ' | '.'))
-            || component.chars().any(|ch| {
-                ch.is_control() || matches!(ch, '<' | '>' | '"' | '|' | '?' | '*')
-            })
+            || component
+                .chars()
+                .any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '"' | '|' | '?' | '*'))
             || is_reserved_windows_component(component)
         {
-            return Err(unsupported_rar("entry path contains a name unsafe on Windows"));
+            return Err(unsupported_rar(
+                "entry path contains a name unsafe on Windows",
+            ));
         }
         relative.push(component);
     }
@@ -487,13 +498,12 @@ fn is_reserved_windows_component(component: &str) -> bool {
     let stem = stem.to_ascii_uppercase();
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ["COM", "LPT"].iter().any(|prefix| {
-            stem.strip_prefix(prefix)
-                .is_some_and(|suffix| {
-                    (suffix.len() == 1
-                        && suffix.as_bytes()[0].is_ascii_digit()
-                        && suffix.as_bytes()[0] != b'0')
-                        || matches!(suffix, "¹" | "²" | "³")
-                })
+            stem.strip_prefix(prefix).is_some_and(|suffix| {
+                (suffix.len() == 1
+                    && suffix.as_bytes()[0].is_ascii_digit()
+                    && suffix.as_bytes()[0] != b'0')
+                    || matches!(suffix, "¹" | "²" | "³")
+            })
         })
 }
 
@@ -526,7 +536,9 @@ fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
             return Err(unsupported_rar("encrypted entries are not supported"));
         }
         if member.meta.is_split_before || member.meta.is_split_after {
-            return Err(unsupported_rar("split or multi-volume entries are not supported"));
+            return Err(unsupported_rar(
+                "split or multi-volume entries are not supported",
+            ));
         }
         if member.meta.is_redirection || member.is_legacy_unix_symlink() {
             return Err(unsupported_rar(
@@ -544,13 +556,17 @@ fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
         }
         if !member.meta.is_directory {
             if member.meta.unpacked_size > MAX_RAR_MEMBER_OUTPUT_BYTES {
-                return Err(unsupported_rar("a file exceeds the per-file extraction limit"));
+                return Err(unsupported_rar(
+                    "a file exceeds the per-file extraction limit",
+                ));
             }
             total_unpacked = total_unpacked
                 .checked_add(member.meta.unpacked_size)
                 .ok_or_else(|| unsupported_rar("total uncompressed size overflows"))?;
             if total_unpacked > MAX_RAR_TOTAL_OUTPUT_BYTES {
-                return Err(unsupported_rar("archive exceeds the total extraction limit"));
+                return Err(unsupported_rar(
+                    "archive exceeds the total extraction limit",
+                ));
             }
         }
         entries.insert(member.meta.name, (relative, member.meta.is_directory));
@@ -868,12 +884,14 @@ mod tests {
 
             assert_eq!(plan.format, ModFormat::Zip);
             assert_eq!(plan.files.len(), 4);
-            assert!(plan.files.iter().any(|file| {
-                file.target == game_root.join("CalloutInterfaceAPI.dll")
-            }));
-            assert!(plan.files.iter().any(|file| {
-                file.target == game_root.join("plugins/LSPDFR/MCCCallouts.dll")
-            }));
+            assert!(plan
+                .files
+                .iter()
+                .any(|file| { file.target == game_root.join("CalloutInterfaceAPI.dll") }));
+            assert!(plan
+                .files
+                .iter()
+                .any(|file| { file.target == game_root.join("plugins/LSPDFR/MCCCallouts.dll") }));
             assert!(plan.files.iter().any(|file| {
                 file.target == game_root.join("lspdfr/audio/MCCCallouts/Audio.dat")
             }));
@@ -902,20 +920,18 @@ mod tests {
             ],
         );
 
-        let plan = classify(
-            &zip_path,
-            &LegacyLspdfrProvider::new(game_root.clone()),
-        )
-        .unwrap();
+        let plan = classify(&zip_path, &LegacyLspdfrProvider::new(game_root.clone())).unwrap();
 
         assert_eq!(plan.format, ModFormat::Zip);
         assert_eq!(plan.files.len(), 2);
-        assert!(plan.files.iter().any(|file| {
-            file.target == game_root.join("CalloutInterfaceAPI.dll")
-        }));
-        assert!(plan.files.iter().any(|file| {
-            file.target == game_root.join("plugins/LSPDFR/StoryCallouts.dll")
-        }));
+        assert!(plan
+            .files
+            .iter()
+            .any(|file| { file.target == game_root.join("CalloutInterfaceAPI.dll") }));
+        assert!(plan
+            .files
+            .iter()
+            .any(|file| { file.target == game_root.join("plugins/LSPDFR/StoryCallouts.dll") }));
         assert!(!plan
             .files
             .iter()
@@ -930,14 +946,13 @@ mod tests {
         let zip_path = dir.path().join("UnknownCallout.zip");
         write_test_zip(
             &zip_path,
-            &[("UnknownCallout.dll", b"callout"), ("readme.txt", b"readme")],
+            &[
+                ("UnknownCallout.dll", b"callout"),
+                ("readme.txt", b"readme"),
+            ],
         );
 
-        let plan = classify(
-            &zip_path,
-            &LegacyLspdfrProvider::new(game_root),
-        )
-        .unwrap();
+        let plan = classify(&zip_path, &LegacyLspdfrProvider::new(game_root)).unwrap();
 
         assert!(matches!(plan.format, ModFormat::Unsupported(_)));
         assert!(plan.files.is_empty());
@@ -953,11 +968,7 @@ mod tests {
         std::fs::write(mod_folder.join("CalloutInterfaceAPI.dll"), b"dependency").unwrap();
         std::fs::write(mod_folder.join("Plugins/LSPDFR/Callout.dll"), b"callout").unwrap();
 
-        let plan = classify(
-            &mod_folder,
-            &LegacyLspdfrProvider::new(game_root.clone()),
-        )
-        .unwrap();
+        let plan = classify(&mod_folder, &LegacyLspdfrProvider::new(game_root.clone())).unwrap();
 
         assert_eq!(plan.format, ModFormat::FolderReplacer);
         assert_eq!(plan.files.len(), 2);
@@ -965,9 +976,10 @@ mod tests {
             .files
             .iter()
             .any(|file| file.target == game_root.join("CalloutInterfaceAPI.dll")));
-        assert!(plan.files.iter().any(|file| {
-            file.target == game_root.join("Plugins/LSPDFR/Callout.dll")
-        }));
+        assert!(plan
+            .files
+            .iter()
+            .any(|file| { file.target == game_root.join("Plugins/LSPDFR/Callout.dll") }));
     }
 
     #[test]
@@ -979,11 +991,7 @@ mod tests {
         std::fs::create_dir_all(&mod_folder).unwrap();
         std::fs::write(mod_folder.join("UnknownCallout.dll"), b"callout").unwrap();
 
-        let plan = classify(
-            &mod_folder,
-            &LegacyLspdfrProvider::new(game_root),
-        )
-        .unwrap();
+        let plan = classify(&mod_folder, &LegacyLspdfrProvider::new(game_root)).unwrap();
 
         assert!(matches!(plan.format, ModFormat::Unsupported(_)));
         assert!(plan.files.is_empty());
@@ -999,18 +1007,11 @@ mod tests {
             &zip_path,
             &[
                 ("Plugins/LSPDFR/Direct.dll", b"direct"),
-                (
-                    "Grand Theft Auto V/Plugins/LSPDFR/Wrapped.dll",
-                    b"wrapped",
-                ),
+                ("Grand Theft Auto V/Plugins/LSPDFR/Wrapped.dll", b"wrapped"),
             ],
         );
 
-        let plan = classify(
-            &zip_path,
-            &LegacyLspdfrProvider::new(game_root),
-        )
-        .unwrap();
+        let plan = classify(&zip_path, &LegacyLspdfrProvider::new(game_root)).unwrap();
 
         assert!(matches!(plan.format, ModFormat::Unsupported(_)));
         assert!(plan.files.is_empty());
@@ -1024,11 +1025,7 @@ mod tests {
         let zip_path = dir.path().join("replacer.zip");
         write_test_zip(&zip_path, &[("update/x64/dlcpacks/thing.rpf", b"payload")]);
 
-        let plan = classify(
-            &zip_path,
-            &LegacyLspdfrProvider::new(game_root.clone()),
-        )
-        .unwrap();
+        let plan = classify(&zip_path, &LegacyLspdfrProvider::new(game_root.clone())).unwrap();
 
         assert_eq!(plan.format, ModFormat::Zip);
         assert_eq!(plan.files.len(), 1);
@@ -1057,10 +1054,7 @@ mod tests {
         let game_root = dir.path().join("game");
         std::fs::create_dir_all(&game_root).unwrap();
         let rar_path = dir.path().join("replacer.rar");
-        write_test_rar(
-            &rar_path,
-            &[("update/x64/dlcpacks/thing.rpf", b"payload")],
-        );
+        write_test_rar(&rar_path, &[("update/x64/dlcpacks/thing.rpf", b"payload")]);
 
         let plan = classify(&rar_path, &provider(&game_root)).unwrap();
         assert_eq!(plan.format, ModFormat::Rar);
@@ -1068,7 +1062,10 @@ mod tests {
         assert_eq!(std::fs::read(&plan.files[0].source).unwrap(), b"payload");
         let staged_file = plan.files[0].source.clone();
         drop(plan);
-        assert!(!staged_file.exists(), "RAR staging should be removed with its plan");
+        assert!(
+            !staged_file.exists(),
+            "RAR staging should be removed with its plan"
+        );
     }
 
     #[test]

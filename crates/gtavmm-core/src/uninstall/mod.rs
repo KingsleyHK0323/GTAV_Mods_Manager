@@ -265,7 +265,12 @@ mod tests {
 
         uninstall(&mut conn, mod_id, &game_root, &recycle_root).unwrap();
 
-        let (snapshot_path, metadata_json, deleted_at, expires_at): (String, String, String, String) = conn
+        let (snapshot_path, metadata_json, deleted_at, expires_at): (
+            String,
+            String,
+            String,
+            String,
+        ) = conn
             .query_row(
                 "SELECT mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at \
                  FROM recycle_bin_entry WHERE original_installed_mod_id = ?1",

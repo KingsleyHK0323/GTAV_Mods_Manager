@@ -144,10 +144,7 @@ pub fn list(backup_root: &Path) -> CoreResult<Vec<PathBuf>> {
 
 /// Lists only backups marked for the requested edition. Unmarked archives are
 /// excluded because their source edition cannot be verified by the App.
-pub fn list_for_edition(
-    backup_root: &Path,
-    edition: GameEdition,
-) -> CoreResult<EditionBackupList> {
+pub fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<EditionBackupList> {
     let mut result = EditionBackupList::default();
     for path in list(backup_root)? {
         match read_backup_edition(&path) {
@@ -323,8 +320,7 @@ mod tests {
         let legacy = create_for_edition(&game_root, &backup_root, GameEdition::Legacy).unwrap();
         let legacy_path = legacy.with_file_name("legacy.zip");
         std::fs::rename(legacy, &legacy_path).unwrap();
-        let enhanced =
-            create_for_edition(&game_root, &backup_root, GameEdition::Enhanced).unwrap();
+        let enhanced = create_for_edition(&game_root, &backup_root, GameEdition::Enhanced).unwrap();
         let enhanced_path = enhanced.with_file_name("enhanced.zip");
         std::fs::rename(enhanced, &enhanced_path).unwrap();
         let unmarked = create(&game_root, &backup_root).unwrap();

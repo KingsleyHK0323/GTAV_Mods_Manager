@@ -40,10 +40,7 @@ pub fn list(conn: &Connection) -> CoreResult<Vec<RecycleBinEntry>> {
 }
 
 /// Lists recycle-bin entries, optionally restricted to the owning mod's workspace mode.
-pub fn list_for_mode(
-    conn: &Connection,
-    mode: Option<&str>,
-) -> CoreResult<Vec<RecycleBinEntry>> {
+pub fn list_for_mode(conn: &Connection, mode: Option<&str>) -> CoreResult<Vec<RecycleBinEntry>> {
     let mut stmt = conn.prepare(
         "SELECT rb.id, rb.original_installed_mod_id, rb.deleted_at, rb.expires_at \
          FROM recycle_bin_entry AS rb \

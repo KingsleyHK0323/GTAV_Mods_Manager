@@ -103,9 +103,18 @@ mod tests {
     #[test]
     fn each_gta_page_requires_its_own_edition_and_fivem_requires_none() {
         assert_eq!(PageMode::LegacySp.expected_game_edition(), Some("legacy"));
-        assert_eq!(PageMode::LegacyLspdfr.expected_game_edition(), Some("legacy"));
-        assert_eq!(PageMode::EnhancedSp.expected_game_edition(), Some("enhanced"));
-        assert_eq!(PageMode::EnhancedLspdfr.expected_game_edition(), Some("enhanced"));
+        assert_eq!(
+            PageMode::LegacyLspdfr.expected_game_edition(),
+            Some("legacy")
+        );
+        assert_eq!(
+            PageMode::EnhancedSp.expected_game_edition(),
+            Some("enhanced")
+        );
+        assert_eq!(
+            PageMode::EnhancedLspdfr.expected_game_edition(),
+            Some("enhanced")
+        );
         assert_eq!(PageMode::FivemClient.expected_game_edition(), None);
     }
 

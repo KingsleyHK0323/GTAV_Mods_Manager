@@ -238,9 +238,11 @@ pub fn has_cloud_api_key() -> bool {
 
 /// Stores a provider-specific API key in the OS credential store.
 pub fn set_provider_api_key(provider: AiProviderKind, key: &str) -> CoreResult<()> {
-    let username = provider.keyring_username().ok_or_else(|| CoreError::AiAssistant {
-        reason: "the local Ollama provider does not use an API key".to_string(),
-    })?;
+    let username = provider
+        .keyring_username()
+        .ok_or_else(|| CoreError::AiAssistant {
+            reason: "the local Ollama provider does not use an API key".to_string(),
+        })?;
     provider_keyring_entry(username)?
         .set_password(key)
         .map_err(|e| CoreError::AiAssistant {
@@ -256,9 +258,11 @@ pub fn has_provider_api_key(provider: AiProviderKind) -> bool {
 }
 
 fn get_provider_api_key(provider: AiProviderKind) -> CoreResult<String> {
-    let username = provider.keyring_username().ok_or_else(|| CoreError::AiAssistant {
-        reason: "the local Ollama provider does not use an API key".to_string(),
-    })?;
+    let username = provider
+        .keyring_username()
+        .ok_or_else(|| CoreError::AiAssistant {
+            reason: "the local Ollama provider does not use an API key".to_string(),
+        })?;
     provider_keyring_entry(username)?
         .get_password()
         .map_err(|e| CoreError::AiAssistant {

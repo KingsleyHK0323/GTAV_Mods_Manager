@@ -617,7 +617,10 @@ mod tests {
         )
         .unwrap();
         let rar_id: i64 = conn.last_insert_rowid();
-        assert!(rar_id >= 100, "migration must preserve the AUTOINCREMENT high-water mark");
+        assert!(
+            rar_id >= 100,
+            "migration must preserve the AUTOINCREMENT high-water mark"
+        );
 
         let violations: i64 = conn
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
@@ -625,8 +628,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(violations, 0);
-        let foreign_keys_enabled: bool =
-            conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+        let foreign_keys_enabled: bool = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
         assert!(foreign_keys_enabled);
     }
 }
