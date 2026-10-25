@@ -214,6 +214,50 @@ fn normalize_game_path_for_mode<'a>(
     Ok(Some(path))
 }
 
+/// OpenAI-Codex: Use a caller path first; GTA modes require a saved path otherwise.
+fn effective_game_path_impl(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: gtavmm_core::providers::Mode,
+) -> Result<Option<String>, String> {
+    if let Some(path) = game_path.map(str::trim).filter(|path| !path.is_empty()) {
+        return Ok(Some(path.to_string()));
+    }
+    if mode == gtavmm_core::providers::Mode::FivemClient {
+        return Ok(None);
+    }
+    let settings = load_user_settings_impl(conn)?;
+    match settings.game_install_path_override {
+        Some(path) if !path.trim().is_empty() => Ok(Some(path.trim().to_string())),
+        _ => Err(
+            "Choose a GTA V installation path in Settings before previewing or installing."
+                .to_string(),
+        ),
+    }
+}
+
+/// OpenAI-Codex: Reject a valid GTA root when it does not match the active page.
+fn ensure_page_game_edition(
+    page: crate::page_mode::PageMode,
+    game_root: &std::path::Path,
+) -> Result<(), String> {
+    let Some(expected) = page.expected_game_edition() else {
+        return Ok(());
+    };
+    let (_, actual) = gtavmm_core::providers::resolve_game_root(Some(game_root))
+        .map_err(|error| error.to_string())?;
+    if actual != expected {
+        return Err(format!(
+            "{} requires a {} GTA V install, but the selected game path resolves to {}: {}. Update the saved path in Settings.",
+            page.as_str(),
+            expected,
+            actual,
+            game_root.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Read-only preview of what installing `path` would do — no files written, nothing
 /// recorded in the database. Mirrors the CLI's `inspect` command.
 pub fn inspect_mod_impl(
@@ -223,20 +267,41 @@ pub fn inspect_mod_impl(
 ) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
     let core_mode = mode_from_str(mode)?;
     let game_path = normalize_game_path_for_mode(game_path, core_mode)?;
-    let (_, provider) =
+    let (game_root, provider) =
         gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), core_mode)
             .map_err(|e| e.to_string())?;
+    if let Ok(page) = crate::page_mode::PageMode::parse(mode) {
+        ensure_page_game_edition(page, &game_root)?;
+    }
     gtavmm_core::mod_analyzer::classify(std::path::Path::new(path), provider.as_ref())
         .map_err(|e| e.to_string())
 }
 
+/// OpenAI-Codex: Resolve the saved GTA path for the app's read-only install preview.
+pub fn inspect_mod_for_settings_impl(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: &str,
+    path: &str,
+) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
+    let core_mode = mode_from_str(mode)?;
+    let effective_game_path = effective_game_path_impl(conn, game_path, core_mode)?;
+    inspect_mod_impl(effective_game_path.as_deref(), mode, path)
+}
+
 #[tauri::command]
 pub fn inspect_mod(
+    state: tauri::State<crate::AppState>,
     game_path: Option<String>,
     mode: String,
     path: String,
 ) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
-    inspect_mod_impl(game_path.as_deref(), &mode, &path)
+    let effective_game_path = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        let core_mode = mode_from_str(&mode)?;
+        effective_game_path_impl(&conn, game_path.as_deref(), core_mode)?
+    };
+    inspect_mod_impl(effective_game_path.as_deref(), &mode, &path)
 }
 
 /// Installs `path` for real. Mirrors the CLI's `install` command: classify, then run
@@ -257,11 +322,14 @@ pub fn install_mod_impl(
     // decides where files go, and the page is what gets recorded so this mod
     // shows up on the workspace it was installed from and nowhere else.
     let page = crate::page_mode::PageMode::parse(mode)?;
-    let game_path = normalize_game_path_for_mode(game_path, page.provider_mode())?;
+    let effective_game_path = effective_game_path_impl(conn, game_path, page.provider_mode())?;
+    let game_path =
+        normalize_game_path_for_mode(effective_game_path.as_deref(), page.provider_mode())?;
     let input_path = std::path::Path::new(path);
     let (game_root, provider) =
         gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), page.provider_mode())
             .map_err(|e| e.to_string())?;
+    ensure_page_game_edition(page, &game_root)?;
     let plan = gtavmm_core::mod_analyzer::classify(input_path, provider.as_ref())
         .map_err(|e| e.to_string())?;
     let name = name.map(str::to_string).unwrap_or_else(|| {
@@ -1770,6 +1838,13 @@ mod tests {
         dir
     }
 
+    // OpenAI-Codex: Keep a distinct marker for edition-mismatch regression cases.
+    fn fake_enhanced_game_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("GTA5_Enhanced.exe"), b"").unwrap();
+        dir
+    }
+
     #[test]
     fn inspect_mod_impl_classifies_a_real_asi_file() {
         let game_dir = fake_game_root();
@@ -1798,6 +1873,119 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("unknown mode"));
+    }
+
+    #[test]
+    fn inspect_mod_for_settings_uses_the_saved_game_path_override() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("SomeMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let plan = inspect_mod_for_settings_impl(
+            &conn,
+            None,
+            "legacy-sp",
+            asi_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.files[0].target, saved_game_dir.path().join("SomeMod.asi"));
+    }
+
+    #[test]
+    fn inspect_mod_for_settings_prefers_an_explicit_game_path_over_the_saved_override() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let explicit_game_dir = fake_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("SomeMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let plan = inspect_mod_for_settings_impl(
+            &conn,
+            explicit_game_dir.path().to_str(),
+            "legacy-sp",
+            asi_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.files[0].target, explicit_game_dir.path().join("SomeMod.asi"));
+    }
+
+    #[test]
+    fn inspect_mod_for_settings_preserves_bare_provider_mode_aliases() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("SomeMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let plan = inspect_mod_for_settings_impl(
+            &conn,
+            None,
+            "sp",
+            asi_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.files[0].target, saved_game_dir.path().join("SomeMod.asi"));
+    }
+
+    #[test]
+    fn inspect_mod_impl_rejects_a_page_that_does_not_match_the_game_edition() {
+        let game_dir = fake_enhanced_game_root();
+        let err = inspect_mod_impl(
+            Some(game_dir.path().to_str().unwrap()),
+            "legacy-sp",
+            "missing.asi",
+        )
+        .unwrap_err();
+
+        assert!(err.contains("requires a legacy"), "{err}");
+    }
+
+    #[test]
+    fn inspect_mod_for_settings_rejects_an_invalid_saved_path_without_fallback() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let invalid_parent = tempfile::tempdir().unwrap();
+        let invalid_path = invalid_parent.path().join("missing-game");
+        complete_onboarding_impl(&conn, invalid_path.to_str()).unwrap();
+
+        let err = inspect_mod_for_settings_impl(&conn, None, "legacy-sp", "missing.asi")
+            .unwrap_err();
+
+        assert!(err.contains("supported GTA V install"), "{err}");
+    }
+
+    #[test]
+    fn inspect_mod_for_settings_rejects_when_no_gta_path_is_configured() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+
+        let err = inspect_mod_for_settings_impl(&conn, None, "legacy-sp", "missing.asi")
+            .unwrap_err();
+
+        assert!(err.contains("Choose a GTA V installation path in Settings"), "{err}");
+    }
+
+    #[test]
+    fn fivem_does_not_inherit_the_saved_gta_game_path_override() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let path = effective_game_path_impl(
+            &conn,
+            None,
+            gtavmm_core::providers::Mode::FivemClient,
+        )
+        .unwrap();
+
+        assert!(path.is_none());
     }
 
     #[test]
@@ -1932,6 +2120,78 @@ mod tests {
         }
         assert!(game_dir.path().join("SomeMod.asi").exists());
         assert_eq!(list_mods_impl(&conn, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_mod_impl_uses_the_saved_game_path_override() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("SomeMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        install_mod_impl(
+            &mut conn,
+            None,
+            "legacy-sp",
+            asi_path.to_str().unwrap(),
+            None,
+            false,
+            backup_dir.path(),
+        )
+        .unwrap();
+
+        assert!(saved_game_dir.path().join("SomeMod.asi").exists());
+    }
+
+    #[test]
+    fn install_mod_impl_rejects_when_no_gta_path_is_configured() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("SomeMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+
+        let err = install_mod_impl(
+            &mut conn,
+            None,
+            "legacy-sp",
+            asi_path.to_str().unwrap(),
+            None,
+            false,
+            backup_dir.path(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("Choose a GTA V installation path in Settings"), "{err}");
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn install_mod_impl_rejects_a_game_edition_mismatch_before_writing() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let game_dir = fake_enhanced_game_root();
+        let mod_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let asi_path = mod_dir.path().join("SomeMod.asi");
+        std::fs::write(&asi_path, b"fake asi bytes").unwrap();
+
+        let err = install_mod_impl(
+            &mut conn,
+            Some(game_dir.path().to_str().unwrap()),
+            "legacy-sp",
+            asi_path.to_str().unwrap(),
+            None,
+            false,
+            backup_dir.path(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("requires a legacy"), "{err}");
+        assert!(!game_dir.path().join("SomeMod.asi").exists());
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
 
     #[test]

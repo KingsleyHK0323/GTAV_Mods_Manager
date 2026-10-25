@@ -11,6 +11,7 @@ Enhanced single-player mods, LSPDFR, and FiveM.
 <!-- Updated by OpenAI-Codex: FiveM Client folder path is saved locally. -->
 <!-- Updated by OpenAI-Codex: recycle-bin restores use recorded roots and preserve incomplete snapshots. -->
 <!-- OpenAI-Codex: Translation supports provider-specific AI adapters and refuses output collisions. -->
+<!-- OpenAI-Codex: GTA install previews and installs require a configured path and reject edition mismatches. -->
 
 The **core engine (`gtavmm-core`) and CLI (`gtavmm-cli`) are functional and tested** — install,
 uninstall, enable/disable, conflict detection, recycle bin, full backups, multi-profile
@@ -26,8 +27,10 @@ complete**. It has a working shell (sidebar navigation, i18n with English/Tradit
 and pages wired to backend commands, including Legacy SP mod listing; FiveM Client mod listing
 with detail, lifecycle controls, a mode-filtered recycle bin, and a locally remembered client
 folder; the FiveM server load-order tool; and the SP→FiveM converter. Legacy SP and Legacy
-LSPDFR support batch enable/disable from the installed-mod list. The Tools editor can generate
-AI translation drafts from saved INI/XML files.
+LSPDFR support batch enable/disable from the installed-mod list. GTA SP/LSPDFR previews and
+installs require a configured game path and refuse page/edition mismatches instead of falling
+back to automatic detection.
+The Tools editor can generate AI translation drafts from saved INI/XML files.
 The translation tools support reviewable DLL, INI, and XML output through Ollama Local, Ollama Cloud,
 OpenAI, Anthropic, DeepSeek, OpenRouter, Google AI, or NVIDIA AI. Provider API keys are stored
 separately in the operating system's credential store. Cloud translation sends selected file text to

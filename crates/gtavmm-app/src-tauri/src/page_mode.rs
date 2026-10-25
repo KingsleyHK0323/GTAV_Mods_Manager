@@ -8,13 +8,11 @@
 //! through the SP provider but are separate workspaces with separate mod lists,
 //! so the provider mode alone cannot say which page a mod came from.
 //!
-//! Keeping the two apart means the install path — which is covered by tests and
-//! works — does not have to change to give mods a page.
+//! Keeping the two apart lets the shared provider layouts remain separate from the
+//! page identity, while the page identity verifies the selected GTA edition.
 //!
-//! There is no `edition()` here on purpose. `providers::resolve` detects the
-//! installed edition itself, and a machine has one game install; letting the
-//! page override that would mean claiming an Enhanced install exists because
-//! the user happened to be on the Enhanced page.
+//! The page also records its expected GTA V edition so a saved or auto-detected
+//! path for the other edition can be rejected before the install preview or write.
 
 use gtavmm_core::providers::Mode;
 
@@ -62,6 +60,15 @@ impl PageMode {
             PageMode::FivemClient => Mode::FivemClient,
         }
     }
+
+    /// OpenAI-Codex: Edition required by this GTA V workspace; FiveM has no GTA edition.
+    pub fn expected_game_edition(self) -> Option<&'static str> {
+        match self {
+            PageMode::LegacySp | PageMode::LegacyLspdfr => Some("legacy"),
+            PageMode::EnhancedSp | PageMode::EnhancedLspdfr => Some("enhanced"),
+            PageMode::FivemClient => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +98,15 @@ mod tests {
             PageMode::EnhancedSp.provider_mode()
         );
         assert_ne!(PageMode::LegacySp.as_str(), PageMode::EnhancedSp.as_str());
+    }
+
+    #[test]
+    fn each_gta_page_requires_its_own_edition_and_fivem_requires_none() {
+        assert_eq!(PageMode::LegacySp.expected_game_edition(), Some("legacy"));
+        assert_eq!(PageMode::LegacyLspdfr.expected_game_edition(), Some("legacy"));
+        assert_eq!(PageMode::EnhancedSp.expected_game_edition(), Some("enhanced"));
+        assert_eq!(PageMode::EnhancedLspdfr.expected_game_edition(), Some("enhanced"));
+        assert_eq!(PageMode::FivemClient.expected_game_edition(), None);
     }
 
     #[test]

@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Updated App GTA SP/LSPDFR previews and installs to require a configured path and reject page/edition mismatches instead of falling back to automatic detection.
 - Recorded the target root and exact snapshotted file set for recycle-bin entries. Restore now uses that root, does not require GTA V root detection for entries with metadata, and preserves the entry when any recorded snapshot is missing.
 - Added database schema migration v12 for recycle-bin snapshot metadata. Legacy entries continue to use the resolved game root and are retained if their required snapshots are incomplete.
 - Added database schema migration v13 for the saved FiveM Client folder, separate from the GTA V install-path override.
