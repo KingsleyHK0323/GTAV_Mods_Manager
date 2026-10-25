@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! `ModeProvider`: the abstraction that lets later modes (Enhanced SP, Legacy/Enhanced
 //! LSPDFR, FiveM) be added without rewriting `mod_analyzer`'s dispatch logic. Each
@@ -32,6 +33,11 @@ pub trait ModeProvider {
     /// `relative` is the file's path relative to the root of the mod folder being
     /// installed (i.e. already stripped of the source folder's own prefix).
     fn resolve_folder_replacer_target(&self, relative: &Path) -> PathBuf;
+    /// Returns the game root for packages that explicitly include an LSPDFR game-root
+    /// layout. Other providers do not interpret archive paths this way.
+    fn lspdfr_package_game_root(&self) -> Option<&Path> {
+        None
+    }
     fn resolve_add_on_pack_target(&self, pack_name: &str, relative: &Path) -> PathBuf;
 }
 
@@ -181,24 +187,19 @@ pub(crate) const RPH_PLUGINS_SUBFOLDER: &str = "Plugins";
 /// decision not to build format-specific intelligence beyond what `mod_analyzer`
 /// already classifies:
 ///
-/// - Managed `.dll` → RPH's `Plugins\` folder (see [`RPH_PLUGINS_SUBFOLDER`]),
-///   replacing SP mode's `scripts\` (ScriptHookVDotNet) target. **Verified against a
-///   real install** for the general/majority case (most `Plugins\`-level `.dll`s in
-///   the real modpack inspected were *not* callouts — the core plugin and other
-///   generic RPH plugins). **One known refinement not implemented**: that same real
-///   install also has a `Plugins\LSPDFR\` subfolder specifically holding callout
-///   *expansion pack* DLLs (e.g. community callout packs), distinct from bare
-///   `Plugins\`. `mod_analyzer` has no way to distinguish "a callout pack" from "a
-///   generic RPH plugin" — both are just a managed `.dll` from a PE-inspection
-///   standpoint — so this provider cannot route the two differently without a new,
-///   more specific classification. Routing everything to bare `Plugins\` was checked
-///   against the real sample and is not wrong, just occasionally coarser than the
-///   community convention for callout-specific packs.
+/// - A standalone managed `.dll` → RPH's `Plugins\` folder (see
+///   [`RPH_PLUGINS_SUBFOLDER`]), replacing SP mode's `scripts\` (ScriptHookVDotNet)
+///   target. **Verified against a real install** for the general/majority case. A
+///   standalone DLL cannot identify itself as a callout versus another RPH plugin, so
+///   it keeps this general target; `mod_analyzer` separately preserves an explicit
+///   `Plugins\LSPDFR\` path supplied by a folder or archive package.
 /// - Folder replacers (e.g. EUP/ped-pack file overrides) and add-on vehicle/map packs
 ///   reuse the same OpenIV-OpenRPF `mods\` mirroring and `dlclist.xml` registration as
 ///   the SP providers — **verified against the same real install**, which has its own
 ///   `mods\update\x64\dlcpacks\` full of real add-on vehicle packs laid out exactly
-///   this way.
+///   this way. `mod_analyzer` separately preserves an explicit `Plugins\LSPDFR\`
+///   game-root package layout (optionally inside one `Grand Theft Auto V\` wrapper);
+///   folder packages without that layout keep the generic `mods\` destination.
 /// - `.asi`/native `.dll`/Menyoo are uncommon in the LSPDFR ecosystem (which doesn't
 ///   use ScriptHookV) but are still resolved to sane SP-equivalent defaults in case a
 ///   hybrid install mixes in a ScriptHookV-based mod alongside LSPDFR — and indeed the
@@ -256,6 +257,10 @@ impl ModeProvider for LegacyLspdfrProvider {
         self.game_root.join(MODS_SUBFOLDER).join(relative)
     }
 
+    fn lspdfr_package_game_root(&self) -> Option<&Path> {
+        Some(&self.game_root)
+    }
+
     fn resolve_add_on_pack_target(&self, pack_name: &str, relative: &Path) -> PathBuf {
         self.game_root
             .join(MODS_SUBFOLDER)
@@ -311,6 +316,10 @@ impl ModeProvider for EnhancedLspdfrProvider {
 
     fn resolve_folder_replacer_target(&self, relative: &Path) -> PathBuf {
         self.game_root.join(MODS_SUBFOLDER).join(relative)
+    }
+
+    fn lspdfr_package_game_root(&self) -> Option<&Path> {
+        Some(&self.game_root)
     }
 
     fn resolve_add_on_pack_target(&self, pack_name: &str, relative: &Path) -> PathBuf {

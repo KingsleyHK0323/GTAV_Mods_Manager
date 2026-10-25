@@ -117,7 +117,7 @@
     "title": "Install Mod",
     "pick_title": "Choose a mod file",
     "pick_body_sp": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets plain single-player conventions for whichever edition (Legacy/Enhanced) is detected on this machine.",
-    "pick_body_lspdfr": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets LSPDFR conventions — managed .dll callouts/plugins go to `Plugins\\`, not SHVDN's `scripts\\`.",
+    "pick_body_lspdfr": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). Standalone managed .dll files go to `Plugins\\`. Packages with an explicit `Plugins\\LSPDFR\\` game-root layout preserve that path (including one `Grand Theft Auto V` wrapper); archives or folders containing DLLs without a recognized layout are refused as ambiguous.",
     "pick_body_fivem-client": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets the FiveM client folder set above — set that first if it's empty.",
     "pick_button": "Choose file…",
     "analyzing": "Analyzing…",
@@ -365,7 +365,7 @@
     "title": "LSPDFR · Legacy",
     "badge": "RAGE Plugin Hook",
     "subtitle": "Managed through <mono>RAGEPluginHook.exe</mono>, not the game's own launcher. Callouts and plugins install to <mono>Plugins\\</mono>. This list is filtered to LSPDFR mods installed from this page.",
-    "known_limitation": "<strong>Known limitation:</strong> callout packs and other RAGE Plugin Hook plugins both install as a managed <mono>.dll</mono>, so this app can't yet tell them apart automatically — everything lands in <mono>Plugins\\</mono> rather than the community's <mono>Plugins\\LSPDFR\\</mono> subfolder for callouts specifically. Move a callout there yourself if a pack expects it. (Confirmed against a real LSPDFR install's backup — see the provider module docs; this specific callout-subfolder nuance is the one part not yet automated, not an unverified guess about the whole convention.)"
+    "known_limitation": "<strong>Known limitation:</strong> standalone callout and other RAGE Plugin Hook <mono>.dll</mono> files cannot be distinguished automatically, so standalone DLLs go to <mono>Plugins\\</mono>; move a callout to <mono>Plugins\\LSPDFR\\</mono> if it requires that location. Packages with an explicit game-root layout are mapped automatically, while archives or folders with DLLs and no recognized layout are refused as ambiguous."
   },
   "enhancedLspdfr": {
     "title": "LSPDFR · Enhanced",

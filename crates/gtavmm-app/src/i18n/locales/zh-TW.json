@@ -117,7 +117,7 @@
     "title": "安裝 Mod",
     "pick_title": "選擇 mod 檔案",
     "pick_body_sp": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。會依這台機器偵測到的版本（Legacy/Enhanced）套用一般單機版慣例。",
-    "pick_body_lspdfr": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。這裡套用 LSPDFR 慣例——受管理的 .dll callout/外掛會裝到 `Plugins\\`，不是 SHVDN 的 `scripts\\`。",
+    "pick_body_lspdfr": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。單獨的受管理 .dll 會裝到 `Plugins\\`。明確包含 `Plugins\\LSPDFR\\` 遊戲根目錄結構的套件會保留該路徑（也會剝除一層 `Grand Theft Auto V` 包裝資料夾）；含 DLL 但無法辨認結構的壓縮檔或資料夾會因目標不明而拒絕安裝。",
     "pick_body_fivem-client": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。會安裝到上面設定的 FiveM 用戶端資料夾——如果還沒填，請先設定。",
     "pick_button": "選擇檔案…",
     "analyzing": "分析中…",
@@ -365,7 +365,7 @@
     "title": "LSPDFR · Legacy",
     "badge": "RAGE Plugin Hook",
     "subtitle": "透過 <mono>RAGEPluginHook.exe</mono> 管理，不是遊戲自己的啟動器。Callout 跟外掛安裝到 <mono>Plugins\\</mono>。這個清單只顯示從本頁安裝的 LSPDFR 模組。",
-    "known_limitation": "<strong>已知限制：</strong>callout 套件跟其他 RAGE Plugin Hook 外掛都是安裝成受管理的 <mono>.dll</mono>，這個 App 目前還無法自動分辨兩者——全部都會落在 <mono>Plugins\\</mono>，而不是社群慣例裡 callout 專用的 <mono>Plugins\\LSPDFR\\</mono> 子資料夾。如果套件需要，請自行把 callout 搬過去。（已對照真實 LSPDFR 安裝的備份確認過——詳見 provider 模組文件；這個 callout 子資料夾的細節是唯一還沒自動化的部分，不是對整個慣例的未驗證猜測。）"
+    "known_limitation": "<strong>已知限制：</strong>單獨的 callout 與其他 RAGE Plugin Hook <mono>.dll</mono> 無法自動分辨，因此單獨 DLL 會裝到 <mono>Plugins\\</mono>；若 callout 需要該位置，請自行移至 <mono>Plugins\\LSPDFR\\</mono>。明確包含遊戲根目錄結構的套件會自動映射；含 DLL 但無法辨認結構的壓縮檔或資料夾會因目標不明而拒絕安裝。"
   },
   "enhancedLspdfr": {
     "title": "LSPDFR · Enhanced",

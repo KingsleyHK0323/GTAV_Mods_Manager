@@ -34,6 +34,10 @@ in the App; and the SP→FiveM converter. Legacy SP and Legacy
 LSPDFR support batch enable/disable from the installed-mod list. GTA SP/LSPDFR previews and
 installs require a configured game path and refuse page/edition mismatches instead of falling
 back to automatic detection.
+LSPDFR folders and archives with an explicit `Plugins/LSPDFR` game-root layout preserve that
+path, including packages wrapped in one `Grand Theft Auto V` folder. Packages containing DLLs
+without a recognized layout are refused as ambiguous; standalone managed DLLs still target
+`Plugins/` and may need to be moved to `Plugins/LSPDFR/` when they are callouts.
 First-run setup saves the detected install unless you choose another folder. Reinstall and
 uninstall actions, component checks, and full backup/restore use the configured path and validate
 the active page's edition before acting. App-created full backups record their GTA V edition;

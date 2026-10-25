@@ -225,6 +225,39 @@ fn classify_folder_with_name_hint(
         return classify_oiv(&oiv_path);
     }
 
+    if let Some(game_root) = provider.lspdfr_package_game_root() {
+        match find_lspdfr_package_root(input)? {
+            LspdfrRootMatch::Ambiguous(reason) => {
+                return Ok(unsupported("lspdfr package", &reason));
+            }
+            LspdfrRootMatch::Found(package_root) => {
+                let files = walkdir::WalkDir::new(&package_root)
+                    .into_iter()
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| entry.file_type().is_file())
+                    .map(|entry| {
+                        let relative = entry
+                            .path()
+                            .strip_prefix(&package_root)
+                            .unwrap_or(entry.path());
+                        PlannedFile {
+                            source: entry.path().to_path_buf(),
+                            target: game_root.join(relative),
+                        }
+                    })
+                    .collect();
+                return Ok(ModPlan::new(ModFormat::FolderReplacer, files));
+            }
+            LspdfrRootMatch::None if contains_dll_file(input) => {
+                return Ok(unsupported(
+                    "lspdfr package",
+                    "contains DLL files but has no explicit Plugins/LSPDFR game-root layout; confirm the package paths and arrange the files manually before installing",
+                ));
+            }
+            LspdfrRootMatch::None => {}
+        }
+    }
+
     let files = walkdir::WalkDir::new(input)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -239,6 +272,107 @@ fn classify_folder_with_name_hint(
         .collect();
 
     Ok(ModPlan::new(ModFormat::FolderReplacer, files))
+}
+
+enum LspdfrRootMatch {
+    None,
+    Found(PathBuf),
+    Ambiguous(String),
+}
+
+fn find_lspdfr_package_root(input: &Path) -> CoreResult<LspdfrRootMatch> {
+    let direct = find_lspdfr_root_in(input)?;
+    if let LspdfrRootMatch::Ambiguous(_) = &direct {
+        return Ok(direct);
+    }
+
+    let wrappers = matching_child_directories(input, "Grand Theft Auto V")?;
+    if wrappers.len() > 1 {
+        return Ok(LspdfrRootMatch::Ambiguous(
+            "contains multiple case-insensitive Grand Theft Auto V wrapper folders".to_string(),
+        ));
+    }
+    let wrapped = if let Some(wrapper) = wrappers.first() {
+        find_lspdfr_root_in(wrapper)?
+    } else {
+        LspdfrRootMatch::None
+    };
+    if let LspdfrRootMatch::Ambiguous(_) = &wrapped {
+        return Ok(wrapped);
+    }
+
+    let mut candidates = Vec::new();
+    if let LspdfrRootMatch::Found(path) = direct {
+        candidates.push(path);
+    }
+    if let LspdfrRootMatch::Found(path) = wrapped {
+        candidates.push(path);
+    }
+
+    match candidates.len() {
+        0 => Ok(LspdfrRootMatch::None),
+        1 => Ok(LspdfrRootMatch::Found(candidates.remove(0))),
+        _ => Ok(LspdfrRootMatch::Ambiguous(
+            "contains more than one possible Plugins/LSPDFR game-root layout".to_string(),
+        )),
+    }
+}
+
+fn find_lspdfr_root_in(parent: &Path) -> CoreResult<LspdfrRootMatch> {
+    let plugins_dirs = matching_child_directories(parent, "Plugins")?;
+    if plugins_dirs.len() > 1 {
+        return Ok(LspdfrRootMatch::Ambiguous(
+            "contains multiple case-insensitive Plugins folders".to_string(),
+        ));
+    }
+    let Some(plugins_dir) = plugins_dirs.first() else {
+        return Ok(LspdfrRootMatch::None);
+    };
+
+    let lspdfr_dirs = matching_child_directories(plugins_dir, "LSPDFR")?;
+    if lspdfr_dirs.len() > 1 {
+        return Ok(LspdfrRootMatch::Ambiguous(
+            "contains multiple case-insensitive Plugins/LSPDFR folders".to_string(),
+        ));
+    }
+    if lspdfr_dirs.is_empty() {
+        Ok(LspdfrRootMatch::None)
+    } else {
+        // The LSPDFR directory confirms the layout, but all files in this game-root
+        // folder belong to the package (including root-level DLL dependencies and
+        // resources beside Plugins/LSPDFR).
+        Ok(LspdfrRootMatch::Found(parent.to_path_buf()))
+    }
+}
+
+fn matching_child_directories(parent: &Path, expected_name: &str) -> CoreResult<Vec<PathBuf>> {
+    let mut matches = Vec::new();
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(expected_name)
+        {
+            matches.push(entry.path());
+        }
+    }
+    Ok(matches)
+}
+
+fn contains_dll_file(input: &Path) -> bool {
+    walkdir::WalkDir::new(input)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry.file_type().is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+        })
 }
 
 fn classify_add_on_pack(
@@ -531,7 +665,9 @@ fn classify_oiv(_input: &Path) -> CoreResult<ModPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::LegacySpProvider;
+    use crate::providers::{
+        EnhancedLspdfrProvider, LegacyLspdfrProvider, LegacySpProvider, ModeProvider,
+    };
 
     fn provider(game_root: &Path) -> LegacySpProvider {
         LegacySpProvider::new(game_root.to_path_buf())
@@ -705,6 +841,201 @@ mod tests {
         let plan = classify(&zip_path, &provider(&game_root)).unwrap();
         assert_eq!(plan.format, ModFormat::Zip);
         assert_eq!(plan.files.len(), 1);
+    }
+
+    #[test]
+    fn lspdfr_zip_with_game_root_layout_maps_all_files_from_game_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let zip_path = dir.path().join("MCCCallouts.zip");
+        write_test_zip(
+            &zip_path,
+            &[
+                ("CalloutInterfaceAPI.dll", b"dependency"),
+                ("plugins/LSPDFR/MCCCallouts.dll", b"callout"),
+                ("lspdfr/audio/MCCCallouts/Audio.dat", b"audio"),
+                ("ReadMe.pdf", b"package instructions"),
+            ],
+        );
+
+        let providers: [Box<dyn ModeProvider>; 2] = [
+            Box::new(LegacyLspdfrProvider::new(game_root.clone())),
+            Box::new(EnhancedLspdfrProvider::new(game_root.clone())),
+        ];
+        for provider in providers {
+            let plan = classify(&zip_path, provider.as_ref()).unwrap();
+
+            assert_eq!(plan.format, ModFormat::Zip);
+            assert_eq!(plan.files.len(), 4);
+            assert!(plan.files.iter().any(|file| {
+                file.target == game_root.join("CalloutInterfaceAPI.dll")
+            }));
+            assert!(plan.files.iter().any(|file| {
+                file.target == game_root.join("plugins/LSPDFR/MCCCallouts.dll")
+            }));
+            assert!(plan.files.iter().any(|file| {
+                file.target == game_root.join("lspdfr/audio/MCCCallouts/Audio.dat")
+            }));
+            assert!(plan
+                .files
+                .iter()
+                .any(|file| file.target == game_root.join("ReadMe.pdf")));
+        }
+    }
+
+    #[test]
+    fn lspdfr_zip_strips_the_explicit_grand_theft_auto_v_wrapper_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let zip_path = dir.path().join("StoryCallouts.zip");
+        write_test_zip(
+            &zip_path,
+            &[
+                ("grand theft auto v/CalloutInterfaceAPI.dll", b"dependency"),
+                (
+                    "grand theft auto v/plugins/lspdfr/StoryCallouts.dll",
+                    b"callout",
+                ),
+                ("INSTRUCTIONS.txt", b"install the named folder contents"),
+            ],
+        );
+
+        let plan = classify(
+            &zip_path,
+            &LegacyLspdfrProvider::new(game_root.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(plan.format, ModFormat::Zip);
+        assert_eq!(plan.files.len(), 2);
+        assert!(plan.files.iter().any(|file| {
+            file.target == game_root.join("CalloutInterfaceAPI.dll")
+        }));
+        assert!(plan.files.iter().any(|file| {
+            file.target == game_root.join("plugins/LSPDFR/StoryCallouts.dll")
+        }));
+        assert!(!plan
+            .files
+            .iter()
+            .any(|file| file.target.ends_with("INSTRUCTIONS.txt")));
+    }
+
+    #[test]
+    fn ambiguous_lspdfr_zip_with_dlls_is_refused_instead_of_mapped_to_mods() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let zip_path = dir.path().join("UnknownCallout.zip");
+        write_test_zip(
+            &zip_path,
+            &[("UnknownCallout.dll", b"callout"), ("readme.txt", b"readme")],
+        );
+
+        let plan = classify(
+            &zip_path,
+            &LegacyLspdfrProvider::new(game_root),
+        )
+        .unwrap();
+
+        assert!(matches!(plan.format, ModFormat::Unsupported(_)));
+        assert!(plan.files.is_empty());
+    }
+
+    #[test]
+    fn lspdfr_folder_with_explicit_game_root_layout_maps_from_the_folder_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let mod_folder = dir.path().join("extracted_callout");
+        std::fs::create_dir_all(mod_folder.join("Plugins/LSPDFR")).unwrap();
+        std::fs::write(mod_folder.join("CalloutInterfaceAPI.dll"), b"dependency").unwrap();
+        std::fs::write(mod_folder.join("Plugins/LSPDFR/Callout.dll"), b"callout").unwrap();
+
+        let plan = classify(
+            &mod_folder,
+            &LegacyLspdfrProvider::new(game_root.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(plan.format, ModFormat::FolderReplacer);
+        assert_eq!(plan.files.len(), 2);
+        assert!(plan
+            .files
+            .iter()
+            .any(|file| file.target == game_root.join("CalloutInterfaceAPI.dll")));
+        assert!(plan.files.iter().any(|file| {
+            file.target == game_root.join("Plugins/LSPDFR/Callout.dll")
+        }));
+    }
+
+    #[test]
+    fn ambiguous_lspdfr_folder_with_dlls_is_refused_instead_of_mapped_to_mods() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let mod_folder = dir.path().join("unknown_callout");
+        std::fs::create_dir_all(&mod_folder).unwrap();
+        std::fs::write(mod_folder.join("UnknownCallout.dll"), b"callout").unwrap();
+
+        let plan = classify(
+            &mod_folder,
+            &LegacyLspdfrProvider::new(game_root),
+        )
+        .unwrap();
+
+        assert!(matches!(plan.format, ModFormat::Unsupported(_)));
+        assert!(plan.files.is_empty());
+    }
+
+    #[test]
+    fn lspdfr_archive_with_multiple_explicit_roots_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let zip_path = dir.path().join("ambiguous.zip");
+        write_test_zip(
+            &zip_path,
+            &[
+                ("Plugins/LSPDFR/Direct.dll", b"direct"),
+                (
+                    "Grand Theft Auto V/Plugins/LSPDFR/Wrapped.dll",
+                    b"wrapped",
+                ),
+            ],
+        );
+
+        let plan = classify(
+            &zip_path,
+            &LegacyLspdfrProvider::new(game_root),
+        )
+        .unwrap();
+
+        assert!(matches!(plan.format, ModFormat::Unsupported(_)));
+        assert!(plan.files.is_empty());
+    }
+
+    #[test]
+    fn lspdfr_zip_with_a_plain_replacer_still_targets_mods() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let zip_path = dir.path().join("replacer.zip");
+        write_test_zip(&zip_path, &[("update/x64/dlcpacks/thing.rpf", b"payload")]);
+
+        let plan = classify(
+            &zip_path,
+            &LegacyLspdfrProvider::new(game_root.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(plan.format, ModFormat::Zip);
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(
+            plan.files[0].target,
+            game_root.join("mods/update/x64/dlcpacks/thing.rpf")
+        );
     }
 
     #[test]
