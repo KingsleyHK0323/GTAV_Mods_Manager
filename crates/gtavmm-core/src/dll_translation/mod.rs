@@ -1,16 +1,15 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! AI-assisted translation of user-facing strings embedded directly in a `.NET`
 //! (IL-only) mod `.dll`, via direct binary patching of the `#US` (User Strings) heap —
 //! no source code, no recompilation, no external `.NET` tooling.
 //!
-//! **Defaults to never overwriting the original file.** By default writes to a new
-//! sibling file (`Name.dll` -> `Name.<lang>.dll`), same convention as
+//! **Never overwrites the original or an existing output file.** By default writes to
+//! a new sibling file (`Name.dll` -> `Name.<lang>.dll`), same convention as
 //! [`crate::translation::generate_draft`] for config-file translation drafts. The
-//! caller may instead pass an explicit output path to [`patch_with_translations`]
-//! (2026-08-30, added per user request) — including the original path itself, to
-//! overwrite in place — but that's an opt-in the caller (the app's UI, behind
-//! confirmation) makes; this module has no default that touches the original.
+//! caller may pass a different output path to [`patch_with_translations`], but the
+//! output path must not already exist; the file is created exclusively to close the
+//! preflight/write race.
 //!
 //! Verified 2026-08-30 at production scale against a real GTA V mod (`GangModV1.dll`,
 //! 143/143 real user-facing strings translated and patched across 207 call sites,
@@ -40,6 +39,7 @@
 
 mod pe;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -206,11 +206,9 @@ pub fn translate_draft(
 /// translatable-string count — a mismatch (e.g. the file changed since it was last
 /// inspected) is refused rather than guessed at.
 ///
-/// Passing `output_path` equal to `dll_path` overwrites the original in place — this
-/// function itself has no opinion on whether that's a good idea; it's the caller's job
-/// (the UI, behind an explicit opt-in and a confirmation) to decide the user actually
-/// wants that, since it's the one case here that can't be undone without the user's own
-/// backup.
+/// The output path must not already exist. The original and every existing file are
+/// protected; an explicit path equal to `dll_path` is rejected by exclusive creation.
+/// OpenAI-Codex: Keep this contract aligned with the UI and exclusive file write below.
 pub fn patch_with_translations(
     dll_path: &Path,
     target_language: &str,
@@ -268,7 +266,12 @@ pub fn patch_with_translations(
         Some(p) => p.to_path_buf(),
         None => sibling_translated_path(dll_path, target_language)?,
     };
-    std::fs::write(&output_path, &patched)?;
+    // OpenAI-Codex: fail atomically at path creation if this output already exists.
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output_path)?;
+    output.write_all(&patched)?;
 
     Ok(DllTranslationOutcome {
         output_path,

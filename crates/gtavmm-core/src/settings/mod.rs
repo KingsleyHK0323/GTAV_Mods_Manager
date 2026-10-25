@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Loads/saves the singleton `user_settings` row.
 
@@ -10,7 +11,8 @@ use crate::error::CoreResult;
 pub fn load(conn: &Connection) -> CoreResult<UserSettings> {
     let settings = conn.query_row(
         "SELECT language, default_auto_backup, game_install_path_override, \
-                theme, terms_accepted_version, onboarding_completed, backup_root_override \
+                theme, terms_accepted_version, onboarding_completed, backup_root_override, \
+                fivem_client_path \
          FROM user_settings WHERE id = 1",
         [],
         |row| {
@@ -22,6 +24,7 @@ pub fn load(conn: &Connection) -> CoreResult<UserSettings> {
                 terms_accepted_version: row.get(4)?,
                 onboarding_completed: row.get::<_, i64>(5)? != 0,
                 backup_root_override: row.get(6)?,
+                fivem_client_path: row.get(7)?,
             })
         },
     )?;
@@ -33,7 +36,7 @@ pub fn save(conn: &Connection, settings: &UserSettings) -> CoreResult<()> {
         "UPDATE user_settings \
          SET language = ?1, default_auto_backup = ?2, game_install_path_override = ?3, \
              theme = ?4, terms_accepted_version = ?5, onboarding_completed = ?6, \
-             backup_root_override = ?7 \
+             backup_root_override = ?7, fivem_client_path = ?8 \
          WHERE id = 1",
         rusqlite::params![
             settings.language,
@@ -43,6 +46,7 @@ pub fn save(conn: &Connection, settings: &UserSettings) -> CoreResult<()> {
             settings.terms_accepted_version,
             settings.onboarding_completed as i64,
             settings.backup_root_override,
+            settings.fivem_client_path,
         ],
     )?;
     Ok(())
@@ -76,6 +80,7 @@ mod tests {
             language: "zh-TW".to_string(),
             default_auto_backup: false,
             game_install_path_override: Some(r"D:\Games\GTAV".to_string()),
+            fivem_client_path: Some(r"D:\Games\FiveM\FiveM.app".to_string()),
             theme: Some("dark".to_string()),
             terms_accepted_version: Some(CURRENT_TERMS_VERSION.to_string()),
             onboarding_completed: true,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! `ModeProvider`: the abstraction that lets later modes (Enhanced SP, Legacy/Enhanced
 //! LSPDFR, FiveM) be added without rewriting `mod_analyzer`'s dispatch logic. Each

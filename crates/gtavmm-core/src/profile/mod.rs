@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Multi-profile support: a Profile is a named set of mods that should be active
 //! together (e.g. a "Roleplay" profile vs. a "Graphics Showcase" profile on the same

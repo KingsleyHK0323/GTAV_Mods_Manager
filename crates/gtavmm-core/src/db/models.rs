@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Typed row structs mirroring `schema.sql`. CRUD lives in the modules that own each
 //! table's lifecycle (`install`, `uninstall`, `state`, `recycle_bin`, `settings`), not
@@ -94,6 +95,8 @@ pub struct UserSettings {
     pub language: String,
     pub default_auto_backup: bool,
     pub game_install_path_override: Option<String>,
+    /// The locally saved FiveM Client root, separate from the GTA V install override.
+    pub fivem_client_path: Option<String>,
     /// The user's *choice* — "system", "dark" or "light" — not the palette that
     /// choice currently resolves to. Storing the choice keeps it meaningful when
     /// the OS preference changes later. `None` means never chosen.
@@ -115,6 +118,7 @@ impl Default for UserSettings {
             language: "en".to_string(),
             default_auto_backup: true,
             game_install_path_override: None,
+            fivem_client_path: None,
             theme: None,
             terms_accepted_version: None,
             onboarding_completed: false,

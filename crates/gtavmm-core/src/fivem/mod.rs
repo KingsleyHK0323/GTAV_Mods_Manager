@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! FiveM support: server `resources\` dependency-order resolution (this module) and a
 //! client-side asset-mod provider (`providers::FiveMClientProvider`).

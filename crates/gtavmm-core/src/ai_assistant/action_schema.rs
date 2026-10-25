@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Plan → 同意 → 執行 safety model (v0.7.x): the **limited, closed** set of actions an
 //! AI-generated Plan is allowed to be built from (design doc §3.2). Deliberately does

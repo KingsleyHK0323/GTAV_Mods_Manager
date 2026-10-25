@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Game installation detection: Windows Registry → Steam `libraryfolders.vdf` → Epic
 //! manifest scan → Rockstar launcher key (Windows), Proton `compatdata` scan (Linux),

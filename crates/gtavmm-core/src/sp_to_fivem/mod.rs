@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! SP → FiveM Add-on/vehicle-pack converter (v0.7.x, scope confirmed to **vehicle/Add-on
 //! packs only** — script mod conversion is a future, unscheduled extension).

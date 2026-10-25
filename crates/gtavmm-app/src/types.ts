@@ -199,7 +199,17 @@ export interface PromptTemplate {
   updated_at: string;
 }
 
-export type AiProviderKind = "ollama" | "cloud";
+// OpenAI-Codex: Keep these values aligned with gtavmm_core::ai_assistant::AiProviderKind.
+export type AiProviderKind =
+  | "ollama"
+  | "ollama_cloud"
+  | "openai"
+  | "anthropic"
+  | "deepseek"
+  | "openrouter"
+  | "google_ai"
+  | "nvidia"
+  | "cloud";
 
 export interface AiSettings {
   enabled: boolean;

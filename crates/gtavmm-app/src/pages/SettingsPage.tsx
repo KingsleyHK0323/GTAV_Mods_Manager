@@ -16,6 +16,49 @@ const LANGUAGE_LABELS: Record<string, string> = {
 /** Read from package.json so the shown version cannot drift from the build. */
 const APP_VERSION: string = pkg.version;
 
+// OpenAI-Codex: Keep selectable providers aligned with the Rust provider adapters.
+const AI_PROVIDER_OPTIONS = [
+  { id: "ollama", label: "settings.ai_provider_ollama" },
+  { id: "ollama_cloud", label: "settings.ai_provider_ollama_cloud" },
+  { id: "openai", label: "settings.ai_provider_openai" },
+  { id: "anthropic", label: "settings.ai_provider_anthropic" },
+  { id: "deepseek", label: "settings.ai_provider_deepseek" },
+  { id: "openrouter", label: "settings.ai_provider_openrouter" },
+  { id: "google_ai", label: "settings.ai_provider_google_ai" },
+  { id: "nvidia", label: "settings.ai_provider_nvidia" },
+] as const;
+
+const AI_PROVIDER_LABELS: Record<
+  AiProviderKind,
+  | "settings.ai_provider_ollama"
+  | "settings.ai_provider_ollama_cloud"
+  | "settings.ai_provider_openai"
+  | "settings.ai_provider_anthropic"
+  | "settings.ai_provider_deepseek"
+  | "settings.ai_provider_openrouter"
+  | "settings.ai_provider_google_ai"
+  | "settings.ai_provider_nvidia"
+  | "settings.ai_provider_cloud"
+> = {
+  ollama: "settings.ai_provider_ollama",
+  ollama_cloud: "settings.ai_provider_ollama_cloud",
+  openai: "settings.ai_provider_openai",
+  anthropic: "settings.ai_provider_anthropic",
+  deepseek: "settings.ai_provider_deepseek",
+  openrouter: "settings.ai_provider_openrouter",
+  google_ai: "settings.ai_provider_google_ai",
+  nvidia: "settings.ai_provider_nvidia",
+  cloud: "settings.ai_provider_cloud",
+};
+
+function providerNeedsApiKey(provider: AiProviderKind): boolean {
+  return provider !== "ollama";
+}
+
+function providerRequiresModel(provider: AiProviderKind): boolean {
+  return provider !== "ollama" && provider !== "cloud";
+}
+
 /** Only the fields the card faces summarise. */
 interface CardSettings {
   default_auto_backup: boolean;
@@ -54,7 +97,7 @@ export function SettingsPage() {
 
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
   const [aiHasKey, setAiHasKey] = useState(false);
-  const [aiProviderChoice, setAiProviderChoice] = useState<AiProviderKind>("cloud");
+  const [aiProviderChoice, setAiProviderChoice] = useState<AiProviderKind>("ollama");
   const [aiModel, setAiModel] = useState("");
   const [aiEndpoint, setAiEndpoint] = useState("");
   const [aiApiKey, setAiApiKey] = useState("");
@@ -89,38 +132,60 @@ export function SettingsPage() {
     invoke<AiSettings>("ai_load_settings")
       .then((s) => {
         setAiSettings(s);
-        if (s.provider) setAiProviderChoice(s.provider);
+        const provider = s.provider ?? "ollama";
+        setAiProviderChoice(provider);
         setAiModel((s.provider === "ollama" ? s.ollama_model : s.cloud_model) ?? "");
         setAiEndpoint(s.cloud_endpoint ?? "");
+        invoke<boolean>("ai_has_provider_api_key", { provider })
+          .then(setAiHasKey)
+          .catch(() => setAiHasKey(false));
       })
       .catch(() => {
         // No Tauri runtime (plain browser preview) — leave the AI panel in its
         // not-yet-loaded state rather than showing a scary error for something
         // that's expected outside the real app.
       });
-    invoke<boolean>("ai_has_cloud_api_key")
-      .then(setAiHasKey)
-      .catch(() => {});
   }
 
   useEffect(() => {
     loadAiSettings();
   }, []);
 
+  function selectAiProvider(provider: AiProviderKind) {
+    if (provider === aiProviderChoice) return;
+    setAiProviderChoice(provider);
+    setAiModel("");
+    setAiApiKey("");
+    setAiError(null);
+    setAiHasKey(false);
+    invoke<boolean>("ai_has_provider_api_key", { provider })
+      .then(setAiHasKey)
+      .catch(() => setAiHasKey(false));
+  }
+
   async function enableAi() {
     setAiBusy(true);
     setAiError(null);
     setAiStatus(null);
     try {
+      if (providerRequiresModel(aiProviderChoice) && !aiModel.trim()) {
+        throw new Error(t("settings.ai_model_required"));
+      }
+      if (providerNeedsApiKey(aiProviderChoice) && !aiApiKey.trim() && !aiHasKey) {
+        throw new Error(t("settings.ai_api_key_required"));
+      }
+      if (providerNeedsApiKey(aiProviderChoice) && aiApiKey.trim()) {
+        await invoke("ai_set_provider_api_key", {
+          provider: aiProviderChoice,
+          key: aiApiKey.trim(),
+        });
+        setAiApiKey("");
+      }
       await invoke("ai_enable", {
         provider: aiProviderChoice,
         model: aiModel.trim() || null,
         cloudEndpoint: aiProviderChoice === "cloud" ? aiEndpoint.trim() || null : null,
       });
-      if (aiProviderChoice === "cloud" && aiApiKey.trim()) {
-        await invoke("ai_set_cloud_api_key", { key: aiApiKey.trim() });
-        setAiApiKey("");
-      }
       setAiStatus(t("settings.ai_enabled_status"));
       loadAiSettings();
     } catch (e) {
@@ -331,7 +396,7 @@ export function SettingsPage() {
           <>
             <p>
               {t("settings.ai_currently_enabled", {
-                provider: aiSettings.provider,
+                provider: aiSettings.provider ? t(AI_PROVIDER_LABELS[aiSettings.provider]) : "",
                 model: aiSettings.provider === "ollama" ? aiSettings.ollama_model : aiSettings.cloud_model,
               })}
             </p>
@@ -342,21 +407,32 @@ export function SettingsPage() {
         ) : (
           <>
             <div className="radio-row" style={{ marginBottom: 14 }}>
-              <div
-                className="radio-card"
-                data-active={String(aiProviderChoice === "ollama")}
-                onClick={() => setAiProviderChoice("ollama")}
-              >
-                {t("settings.ai_provider_ollama")}
-              </div>
-              <div
-                className="radio-card"
-                data-active={String(aiProviderChoice === "cloud")}
-                onClick={() => setAiProviderChoice("cloud")}
-              >
-                {t("settings.ai_provider_cloud")}
-              </div>
+              {AI_PROVIDER_OPTIONS.map(({ id: provider, label }) => (
+                <div
+                  key={provider}
+                  className="radio-card"
+                  data-active={String(aiProviderChoice === provider)}
+                  onClick={() => selectAiProvider(provider)}
+                >
+                  {t(label)}
+                </div>
+              ))}
+              {aiProviderChoice === "cloud" && (
+                <div
+                  className="radio-card"
+                  data-active="true"
+                  onClick={() => selectAiProvider("cloud")}
+                >
+                  {t("settings.ai_provider_cloud")}
+                </div>
+              )}
             </div>
+
+            {providerNeedsApiKey(aiProviderChoice) && (
+              <p className="diagnosis-disclaimer" style={{ margin: "0 0 12px" }}>
+                {t("settings.ai_cloud_notice")}
+              </p>
+            )}
 
             <div className="field-group">
               <label>{t("settings.ai_model_label")}</label>
@@ -364,7 +440,7 @@ export function SettingsPage() {
                 type="text"
                 value={aiModel}
                 onChange={(e) => setAiModel(e.target.value)}
-                placeholder={aiProviderChoice === "ollama" ? "llama3" : "e.g. liquid/lfm-2.5-2.6b:free"}
+                placeholder={aiProviderChoice === "ollama" ? "llama3" : t("settings.ai_model_placeholder")}
               />
             </div>
 
@@ -398,7 +474,32 @@ export function SettingsPage() {
               </>
             )}
 
-            <button className="btn-primary" type="button" onClick={enableAi} disabled={aiBusy}>
+            {providerNeedsApiKey(aiProviderChoice) && aiProviderChoice !== "cloud" && (
+              <div className="field-group">
+                <label>
+                  {t("settings.ai_api_key_label")} {" "}
+                  {aiHasKey && (
+                    <span style={{ color: "var(--success)", fontWeight: 600 }}>
+                      {t("settings.ai_api_key_already_set")}
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="password"
+                  value={aiApiKey}
+                  onChange={(e) => setAiApiKey(e.target.value)}
+                  placeholder={t("settings.ai_api_key_placeholder")}
+                />
+              </div>
+            )}
+
+            <button
+              className="btn-primary"
+              type="button"
+              onClick={enableAi}
+              disabled={aiBusy || (providerRequiresModel(aiProviderChoice) && !aiModel.trim()) ||
+                (providerNeedsApiKey(aiProviderChoice) && !aiApiKey.trim() && !aiHasKey)}
+            >
               {aiBusy ? t("settings.ai_enabling") : t("settings.ai_enable_button")}
             </button>
           </>

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! SQLite connection management and schema migration. No cloud/network component —
 //! this is a purely local file, per the project's offline-first, no-first-party-server
@@ -14,7 +15,7 @@ use crate::error::CoreResult;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const PROFILE_SCHEMA_SQL: &str = include_str!("profile_schema.sql");
-const CURRENT_SCHEMA_VERSION: i32 = 11;
+const CURRENT_SCHEMA_VERSION: i32 = 13;
 
 /// Resolves the default database file location under the OS-appropriate app-data
 /// directory (via the `directories` crate), e.g.
@@ -332,6 +333,34 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
             "UPDATE installed_mod SET mode = 'legacy-sp', mode_inferred = 1 WHERE mode IS NULL",
             [],
         )?;
+    }
+    if user_version < 12 {
+        // Preserve the original root and exact file set for safe recycle-bin restores.
+        let mut stmt = conn.prepare("PRAGMA table_info(recycle_bin_entry)")?;
+        let column_names = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        if !column_names.iter().any(|name| name == "snapshot_metadata") {
+            conn.execute(
+                "ALTER TABLE recycle_bin_entry ADD COLUMN snapshot_metadata TEXT",
+                [],
+            )?;
+        }
+    }
+    if user_version < 13 {
+        // Remember the user's FiveM Client root separately from the GTA V override.
+        let mut stmt = conn.prepare("PRAGMA table_info(user_settings)")?;
+        let column_names = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        if !column_names.iter().any(|name| name == "fivem_client_path") {
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN fivem_client_path TEXT",
+                [],
+            )?;
+        }
     }
     if user_version < CURRENT_SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;

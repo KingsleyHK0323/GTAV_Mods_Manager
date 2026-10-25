@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Computes MD5/SHA-1/SHA-256 for an arbitrary local file — checking a downloaded mod
 //! against a known-good hash the author published, or (later) feeding a known-fix rule

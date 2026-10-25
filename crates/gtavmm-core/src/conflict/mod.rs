@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Compares a planned install's target files against existing `InstalledModFile` rows
 //! (the "who owns which file" ownership tracking that lets the core distinguish, e.g.,

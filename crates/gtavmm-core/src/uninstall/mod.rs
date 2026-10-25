@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Uninstall: delete each `installed_mod_file.target_path` (guarded by
 //! `protected_files::check_write`, which should never actually trigger here since
@@ -22,18 +23,20 @@ use crate::protected_files;
 use crate::recycle_bin::RETENTION_DAYS;
 
 struct ModFileRow {
+    id: i64,
     target_path: String,
     backup_path: Option<String>,
 }
 
 fn load_mod_files(conn: &Connection, mod_id: i64) -> CoreResult<Vec<ModFileRow>> {
     let mut stmt = conn.prepare(
-        "SELECT target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
+        "SELECT id, target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
     )?;
     let rows = stmt.query_map([mod_id], |row| {
         Ok(ModFileRow {
-            target_path: row.get(0)?,
-            backup_path: row.get(1)?,
+            id: row.get(0)?,
+            target_path: row.get(1)?,
+            backup_path: row.get(2)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -109,6 +112,7 @@ pub fn uninstall(
     );
     let entry_dir = recycle_bin_root.join(&entry_dir_name);
     std::fs::create_dir_all(&entry_dir)?;
+    let mut snapshotted_file_ids = Vec::new();
 
     let mut pack_names = std::collections::HashSet::new();
 
@@ -125,6 +129,7 @@ pub fn uninstall(
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::copy(&target, &snapshot_path)?;
+            snapshotted_file_ids.push(file.id);
             std::fs::remove_file(&target)?;
         }
 
@@ -145,14 +150,17 @@ pub fn uninstall(
 
     let deleted_at = chrono::Utc::now();
     let expires_at = deleted_at + chrono::Duration::days(RETENTION_DAYS);
+    let snapshot_metadata =
+        crate::recycle_bin::encode_snapshot_metadata(game_root, snapshotted_file_ids)?;
 
     let db_tx = conn.transaction()?;
     db_tx.execute(
-        "INSERT INTO recycle_bin_entry (original_installed_mod_id, mod_package_snapshot_path, deleted_at, expires_at) \
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO recycle_bin_entry (original_installed_mod_id, mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
             installed_mod_id,
             entry_dir.to_string_lossy(),
+            snapshot_metadata,
             deleted_at.to_rfc3339(),
             expires_at.to_rfc3339(),
         ],
@@ -257,14 +265,29 @@ mod tests {
 
         uninstall(&mut conn, mod_id, &game_root, &recycle_root).unwrap();
 
-        let (snapshot_path, deleted_at, expires_at): (String, String, String) = conn
+        let (snapshot_path, metadata_json, deleted_at, expires_at): (String, String, String, String) = conn
             .query_row(
-                "SELECT mod_package_snapshot_path, deleted_at, expires_at \
+                "SELECT mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at \
                  FROM recycle_bin_entry WHERE original_installed_mod_id = ?1",
                 [mod_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
+
+        let metadata: crate::recycle_bin::SnapshotMetadata =
+            serde_json::from_str(&metadata_json).unwrap();
+        let file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            metadata.target_root,
+            game_root.to_string_lossy().into_owned()
+        );
+        assert_eq!(metadata.file_ids, vec![file_id]);
 
         let snapshot_file = PathBuf::from(&snapshot_path).join("mod.asi");
         assert!(snapshot_file.exists(), "snapshot should preserve the file");

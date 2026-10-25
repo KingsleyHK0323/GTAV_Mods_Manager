@@ -32,6 +32,8 @@ export interface ModWorkspaceProps {
   banner?: { tone: "info" | "warn"; icon: string; key: string };
   /** Legacy SP alone offers the spreadsheet export. */
   showExcelExport?: boolean;
+  /** OpenAI-Codex: Legacy SP and LSPDFR expose batch enable/disable controls. */
+  bulkStateActions?: boolean;
   stats: StatSpec[];
   /** LSPDFR category chips, in chip order. Omit on the SP pages. */
   categories?: string[];
@@ -60,6 +62,7 @@ export function ModWorkspace({
   badges = [],
   banner,
   showExcelExport = false,
+  bulkStateActions = false,
   stats,
   categories,
   toolsVariant = "components",
@@ -267,6 +270,7 @@ export function ModWorkspace({
                 onChanged={loadMods}
                 mode={pageMode}
                 showCategory={Boolean(categories)}
+                bulkStateActions={bulkStateActions}
               />
             )}
           </div>

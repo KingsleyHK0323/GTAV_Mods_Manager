@@ -1,10 +1,12 @@
 import { ModWorkspace } from "../components/ModWorkspace";
 import { countByStatus } from "../lib/modStats";
 
+/** OpenAI-Codex: Enable batch state controls on the GTA V Legacy LSPDFR page only. */
 export function LegacyLspdfrPage() {
   return (
     <ModWorkspace
       pageMode="legacy-lspdfr"
+      bulkStateActions
       titleKey="legacyLspdfr.title"
       subtitleKey="legacyLspdfr.subtitle"
       categories={["callouts", "eup-peds", "vehicles", "other"]}

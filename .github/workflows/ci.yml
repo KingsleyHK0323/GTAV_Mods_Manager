@@ -1,9 +1,14 @@
+# OpenAI-Codex: Shared validation workflow for branch checks and releases.
 name: CI
 
 on:
   push:
     branches: [Source_Code]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
@@ -24,6 +29,21 @@ jobs:
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/gtavmm-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/gtavmm-app
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: crates/gtavmm-app
+        run: npm run build
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'

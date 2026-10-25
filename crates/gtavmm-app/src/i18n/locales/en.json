@@ -1,4 +1,5 @@
 {
+  "_codex_signature": "OpenAI-Codex",
   "brand": {
     "name": "GTAV Mods Manager"
   },
@@ -34,8 +35,19 @@
     "ai_currently_enabled": "Enabled — {{provider}} ({{model}})",
     "ai_disable_button": "Disable",
     "ai_provider_ollama": "Local (Ollama)",
-    "ai_provider_cloud": "Cloud (OpenAI-compatible)",
+    "ai_provider_ollama_cloud": "Ollama Cloud (API key)",
+    "ai_provider_openai": "OpenAI (API key)",
+    "ai_provider_anthropic": "Anthropic (API key)",
+    "ai_provider_deepseek": "DeepSeek (API key)",
+    "ai_provider_openrouter": "OpenRouter (API key)",
+    "ai_provider_google_ai": "Google AI (API key)",
+    "ai_provider_nvidia": "NVIDIA AI (API key)",
+    "ai_provider_cloud": "Legacy custom OpenAI-compatible endpoint",
     "ai_model_label": "Model",
+    "ai_model_placeholder": "Enter the model ID for this provider",
+    "ai_model_required": "Enter a model ID for the selected provider.",
+    "ai_api_key_required": "Enter an API key for this provider or use a key already stored for it.",
+    "ai_cloud_notice": "For API-key providers, translation text is sent to that provider and may incur charges. Ollama Local keeps requests on this machine.",
     "ai_endpoint_label": "Endpoint URL",
     "ai_api_key_label": "API key",
     "ai_api_key_already_set": "(already set)",
@@ -87,7 +99,19 @@
     "status_active": "Active",
     "status_disabled": "Disabled",
     "status_uninstalled": "Uninstalled",
-    "install_mod_button": "+ Install Mod"
+    "install_mod_button": "+ Install Mod",
+    "select_column": "Select",
+    "select_mod": "Select {{name}}",
+    "select_all_mods": "Select all installed mods",
+    "selected_mods": "{{count}} selected",
+    "bulk_enable_selected": "Enable selected ({{count}})",
+    "bulk_disable_selected": "Disable selected ({{count}})",
+    "bulk_enabling": "Enabling selected…",
+    "bulk_disabling": "Disabling selected…",
+    "bulk_enabled": "Enabled {{count}} mod(s).",
+    "bulk_disabled": "Disabled {{count}} mod(s).",
+    "bulk_enable_error": "Could not enable {{count}} mod(s): {{details}}",
+    "bulk_disable_error": "Could not disable {{count}} mod(s): {{details}}"
   },
   "installWizard": {
     "title": "Install Mod",
@@ -214,7 +238,16 @@
     "hash_computing": "Computing…",
     "editor_open_files": "Open files",
     "editor_close_tab": "Close tab",
-    "editor_lines": "{{count}} lines"
+    "editor_lines": "{{count}} lines",
+    "config_translation_language": "Target language",
+    "config_translation_language_placeholder": "e.g. zh-TW",
+    "config_translation_button": "Generate translation draft",
+    "config_translation_busy": "Translating…",
+    "config_translation_ai_notice": "The complete saved file will be sent to your configured AI provider. API-key providers send it to their service and may incur charges. The original stays unchanged; an existing same-language draft is not overwritten.",
+    "config_translation_save_first": "Save your editor changes before translating so the draft uses the saved file.",
+    "config_translation_error": "Could not generate a translation draft: {{error}}",
+    "config_translation_output": "Draft created: {{path}}",
+    "config_translation_open": "Open draft in editor"
   },
   "promptLibrary": {
     "title": "AI Workflow / Prompt Library",
@@ -274,10 +307,11 @@
     "more_strings": "…and {{count}} more.",
     "ai_translate_button": "Translate all with AI",
     "ai_translating": "Translating…",
+    "ai_provider_notice": "When an API-key provider is selected, the DLL text is sent to that provider and may incur charges. Ollama Local keeps requests on this machine.",
     "edit_fields_note": "Every field below is editable — type your own translation directly, or use AI to fill them all in and then adjust any of them by hand. Fields start pre-filled with the original text, so leaving one unchanged is safe.",
-    "original_untouched_note": "By default the translated copy is written next to the original as a new sibling file — the original is never touched. You can choose a different output location, or opt in to overwriting the original file directly instead.",
-    "overwrite_original_label": "Overwrite the original file instead of writing a new one",
-    "overwrite_original_warning": "(cannot be undone unless you have your own backup)",
+    "original_untouched_note": "The translated copy is written as a new file. The original is never changed, and an existing output file is never overwritten.",
+    "overwrite_original_label": "Overwrite original (disabled; a new output file is required)",
+    "overwrite_original_warning": "(original files are protected)",
     "output_file_label": "Output file",
     "output_default": "{{path}} (default — next to original)",
     "output_overwriting": "{{path}} (overwriting original)",
@@ -302,9 +336,22 @@
     "folder_placeholder": "Not set — required before installing anything",
     "picker_title": "Select your FiveM client folder",
     "browse": "Browse…",
+    "save_path": "Save path",
+    "saving_path": "Saving…",
+    "path_saved": "FiveM Client folder saved for next time.",
+    "path_load_error": "Could not load the saved FiveM Client folder: {{error}}",
+    "path_save_error": "Could not save the FiveM Client folder: {{error}}",
+    "actions_require_path": "Close this panel, enter or browse to the FiveM client folder, then reopen it to enable reinstall and uninstall.",
     "unverified_assumption": "<strong>Unverified assumption:</strong> client asset mods are assumed to reuse the same OpenIV <mono>mods\\</mono>-mirroring convention as SP mods, since no real FiveM client install has been available to confirm against. Treat this workspace as the least battle-tested of the six.",
-    "not_wired_title": "Mod list not wired yet",
-    "not_wired_body": "Unlike the Legacy/Enhanced pages (which reuse <mono>list_mods</mono> with a disclosed caveat), this page deliberately does <strong>not</strong> call it: <mono>installed_mod</mono> has no per-mode scoping, so showing those rows here would silently mix real GTA V game mods in with a FiveM client's own — actively misleading, not just imprecise. A real FiveM-client mod list needs either a schema change or a separate provider-scoped table before this can show real data."
+    "not_wired_title": "Installed FiveM client mods",
+    "not_wired_body": "This list only shows mods installed from the FiveM Client page.",
+    "panel_title": "Installed FiveM client mods",
+    "loading": "Loading FiveM client mods…",
+    "load_error": "Failed to load FiveM client mods: {{error}}",
+    "recycle_loading": "Loading recycle bin…",
+    "recycle_load_error": "Failed to load the FiveM Client recycle bin: {{error}}",
+    "retry": "Retry",
+    "empty_title": "No FiveM client mods installed yet"
   },
   "enhancedSp": {
     "title": "SP Mods · Enhanced",
@@ -507,5 +554,6 @@
     "cat_vehicles": "Vehicle packs",
     "cat_other": "Other plugins",
     "cat_framework": "Framework"
-  }
+  },
+  "_signature": "OpenAI-Codex"
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Add-on content packs (add-on vehicles, add-on maps, and anything else shipped as a
 //! standalone `dlc.rpf`) — distinct from *replace*-type mods, which just overwrite an

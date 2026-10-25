@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "0.2.1"
 edition = "2021"
-license = "AGPL-3.0-only"
+license = "PolyForm-Noncommercial-1.0.0"
 authors = ["SpaceSquare"]
 repository = "https://github.com/SpaceSquare640/GTAV_Mods_Manager"
 

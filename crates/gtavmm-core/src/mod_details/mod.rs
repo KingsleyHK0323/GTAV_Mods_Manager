@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Editing an installed mod's own `notes`/`link` fields — both columns already existed
 //! on `installed_mod` (surfaced read-only via `list_mods`), but nothing let the user

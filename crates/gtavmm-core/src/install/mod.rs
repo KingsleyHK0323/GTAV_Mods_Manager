@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! The install pipeline state machine: Analyzing (done by the caller via
 //! `mod_analyzer::classify`) → ConflictCheck → Backing_Up → Writing → Verifying →

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Command implementations, factored as plain functions so they're unit-testable
 //! without a running Tauri app — the `#[tauri::command]` wrappers below just marshal
@@ -195,6 +195,25 @@ fn mode_from_str(mode: &str) -> Result<gtavmm_core::providers::Mode, String> {
     }
 }
 
+/// OpenAI-Codex: Normalize FiveM roots and reject missing folders before file operations.
+fn normalize_game_path_for_mode<'a>(
+    game_path: Option<&'a str>,
+    mode: gtavmm_core::providers::Mode,
+) -> Result<Option<&'a str>, String> {
+    if mode != gtavmm_core::providers::Mode::FivemClient {
+        return Ok(game_path);
+    }
+
+    let path = game_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "fivem-client requires an explicit client directory".to_string())?;
+    if !std::path::Path::new(path).is_dir() {
+        return Err(format!("{path} is not an existing FiveM client directory"));
+    }
+    Ok(Some(path))
+}
+
 /// Read-only preview of what installing `path` would do — no files written, nothing
 /// recorded in the database. Mirrors the CLI's `inspect` command.
 pub fn inspect_mod_impl(
@@ -203,6 +222,7 @@ pub fn inspect_mod_impl(
     path: &str,
 ) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
     let core_mode = mode_from_str(mode)?;
+    let game_path = normalize_game_path_for_mode(game_path, core_mode)?;
     let (_, provider) =
         gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), core_mode)
             .map_err(|e| e.to_string())?;
@@ -237,6 +257,7 @@ pub fn install_mod_impl(
     // decides where files go, and the page is what gets recorded so this mod
     // shows up on the workspace it was installed from and nowhere else.
     let page = crate::page_mode::PageMode::parse(mode)?;
+    let game_path = normalize_game_path_for_mode(game_path, page.provider_mode())?;
     let input_path = std::path::Path::new(path);
     let (game_root, provider) =
         gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), page.provider_mode())
@@ -542,6 +563,75 @@ pub fn patch_dll_translations(
     )
 }
 
+/// OpenAI-Codex: Generate config drafts without overwriting an existing sibling file.
+pub fn generate_config_translation_draft_impl(
+    conn: &Connection,
+    source_path: &str,
+    target_language: &str,
+) -> Result<String, String> {
+    let target_language = target_language.trim();
+    let mut language_parts = target_language.split('-');
+    let primary_language = language_parts.next().unwrap_or_default();
+    if target_language.is_empty()
+        || target_language.len() > 35
+        || !(2..=8).contains(&primary_language.len())
+        || !primary_language
+            .bytes()
+            .all(|character| character.is_ascii_alphabetic())
+        || language_parts.any(|part| {
+            part.is_empty()
+                || part.len() > 8
+                || !part
+                    .bytes()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+    {
+        return Err(
+            "target language must start with a 2-8 letter code and use optional 1-8 character ASCII subtags"
+                .to_string(),
+        );
+    }
+
+    let source_path = std::path::Path::new(source_path);
+    let extension = source_path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("ini") && !extension.eq_ignore_ascii_case("xml") {
+        return Err("config translation only supports .ini and .xml files".to_string());
+    }
+
+    let stem = source_path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| format!("could not determine a file name for {}", source_path.display()))?;
+    let output_path = source_path.with_file_name(format!("{stem}.{target_language}.{extension}"));
+    match std::fs::symlink_metadata(&output_path) {
+        Ok(_) => {
+            return Err(format!(
+                "translation draft already exists at {}; move it or choose another target language",
+                output_path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+
+    gtavmm_core::translation::generate_draft(conn, source_path, target_language)
+        .map(|path| path.display().to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn generate_config_translation_draft(
+    state: tauri::State<crate::AppState>,
+    source_path: String,
+    target_language: String,
+) -> Result<String, String> {
+    let conn = state.conn.lock().map_err(|error| error.to_string())?;
+    generate_config_translation_draft_impl(&conn, &source_path, &target_language)
+}
+
 // ---------------------------------------------------------------------------
 // Activity log (gtavmm_core::history) — read-only viewer for install/uninstall/
 // enable/disable/restore events, previously only queryable from the CLI.
@@ -695,11 +785,19 @@ pub fn app_log_last_cleanup() -> Option<String> {
 // tested end-to-end against a real cloud provider; this wires it into the GUI.
 // ---------------------------------------------------------------------------
 
+// OpenAI-Codex: Keep the desktop provider IDs aligned with the core adapters.
 fn parse_provider_kind(
     provider: &str,
 ) -> Result<gtavmm_core::ai_assistant::AiProviderKind, String> {
     match provider {
         "ollama" => Ok(gtavmm_core::ai_assistant::AiProviderKind::Ollama),
+        "ollama_cloud" => Ok(gtavmm_core::ai_assistant::AiProviderKind::OllamaCloud),
+        "openai" => Ok(gtavmm_core::ai_assistant::AiProviderKind::OpenAI),
+        "anthropic" => Ok(gtavmm_core::ai_assistant::AiProviderKind::Anthropic),
+        "deepseek" => Ok(gtavmm_core::ai_assistant::AiProviderKind::DeepSeek),
+        "openrouter" => Ok(gtavmm_core::ai_assistant::AiProviderKind::OpenRouter),
+        "google_ai" => Ok(gtavmm_core::ai_assistant::AiProviderKind::GoogleAI),
+        "nvidia" => Ok(gtavmm_core::ai_assistant::AiProviderKind::Nvidia),
         "cloud" => Ok(gtavmm_core::ai_assistant::AiProviderKind::Cloud),
         other => Err(format!("unknown AI provider kind: {other}")),
     }
@@ -761,6 +859,19 @@ pub fn ai_set_cloud_api_key(key: String) -> Result<(), String> {
 #[tauri::command]
 pub fn ai_has_cloud_api_key() -> bool {
     gtavmm_core::ai_assistant::has_cloud_api_key()
+}
+
+#[tauri::command]
+pub fn ai_set_provider_api_key(provider: String, key: String) -> Result<(), String> {
+    let provider = parse_provider_kind(&provider)?;
+    gtavmm_core::ai_assistant::set_provider_api_key(provider, &key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn ai_has_provider_api_key(provider: String) -> Result<bool, String> {
+    let provider = parse_provider_kind(&provider)?;
+    Ok(gtavmm_core::ai_assistant::has_provider_api_key(provider))
 }
 
 #[tauri::command]
@@ -984,15 +1095,23 @@ pub fn restore_full_backup(zip_path: String, game_path: Option<String>) -> Resul
 pub fn list_recycle_bin_impl(
     conn: &Connection,
 ) -> Result<Vec<gtavmm_core::recycle_bin::RecycleBinEntry>, String> {
-    gtavmm_core::recycle_bin::list(conn).map_err(|e| e.to_string())
+    list_recycle_bin_for_mode_impl(conn, None)
+}
+
+pub fn list_recycle_bin_for_mode_impl(
+    conn: &Connection,
+    mode: Option<&str>,
+) -> Result<Vec<gtavmm_core::recycle_bin::RecycleBinEntry>, String> {
+    gtavmm_core::recycle_bin::list_for_mode(conn, mode).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn list_recycle_bin(
     state: tauri::State<crate::AppState>,
+    mode: Option<String>,
 ) -> Result<Vec<gtavmm_core::recycle_bin::RecycleBinEntry>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    list_recycle_bin_impl(&conn)
+    list_recycle_bin_for_mode_impl(&conn, mode.as_deref())
 }
 
 pub fn restore_recycle_bin_entry_impl(
@@ -1000,12 +1119,26 @@ pub fn restore_recycle_bin_entry_impl(
     entry_id: i64,
     game_path: Option<&str>,
 ) -> Result<(), String> {
-    let (game_root, _) =
-        gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
+    let has_recorded_root =
+        gtavmm_core::recycle_bin::has_recorded_snapshot_metadata(conn, entry_id)
             .map_err(|e| e.to_string())?;
+    let fallback_game_root = if has_recorded_root {
+        None
+    } else {
+        Some(
+            gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
+                .map_err(|e| e.to_string())?
+                .0,
+        )
+    };
     let backup_root = default_backup_root()?;
-    let result = gtavmm_core::recycle_bin::restore(conn, entry_id, &game_root, &backup_root)
-        .map_err(|e| e.to_string());
+    let result = gtavmm_core::recycle_bin::restore_with_optional_game_root(
+        conn,
+        entry_id,
+        fallback_game_root.as_deref(),
+        &backup_root,
+    )
+    .map_err(|e| e.to_string());
     if let Err(reason) = &result {
         let _ = gtavmm_core::app_log::error(&format!(
             "restore_recycle_bin_entry failed for entry #{entry_id}: {reason}"
@@ -1270,15 +1403,51 @@ pub fn uninstall_mod_impl(
     result
 }
 
+/// OpenAI-Codex: Resolve page-aware roots so FiveM Client paths bypass GTA V detection.
+pub fn uninstall_mod_for_page_impl(
+    conn: &mut Connection,
+    mod_id: i64,
+    game_path: Option<&str>,
+    mode: &str,
+    recycle_bin_root: &std::path::Path,
+) -> Result<(), String> {
+    let core_mode = mode_from_str(mode)?;
+    let game_path = normalize_game_path_for_mode(game_path, core_mode)?;
+
+    let (game_root, _) = gtavmm_core::providers::resolve(
+        game_path.map(std::path::Path::new),
+        core_mode,
+    )
+    .map_err(|e| e.to_string())?;
+    let result = gtavmm_core::uninstall::uninstall(conn, mod_id, &game_root, recycle_bin_root)
+        .map_err(|e| e.to_string());
+    if let Err(reason) = &result {
+        let _ = gtavmm_core::app_log::error(&format!(
+            "uninstall_mod failed for id {mod_id}: {reason}"
+        ));
+    }
+    result
+}
+
 #[tauri::command]
 pub fn uninstall_mod(
     state: tauri::State<crate::AppState>,
     mod_id: i64,
     game_path: Option<String>,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
     let recycle_bin_root = default_recycle_bin_root()?;
-    uninstall_mod_impl(&mut conn, mod_id, game_path.as_deref(), &recycle_bin_root)
+    match mode.as_deref() {
+        Some(mode) => uninstall_mod_for_page_impl(
+            &mut conn,
+            mod_id,
+            game_path.as_deref(),
+            mode,
+            &recycle_bin_root,
+        ),
+        None => uninstall_mod_impl(&mut conn, mod_id, game_path.as_deref(), &recycle_bin_root),
+    }
 }
 
 /// Replaces a mod's files from a newer download. The caller supplies the source
@@ -1458,6 +1627,44 @@ pub fn load_user_settings(
 ) -> Result<gtavmm_core::db::models::UserSettings, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     load_user_settings_impl(&conn)
+}
+
+pub fn load_fivem_client_path_impl(conn: &Connection) -> Result<Option<String>, String> {
+    gtavmm_core::settings::load(conn)
+        .map(|settings| settings.fivem_client_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_fivem_client_path(
+    state: tauri::State<crate::AppState>,
+) -> Result<Option<String>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    load_fivem_client_path_impl(&conn)
+}
+
+pub fn save_fivem_client_path_impl(conn: &Connection, path: &str) -> Result<String, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("FiveM Client path cannot be empty".to_string());
+    }
+    if !std::path::Path::new(path).is_dir() {
+        return Err(format!("{path} is not an existing directory"));
+    }
+
+    let mut settings = gtavmm_core::settings::load(conn).map_err(|e| e.to_string())?;
+    settings.fivem_client_path = Some(path.to_string());
+    gtavmm_core::settings::save(conn, &settings).map_err(|e| e.to_string())?;
+    Ok(path.to_string())
+}
+
+#[tauri::command]
+pub fn save_fivem_client_path(
+    state: tauri::State<crate::AppState>,
+    path: String,
+) -> Result<String, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    save_fivem_client_path_impl(&conn, &path)
 }
 
 /// How a panel wants one optional path changed.
@@ -2048,6 +2255,45 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("9999"), "unexpected message: {err}");
+    }
+
+    // OpenAI-Codex: Cover page-aware uninstall routing for the FiveM client root.
+    #[test]
+    fn fivem_client_uninstall_uses_the_explicit_client_root() {
+        let client_dir = tempfile::tempdir().unwrap();
+        let deployed = client_dir.path().join("client-mod.asi");
+        std::fs::write(&deployed, b"FiveM client mod").unwrap();
+
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) \
+             VALUES ('Client Mod', 'asi', ?1, 'active', 'fivem-client')",
+            [deployed.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        let mod_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+             VALUES (?1, ?2, 'hash')",
+            rusqlite::params![mod_id, deployed.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+        uninstall_mod_for_page_impl(
+            &mut conn,
+            mod_id,
+            Some(client_dir.path().to_str().unwrap()),
+            "fivem-client",
+            &client_dir.path().join("recycle_bin"),
+        )
+        .unwrap();
+
+        assert!(
+            !deployed.exists(),
+            "uninstall should remove the deployed client file"
+        );
+        assert_eq!(status_of(&conn, mod_id), "uninstalled");
+        assert_eq!(gtavmm_core::recycle_bin::list(&conn).unwrap().len(), 1);
     }
 
     #[test]

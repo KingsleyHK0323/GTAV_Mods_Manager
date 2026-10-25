@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Standalone bookmarks for mod page URLs (e.g. gta5-mods.com listings) — deliberately
 //! independent of `installed_mod`: a link is worth saving before a mod is ever

@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 --
 -- Schema version 2: multi-profile support. Applied via the same PRAGMA user_version
 -- gating as schema.sql (see db::mod::run_migrations) — CREATE TABLE IF NOT EXISTS

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Tauri command layer: thin IPC wrappers over `gtavmm-core`, mirroring the CLI's own
 //! role — no business logic lives here, only argument marshalling and error-to-string
@@ -44,6 +45,8 @@ pub fn run() {
             commands::accept_terms,
             commands::complete_onboarding,
             commands::load_user_settings,
+            commands::load_fivem_client_path,
+            commands::save_fivem_client_path,
             commands::update_user_settings,
             commands::validate_game_path,
             commands::disable_mod,
@@ -52,6 +55,7 @@ pub fn run() {
             commands::reinstall_mod,
             commands::inspect_dll,
             commands::translate_dll_draft,
+            commands::generate_config_translation_draft,
             commands::patch_dll_translations,
             commands::profile_list,
             commands::profile_create,
@@ -82,6 +86,9 @@ pub fn run() {
             commands::ai_disable,
             commands::ai_set_cloud_api_key,
             commands::ai_has_cloud_api_key,
+            // OpenAI-Codex: Expose provider-scoped credentials without sharing keys.
+            commands::ai_set_provider_api_key,
+            commands::ai_has_provider_api_key,
             commands::ai_ollama_available,
             commands::ai_diagnose,
             commands::check_components,

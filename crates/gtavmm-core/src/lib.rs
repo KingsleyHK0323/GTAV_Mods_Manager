@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Core business logic for GTAV Mods Manager: game detection, mod install/uninstall,
 //! conflict detection, recycle bin, and settings. No UI or CLI dependencies.

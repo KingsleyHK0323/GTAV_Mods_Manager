@@ -13,11 +13,12 @@ const SEP = /[\\/]/;
 /**
  * The real Tools page, matching the design's actual content — general-purpose
  * utilities not tied to a specific mode: a plain-text file editor (.ini/.xml/.json,
- * no built-in backup — back up first if unsure) and a hash calculator. Component
+ * AI translation drafts for saved .ini/.xml files, and a hash calculator. Component
  * Checker/Backup/Recycle Bin live embedded in each mods page instead (see
  * ModPageTools) — an earlier version of this page wrongly put them here, which
  * didn't match the design at all.
  */
+/** OpenAI-Codex: Generate safe AI translation drafts from saved config files. */
 export function ToolsPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>("editor");
@@ -34,6 +35,19 @@ export function ToolsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [manualPath, setManualPath] = useState("");
+  const [translationTargetLanguage, setTranslationTargetLanguage] = useState("zh-TW");
+  const [translationBusy, setTranslationBusy] = useState(false);
+  const [translationError, setTranslationError] = useState<{
+    sourcePath: string;
+    targetLanguage: string;
+    message: string;
+  } | null>(null);
+  const [translationDraft, setTranslationDraft] = useState<{
+    sourcePath: string;
+    sourceContent: string;
+    targetLanguage: string;
+    outputPath: string;
+  } | null>(null);
 
   const [hashPath, setHashPath] = useState("");
   const [hashes, setHashes] = useState<FileHashes | null>(null);
@@ -107,9 +121,34 @@ export function ToolsPage() {
 
   const active = files[activeIndex] ?? null;
   const fileType = active?.path.split(".").pop()?.toUpperCase() ?? "";
+  const canTranslateConfig = Boolean(active && /\.(ini|xml)$/i.test(active.path));
   const language = active ? languageFor(active.path) : "text";
   const lines = active ? active.content.split(NL) : [];
   const baseName = (p: string) => p.split(SEP).pop() ?? p;
+
+  async function generateConfigTranslationDraft() {
+    if (!active || active.content !== active.original || !translationTargetLanguage.trim()) return;
+    const targetLanguage = translationTargetLanguage.trim();
+    setTranslationBusy(true);
+    setTranslationError(null);
+    setTranslationDraft(null);
+    try {
+      const outputPath = await invoke<string>("generate_config_translation_draft", {
+        sourcePath: active.path,
+        targetLanguage,
+      });
+      setTranslationDraft({
+        sourcePath: active.path,
+        sourceContent: active.original,
+        targetLanguage,
+        outputPath,
+      });
+    } catch (error) {
+      setTranslationError({ sourcePath: active.path, targetLanguage, message: String(error) });
+    } finally {
+      setTranslationBusy(false);
+    }
+  }
 
   return (
     <section className="view" data-shown="true">
@@ -280,6 +319,75 @@ export function ToolsPage() {
                         />
                       </div>
                     </div>
+
+                    {canTranslateConfig && (
+                      <div className="panel" style={{ padding: "14px 16px", marginTop: 12 }}>
+                        <div className="field-group" style={{ marginBottom: 8 }}>
+                          <label htmlFor="config-translation-language">
+                            {t("tools.config_translation_language")}
+                          </label>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <input
+                              id="config-translation-language"
+                              type="text"
+                              value={translationTargetLanguage}
+                              disabled={translationBusy}
+                              onChange={(event) => setTranslationTargetLanguage(event.target.value)}
+                              placeholder={t("tools.config_translation_language_placeholder")}
+                              style={{ width: 150 }}
+                            />
+                            <button
+                              className="btn-ghost"
+                              type="button"
+                              onClick={generateConfigTranslationDraft}
+                              disabled={
+                                translationBusy ||
+                                active.content !== active.original ||
+                                !translationTargetLanguage.trim()
+                              }
+                            >
+                              {translationBusy
+                                ? t("tools.config_translation_busy")
+                                : t("tools.config_translation_button")}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="page-sub" role="note" style={{ margin: "8px 0 0" }}>
+                          {t("tools.config_translation_ai_notice")}
+                        </p>
+                        {active.content !== active.original && (
+                          <p className="page-sub" style={{ margin: "8px 0 0" }}>
+                            {t("tools.config_translation_save_first")}
+                          </p>
+                        )}
+                        {translationError?.sourcePath === active.path &&
+                          translationError.targetLanguage === translationTargetLanguage.trim() && (
+                            <p className="error" role="alert" style={{ marginTop: 8 }}>
+                              {t("tools.config_translation_error", {
+                                error: translationError.message,
+                              })}
+                            </p>
+                          )}
+                        {translationDraft?.sourcePath === active.path &&
+                          translationDraft.sourceContent === active.original &&
+                          translationDraft.targetLanguage === translationTargetLanguage.trim() && (
+                            <div style={{ marginTop: 8 }}>
+                              <p className="page-sub mono" style={{ margin: "0 0 8px" }}>
+                                {t("tools.config_translation_output", {
+                                  path: translationDraft.outputPath,
+                                })}
+                              </p>
+                              <button
+                                className="btn-ghost"
+                                type="button"
+                                onClick={() => openFile(translationDraft.outputPath)}
+                              >
+                                {t("tools.config_translation_open")}
+                              </button>
+                            </div>
+                          )}
+                      </div>
+                    )}
 
                     <div className="editor-status">
                       <span className="eyebrow">{fileType}</span>

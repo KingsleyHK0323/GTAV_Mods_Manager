@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Linux detection: scans common Steam library locations for GTA V's Proton
 //! `compatdata` prefix (Steam App ID 271590) and checks the expected install path

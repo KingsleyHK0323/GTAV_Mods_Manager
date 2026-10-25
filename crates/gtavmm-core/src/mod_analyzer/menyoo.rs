@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Menyoo `.xml` target-subfolder detection. Menyoo stores different content types
 //! (outfits, spooner placements, vehicles, weapon loadouts) as XML files that must

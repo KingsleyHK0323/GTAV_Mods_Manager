@@ -2,8 +2,9 @@
 
 This project is currently maintained by a single author (with AI-assisted
 development). It's not actively recruiting contributors yet, but the repository is
-public and AGPL-3.0-licensed, and external pull requests are welcome — reviewed at
-the maintainer's discretion, since there's no formal review team yet.
+source-available under the PolyForm Noncommercial License 1.0.0, and external pull
+requests are welcome — reviewed at the maintainer's discretion, since there's no formal
+review team yet.
 
 ## Development setup
 
@@ -13,12 +14,25 @@ cargo test
 cargo run -p gtavmm-cli -- --help
 ```
 
-Before submitting a change, make sure it passes what CI checks (`.github/workflows/ci.yml`):
+<!-- Updated by OpenAI-Codex: Document GitHub Actions validation. -->
+
+GitHub Actions runs the shared CI workflow on hosted Windows and Ubuntu runners for pushes to
+`Source_Code` and pull requests. It checks the Rust workspace and builds the frontend. For local
+validation, the workflow commands are:
 
 ```
 cargo fmt --all -- --check
+cargo build --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+```
+
+From the repository root, run the frontend checks locally with:
+
+```
+cd crates/gtavmm-app
+npm ci
+npm run build
 ```
 
 ## Project structure
@@ -36,14 +50,14 @@ modifying `mod_analyzer`'s classification logic.
 ## License and attribution
 
 By submitting a contribution, you agree it will be licensed under this project's
-[AGPL-3.0-only license](LICENSE) (code) or CC BY-SA 4.0 (data, e.g. rule/translation
-content), matching whichever part of the repository it touches.
+[PolyForm Noncommercial License 1.0.0](LICENSE), subject to any separate third-party
+license notices that apply to contributed files.
 
 If you publish a modified version or a derivative work of this project, please
 **conspicuously credit** it — e.g. in your README's opening section or an in-app
 About/Credits screen — along the lines of: "Based on GTAV Mods Manager, original
-author: SpaceSquare." This is a project convention layered on top of (not a
-replacement for) the AGPL-3.0's own notice-preservation requirements.
+author: SpaceSquare; licensor: Kingsley." This is a project convention layered on top
+of (not a replacement for) the PolyForm license's notice-preservation requirements.
 
 ## Reporting issues
 

@@ -1,4 +1,5 @@
 {
+  "_codex_signature": "OpenAI-Codex",
   "brand": {
     "name": "GTAV Mods Manager"
   },
@@ -34,8 +35,19 @@
     "ai_currently_enabled": "已啟用 — {{provider}}（{{model}}）",
     "ai_disable_button": "停用",
     "ai_provider_ollama": "本機（Ollama）",
-    "ai_provider_cloud": "雲端（OpenAI 相容端點）",
+    "ai_provider_ollama_cloud": "Ollama 雲端（API 金鑰）",
+    "ai_provider_openai": "OpenAI（API 金鑰）",
+    "ai_provider_anthropic": "Anthropic（API 金鑰）",
+    "ai_provider_deepseek": "DeepSeek（API 金鑰）",
+    "ai_provider_openrouter": "OpenRouter（API 金鑰）",
+    "ai_provider_google_ai": "Google AI（API 金鑰）",
+    "ai_provider_nvidia": "NVIDIA AI（API 金鑰）",
+    "ai_provider_cloud": "舊版自訂 OpenAI 相容端點",
     "ai_model_label": "模型",
+    "ai_model_placeholder": "輸入此供應商的模型 ID",
+    "ai_model_required": "請輸入所選供應商的模型 ID。",
+    "ai_api_key_required": "請輸入此供應商的 API 金鑰，或使用已儲存的金鑰。",
+    "ai_cloud_notice": "使用 API 金鑰供應商時，翻譯文字會傳送至該供應商，並可能產生費用。本機 Ollama 的請求會留在這台電腦。",
     "ai_endpoint_label": "端點網址",
     "ai_api_key_label": "API 金鑰",
     "ai_api_key_already_set": "（已設定）",
@@ -87,7 +99,19 @@
     "status_active": "啟用中",
     "status_disabled": "已停用",
     "status_uninstalled": "已解除安裝",
-    "install_mod_button": "+ 安裝 Mod"
+    "install_mod_button": "+ 安裝 Mod",
+    "select_column": "選取",
+    "select_mod": "選取 {{name}}",
+    "select_all_mods": "選取所有已安裝的 Mod",
+    "selected_mods": "已選取 {{count}} 個",
+    "bulk_enable_selected": "啟用所選項目（{{count}}）",
+    "bulk_disable_selected": "停用所選項目（{{count}}）",
+    "bulk_enabling": "正在啟用所選項目…",
+    "bulk_disabling": "正在停用所選項目…",
+    "bulk_enabled": "已啟用 {{count}} 個 Mod。",
+    "bulk_disabled": "已停用 {{count}} 個 Mod。",
+    "bulk_enable_error": "有 {{count}} 個 Mod 無法啟用：{{details}}",
+    "bulk_disable_error": "有 {{count}} 個 Mod 無法停用：{{details}}"
   },
   "installWizard": {
     "title": "安裝 Mod",
@@ -214,7 +238,16 @@
     "hash_computing": "計算中…",
     "editor_open_files": "已開啟的檔案",
     "editor_close_tab": "關閉分頁",
-    "editor_lines": "{{count}} 行"
+    "editor_lines": "{{count}} 行",
+    "config_translation_language": "目標語言",
+    "config_translation_language_placeholder": "例如 zh-TW",
+    "config_translation_button": "產生翻譯草稿",
+    "config_translation_busy": "翻譯中…",
+    "config_translation_ai_notice": "已儲存檔案的完整內容會傳送至您設定的 AI 供應商；使用 API 金鑰供應商時，內容會傳送至該服務並可能產生費用。原檔不會變更，已有的相同語言草稿也不會被覆寫。",
+    "config_translation_save_first": "請先儲存編輯內容，再產生翻譯草稿；草稿會以已儲存的檔案為準。",
+    "config_translation_error": "產生翻譯草稿失敗：{{error}}",
+    "config_translation_output": "草稿已建立：{{path}}",
+    "config_translation_open": "在編輯器開啟草稿"
   },
   "promptLibrary": {
     "title": "AI Workflow / 提示詞範本庫",
@@ -274,10 +307,11 @@
     "more_strings": "……還有 {{count}} 個。",
     "ai_translate_button": "用 AI 翻譯全部",
     "ai_translating": "翻譯中…",
+    "ai_provider_notice": "使用 API 金鑰供應商時，DLL 字串會傳送至該供應商，並可能產生費用。本機 Ollama 的請求會留在這台電腦。",
     "edit_fields_note": "下面每一個欄位都可以直接編輯——您可以親自輸入翻譯內容，也可以先用 AI 一次填滿全部欄位、再自己手動調整任何一條。欄位預設會先填入原文，所以沒動過的欄位是安全的（不會被清空）。",
-    "original_untouched_note": "預設會把翻譯後的內容另外寫成原始檔案旁邊的新檔案——原始檔案不會被動到。您也可以選擇別的輸出位置，或選擇直接覆寫原始檔案。",
-    "overwrite_original_label": "直接覆寫原始檔案，不另外產生新檔案",
-    "overwrite_original_warning": "（除非您自己有備份，否則無法復原）",
+    "original_untouched_note": "翻譯結果會另存為新檔案。原始檔案不會變更，已存在的輸出檔也不會被覆寫。",
+    "overwrite_original_label": "覆寫原始檔案（已停用；必須另存新檔）",
+    "overwrite_original_warning": "（原始檔案受保護）",
     "output_file_label": "輸出檔案",
     "output_default": "{{path}}（預設——與原始檔案同資料夾）",
     "output_overwriting": "{{path}}（將覆寫原始檔案）",
@@ -302,9 +336,22 @@
     "folder_placeholder": "尚未設定——安裝任何東西前必須先設定",
     "picker_title": "選擇你的 FiveM 用戶端資料夾",
     "browse": "瀏覽…",
+    "save_path": "儲存路徑",
+    "saving_path": "儲存中…",
+    "path_saved": "已記住 FiveM 用戶端資料夾，下次開啟時會載入。",
+    "path_load_error": "載入已儲存的 FiveM 用戶端資料夾失敗：{{error}}",
+    "path_save_error": "儲存 FiveM 用戶端資料夾失敗：{{error}}",
+    "actions_require_path": "請先關閉此面板，輸入或瀏覽至 FiveM 用戶端資料夾，再重新開啟此面板以重裝或解除安裝。",
     "unverified_assumption": "<strong>未經驗證的假設：</strong>用戶端資產 mod 假設沿用跟 SP mod 相同的 OpenIV <mono>mods\\</mono> 鏡射慣例，因為目前沒有真實的 FiveM 用戶端安裝可以確認。這個工作區是六個裡面驗證程度最低的一個。",
-    "not_wired_title": "Mod 清單還沒接上",
-    "not_wired_body": "跟 Legacy/Enhanced 頁面不同（那些頁面重用 <mono>list_mods</mono> 並揭露限制），這頁刻意<strong>不</strong>呼叫它：<mono>installed_mod</mono> 沒有分模式的欄位，如果在這裡顯示那些資料，會把真正的 GTA V 遊戲 mod 悄悄混進 FiveM 用戶端的清單——這已經不是不精確，是會誤導人。真正的 FiveM 用戶端 mod 清單需要資料庫改欄位或另開一張 provider 專屬的表,現在還做不到。"
+    "not_wired_title": "已安裝的 FiveM 用戶端 Mod",
+    "not_wired_body": "此清單只顯示從 FiveM Client 頁面安裝的 Mod。",
+    "panel_title": "已安裝的 FiveM 用戶端 Mod",
+    "loading": "正在載入 FiveM 用戶端 Mod…",
+    "load_error": "載入 FiveM 用戶端 Mod 失敗：{{error}}",
+    "recycle_loading": "正在載入回收桶…",
+    "recycle_load_error": "載入 FiveM 用戶端回收桶失敗：{{error}}",
+    "retry": "重試",
+    "empty_title": "尚未安裝 FiveM 用戶端 Mod"
   },
   "enhancedSp": {
     "title": "SP Mods · Enhanced",
@@ -507,5 +554,6 @@
     "cat_vehicles": "車輛包",
     "cat_other": "其他外掛",
     "cat_framework": "框架"
-  }
+  },
+  "_signature": "OpenAI-Codex"
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! AI Workflow / Prompt template library — the user's own reusable prompt text,
 //! stored and edited via plain CRUD. **Not** part of the AI Assistant's Action Schema

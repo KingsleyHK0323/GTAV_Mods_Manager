@@ -18,6 +18,7 @@ const REVIEW_ROW_HEIGHT = 76;
 
 type Step = "pick" | "inspecting" | "review" | "done" | "error";
 
+// OpenAI-Codex: Keep translation output provider-aware and protect source files.
 /**
  * Wizard UI for gtavmm_core::dll_translation — direct binary patching of user-facing
  * strings embedded in a .NET (IL-only) mod DLL's #US heap. Never overwrites the
@@ -185,6 +186,9 @@ export function DllTranslationPage() {
                 {aiBusy ? t("dllTranslation.ai_translating") : t("dllTranslation.ai_translate_button")}
               </button>
             </div>
+            <p className="diagnosis-disclaimer" style={{ margin: "0 0 12px" }}>
+              {t("dllTranslation.ai_provider_notice")}
+            </p>
             <p className="page-sub">{t("dllTranslation.edit_fields_note")}</p>
             <VirtualList
               className="config-list"
@@ -233,6 +237,7 @@ export function DllTranslationPage() {
                 type="checkbox"
                 id="dllOverwriteOriginal"
                 checked={overwriteOriginal}
+                disabled
                 onChange={(e) => setOverwriteOriginal(e.target.checked)}
               />
               <label htmlFor="dllOverwriteOriginal">

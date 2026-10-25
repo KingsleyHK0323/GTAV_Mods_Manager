@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Classifies a mod package (file/folder/archive) into a plan of `(source, target)`
 //! file mappings, per the format table in the MVP spec: `.asi`/`.dll` (native and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! The known-fix rule library `apply_known_fix` (design doc §3.2) draws from. Per the
 //! design discussion this ships alongside: rules are **bundled into the binary at

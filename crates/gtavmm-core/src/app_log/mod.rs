@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! A plain local diagnostic log file — separate from [`crate::history`] (which
 //! records mod install/uninstall/enable/disable *events* for the user to browse) and

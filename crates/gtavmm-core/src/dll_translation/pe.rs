@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Hand-rolled PE + CLI metadata parsing, just enough to locate and patch the `#US`
 //! (User Strings) heap directly. Ported from the standalone R&D spike

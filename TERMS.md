@@ -1,18 +1,18 @@
 # Terms of Use
 
-_Last updated: 2026-08-27_
+_Last updated: 2026-10-25_
 
 > This document describes the terms under which you may use GTAV Mods Manager. It is
 > a plain-language summary written for players and contributors, not a substitute for
 > the license text — see [LICENSE](LICENSE) for the actual legal terms governing the
-> source code.
+> source code and project-authored bundled content.
 
 ## 1. Acceptance
 
 By downloading, installing, or using GTAV Mods Manager ("the Software"), you agree to
-these terms and to the [AGPL-3.0-only license](LICENSE) governing the source code.
-Data assets (e.g. any bundled conflict/dependency rule data, translation packs) are
-licensed separately under CC BY-SA 4.0 where noted.
+these terms and to the [PolyForm Noncommercial License 1.0.0](LICENSE) governing the
+source code and project-authored bundled data and documentation. Third-party content
+retains its own license and notices.
 
 ## 2. Not affiliated with Rockstar Games or Take-Two Interactive
 
@@ -63,8 +63,8 @@ includes a SHA-256 checksum — verify your download matches it.
 
 You may not use this Software to:
 
-- Resell, repackage, or commercially redistribute it or derivative works in violation
-  of the [AGPL-3.0 license](LICENSE);
+- Use or distribute the Software for a commercial purpose not permitted by the
+  [PolyForm Noncommercial License 1.0.0](LICENSE);
 - Circumvent game security mechanisms, anti-cheat systems, or online service
   protections;
 - Distribute malicious mod content;
@@ -74,7 +74,7 @@ You may not use this Software to:
 ## 7. No warranty; limitation of liability
 
 The Software is provided "as is," without warranty of any kind, to the fullest extent
-permitted by law — see [LICENSE](LICENSE) sections 15–17 for the full legal text. In
+permitted by law — see the [PolyForm license](LICENSE) for its No Liability terms. In
 particular, we are not liable for damage to your game installation, save data, or
 system arising from use of the Software, including from third-party mod content it
 installs at your direction.

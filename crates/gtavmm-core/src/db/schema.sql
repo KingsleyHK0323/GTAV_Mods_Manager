@@ -1,4 +1,5 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+-- OpenAI-Codex
 --
 -- Initial schema. Applied once via PRAGMA user_version gating in db::mod::run_migrations.
 -- See docs/planning (Obsidian vault, not part of this repo) 15-MVP-Detailed-Spec for the

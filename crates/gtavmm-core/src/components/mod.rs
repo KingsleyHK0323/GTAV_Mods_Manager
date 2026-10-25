@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Component Checker: detects whether the essential third-party dependencies
 //! (ScriptHookV, ScriptHookVDotNet, OpenIV/OpenRPF) are present in a Legacy GTA V

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Exports installed-mod records to a styled `.xlsx` workbook — the "Excel Export"
 //! feature validated by the old prototype: two sheets ("Installed Mods" for

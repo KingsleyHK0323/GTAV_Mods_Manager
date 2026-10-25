@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Recycle bin: snapshot-at-uninstall-time storage of deployed files (written by
 //! `uninstall`), no count limit, 15-day retention (`expires_at = deleted_at + 15
@@ -15,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, CoreResult};
 use crate::protected_files;
@@ -35,11 +36,22 @@ pub struct RecycleBinEntry {
 /// list` used to run this query inline; factored out here so the GUI can show the
 /// same thing without duplicating it.
 pub fn list(conn: &Connection) -> CoreResult<Vec<RecycleBinEntry>> {
+    list_for_mode(conn, None)
+}
+
+/// Lists recycle-bin entries, optionally restricted to the owning mod's workspace mode.
+pub fn list_for_mode(
+    conn: &Connection,
+    mode: Option<&str>,
+) -> CoreResult<Vec<RecycleBinEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT id, original_installed_mod_id, deleted_at, expires_at \
-         FROM recycle_bin_entry ORDER BY deleted_at DESC",
+        "SELECT rb.id, rb.original_installed_mod_id, rb.deleted_at, rb.expires_at \
+         FROM recycle_bin_entry AS rb \
+         LEFT JOIN installed_mod AS owner_mod ON owner_mod.id = rb.original_installed_mod_id \
+         WHERE (?1 IS NULL OR owner_mod.mode = ?1) \
+         ORDER BY rb.deleted_at DESC",
     )?;
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map([mode], |row| {
         Ok(RecycleBinEntry {
             id: row.get(0)?,
             original_installed_mod_id: row.get(1)?,
@@ -53,17 +65,38 @@ pub fn list(conn: &Connection) -> CoreResult<Vec<RecycleBinEntry>> {
 struct RecycleBinEntryRow {
     original_installed_mod_id: Option<i64>,
     mod_package_snapshot_path: String,
+    snapshot_metadata: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SnapshotMetadata {
+    pub target_root: String,
+    pub file_ids: Vec<i64>,
+}
+
+pub(crate) fn encode_snapshot_metadata(
+    target_root: &Path,
+    file_ids: Vec<i64>,
+) -> CoreResult<String> {
+    serde_json::to_string(&SnapshotMetadata {
+        target_root: target_root.to_string_lossy().into_owned(),
+        file_ids,
+    })
+    .map_err(|error| CoreError::UnsupportedFormat {
+        reason: format!("could not encode recycle-bin snapshot metadata: {error}"),
+    })
 }
 
 fn load_entry(conn: &Connection, entry_id: i64) -> CoreResult<RecycleBinEntryRow> {
     conn.query_row(
-        "SELECT original_installed_mod_id, mod_package_snapshot_path \
+        "SELECT original_installed_mod_id, mod_package_snapshot_path, snapshot_metadata \
          FROM recycle_bin_entry WHERE id = ?1",
         [entry_id],
         |row| {
             Ok(RecycleBinEntryRow {
                 original_installed_mod_id: row.get(0)?,
                 mod_package_snapshot_path: row.get(1)?,
+                snapshot_metadata: row.get(2)?,
             })
         },
     )
@@ -78,6 +111,12 @@ fn load_entry(conn: &Connection, entry_id: i64) -> CoreResult<RecycleBinEntryRow
     })
 }
 
+/// Reports whether an entry has enough saved metadata to restore without a current
+/// game-root lookup.
+pub fn has_recorded_snapshot_metadata(conn: &Connection, entry_id: i64) -> CoreResult<bool> {
+    Ok(load_entry(conn, entry_id)?.snapshot_metadata.is_some())
+}
+
 /// Restores a recycle-bin entry: copies its snapshotted files back to their original
 /// target paths, reinstates the owning mod as `active`, and removes the entry (its
 /// job is done — the 15-day window doesn't apply to something already restored).
@@ -87,6 +126,17 @@ pub fn restore(
     game_root: &Path,
     backup_root: &Path,
 ) -> CoreResult<()> {
+    restore_with_optional_game_root(conn, entry_id, Some(game_root), backup_root)
+}
+
+/// Restores entries created with recorded snapshot metadata without needing the
+/// current GTA V root. Legacy entries use the supplied root as a fallback.
+pub fn restore_with_optional_game_root(
+    conn: &mut Connection,
+    entry_id: i64,
+    game_root: Option<&Path>,
+    backup_root: &Path,
+) -> CoreResult<()> {
     let entry = load_entry(conn, entry_id)?;
     let mod_id = entry
         .original_installed_mod_id
@@ -94,6 +144,25 @@ pub fn restore(
             reason: format!("recycle bin entry {entry_id} has no associated mod to restore"),
         })?;
     let snapshot_root = PathBuf::from(&entry.mod_package_snapshot_path);
+    let metadata: Option<SnapshotMetadata> = entry
+        .snapshot_metadata
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| CoreError::UnsupportedFormat {
+            reason: format!("invalid recycle-bin snapshot metadata: {error}"),
+        })?;
+    let snapshot_game_root = if let Some(metadata) = &metadata {
+        PathBuf::from(&metadata.target_root)
+    } else {
+        game_root
+            .ok_or_else(|| CoreError::UnsupportedFormat {
+                reason: format!(
+                    "recycle bin entry {entry_id} has no recorded target root; a game root is required for this legacy entry"
+                ),
+            })?
+            .to_path_buf()
+    };
 
     let mut stmt =
         conn.prepare("SELECT id, target_path FROM installed_mod_file WHERE installed_mod_id = ?1")?;
@@ -102,15 +171,65 @@ pub fn restore(
         .collect::<Result<_, _>>()?;
     drop(stmt);
 
-    for (file_id, target_path) in &files {
-        let target = PathBuf::from(target_path);
-        let relative = target.strip_prefix(game_root).unwrap_or(&target);
-        let snapshot_file = snapshot_root.join(relative);
-        if !snapshot_file.exists() {
-            continue; // nothing was snapshotted for this row (file didn't exist at uninstall time)
-        }
+    let all_file_ids = files
+        .iter()
+        .map(|(file_id, _)| *file_id)
+        .collect::<std::collections::HashSet<_>>();
+    let expected_file_ids = metadata
+        .as_ref()
+        .map(|metadata| {
+            metadata
+                .file_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_else(|| all_file_ids.clone());
+    if expected_file_ids.is_empty() {
+        return Err(CoreError::UnsupportedFormat {
+            reason: format!("recycle bin entry {entry_id} has no snapshotted files to restore"),
+        });
+    }
+    if expected_file_ids
+        .iter()
+        .any(|file_id| !all_file_ids.contains(file_id))
+    {
+        return Err(CoreError::UnsupportedFormat {
+            reason: format!(
+                "recycle bin entry {entry_id} refers to missing installed-file records"
+            ),
+        });
+    }
 
+    // Validate every expected snapshot before writing any target or changing the DB.
+    // New entries record the exact file set; legacy entries conservatively require all
+    // current file rows to have snapshots rather than consuming a possibly incomplete bin.
+    let mut restore_files = Vec::with_capacity(expected_file_ids.len());
+    for (file_id, target_path) in &files {
+        if !expected_file_ids.contains(file_id) {
+            continue;
+        }
+        let target = PathBuf::from(target_path);
+        let relative = target.strip_prefix(&snapshot_game_root).map_err(|_| {
+            CoreError::UnsupportedFormat {
+                reason: format!(
+                    "recycle bin entry {entry_id} target is outside its recorded root: {target_path}"
+                ),
+            }
+        })?;
+        let snapshot_file = snapshot_root.join(relative);
+        if !snapshot_file.is_file() {
+            return Err(CoreError::UnsupportedFormat {
+                reason: format!(
+                    "recycle bin entry {entry_id} is missing snapshot for {target_path}"
+                ),
+            });
+        }
         protected_files::check_write(&target)?;
+        restore_files.push((*file_id, target, snapshot_file));
+    }
+
+    for (file_id, target, snapshot_file) in restore_files {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -301,6 +420,131 @@ mod tests {
         let backup_path =
             PathBuf::from(backup_path.expect("a fresh backup should have been recorded"));
         assert_eq!(std::fs::read(&backup_path).unwrap(), b"pre-mod original");
+    }
+
+    #[test]
+    fn restore_uses_the_root_recorded_when_the_snapshot_was_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("gta-v");
+        let client_root = dir.path().join("fivem");
+        let recycle_root = dir.path().join("recycle");
+        let backup_root = dir.path().join("backups");
+        let target = client_root
+            .join("resources")
+            .join("vehicles")
+            .join("fxmanifest.lua");
+        let relative = Path::new("resources/vehicles/fxmanifest.lua");
+        let entry_dir = recycle_root.join("client-entry");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&game_root).unwrap();
+        std::fs::write(entry_dir.join(relative), b"client snapshot").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status) \
+             VALUES ('FiveM Test Mod', 'folder', '', 'uninstalled')",
+            [],
+        )
+        .unwrap();
+        let mod_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+             VALUES (?1, ?2, 'hash')",
+            rusqlite::params![mod_id, target.to_string_lossy()],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        let metadata = encode_snapshot_metadata(&client_root, vec![file_id]).unwrap();
+        let deleted_at = chrono::Utc::now();
+        conn.execute(
+            "INSERT INTO recycle_bin_entry (original_installed_mod_id, mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                mod_id,
+                entry_dir.to_string_lossy(),
+                metadata,
+                deleted_at.to_rfc3339(),
+                (deleted_at + chrono::Duration::days(RETENTION_DAYS)).to_rfc3339(),
+            ],
+        )
+        .unwrap();
+        let entry_id = conn.last_insert_rowid();
+
+        restore(&mut conn, entry_id, &game_root, &backup_root).unwrap();
+
+        assert_eq!(std::fs::read(target).unwrap(), b"client snapshot");
+        assert!(!entry_dir.exists());
+    }
+
+    #[test]
+    fn restore_keeps_entry_and_snapshot_when_a_recorded_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("gta-v");
+        let client_root = dir.path().join("fivem");
+        let recycle_root = dir.path().join("recycle");
+        let backup_root = dir.path().join("backups");
+        let target = client_root
+            .join("resources")
+            .join("vehicles")
+            .join("fxmanifest.lua");
+        let entry_dir = recycle_root.join("client-entry");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&game_root).unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status) \
+             VALUES ('FiveM Test Mod', 'folder', '', 'uninstalled')",
+            [],
+        )
+        .unwrap();
+        let mod_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+             VALUES (?1, ?2, 'hash')",
+            rusqlite::params![mod_id, target.to_string_lossy()],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        let metadata = encode_snapshot_metadata(&client_root, vec![file_id]).unwrap();
+        let deleted_at = chrono::Utc::now();
+        conn.execute(
+            "INSERT INTO recycle_bin_entry (original_installed_mod_id, mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                mod_id,
+                entry_dir.to_string_lossy(),
+                metadata,
+                deleted_at.to_rfc3339(),
+                (deleted_at + chrono::Duration::days(RETENTION_DAYS)).to_rfc3339(),
+            ],
+        )
+        .unwrap();
+        let entry_id = conn.last_insert_rowid();
+
+        let result = restore(&mut conn, entry_id, &game_root, &backup_root);
+
+        assert!(result.is_err());
+        assert!(entry_dir.exists());
+        assert!(!target.exists());
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "uninstalled");
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM recycle_bin_entry WHERE id = ?1",
+                [entry_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 1);
     }
 
     #[test]

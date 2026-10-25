@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Full backup/restore of the entire `mods\` folder as a single zip — the coarse,
 //! whole-folder safety net validated by the old prototype (see

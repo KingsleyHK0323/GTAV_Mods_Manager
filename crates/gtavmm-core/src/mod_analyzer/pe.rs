@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Minimal PE (Portable Executable) header inspection — just enough to distinguish a
 //! *managed* .NET assembly (ScriptHookVDotNet script) from a *native* DLL (a

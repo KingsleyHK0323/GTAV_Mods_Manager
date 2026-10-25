@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Translation draft generation (design doc §一-3), scoped to external config files
 //! (`.ini`/`.xml`). `.NET` DLL-embedded string translation is handled separately by
@@ -15,6 +15,8 @@
 //! project never silently overwrites a mod's own files outside the guarded
 //! `install`/`uninstall` write path.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -62,7 +64,12 @@ pub fn generate_draft(
     let draft = crate::ai_assistant::call_provider(conn, &prompt)?;
 
     let output_path = sibling_draft_path(source_path, target_language)?;
-    std::fs::write(&output_path, draft)?;
+    // OpenAI-Codex: create_new closes the preflight/write race and preserves old drafts.
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output_path)?;
+    output.write_all(draft.as_bytes())?;
     Ok(output_path)
 }
 

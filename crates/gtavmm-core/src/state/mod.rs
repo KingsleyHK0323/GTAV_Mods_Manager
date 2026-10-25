@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Enable/disable: moves a mod's currently-deployed files to/from a per-mod staging
 //! directory (distinct from the recycle bin — this is instant and reversible, no

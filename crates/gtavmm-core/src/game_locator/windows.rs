@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Windows detection chain: Registry → Steam (`libraryfolders.vdf`) → Epic (manifest
 //! scan) → Rockstar Games Launcher default path. Best-effort — exact registry key

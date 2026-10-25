@@ -31,6 +31,7 @@ type Busy = "disable" | "enable" | "uninstall" | "reinstall" | "save" | "page" |
 
 /**
  * Details for one installed mod, and the only place its lifecycle can be driven.
+ * OpenAI-Codex: Require an explicit FiveM Client path for path-dependent actions.
  *
  * Until now the interface could install a mod and then had no way to turn it off
  * or remove it: the engine has done disable, enable, uninstall and reinstall
@@ -110,6 +111,7 @@ export function ModDetailDrawer({
   const isDisabled = mod.status === "Disabled";
   const isGone = mod.status === "Uninstalled";
   const anyBusy = busy !== null;
+  const missingFivemPath = mode === "fivem-client" && !gamePath?.trim();
 
   return (
     <div className="drawer-backdrop" data-open="true" onClick={(e) => {
@@ -138,6 +140,11 @@ export function ModDetailDrawer({
 
         <div className="drawer-body">
           {error && <p className="error">{error}</p>}
+          {missingFivemPath && (
+            <p className="page-sub" role="note">
+              {t("fivemClient.actions_require_path")}
+            </p>
+          )}
 
           <div className="drawer-section">
             <div className="eyebrow">{t("drawer.status")}</div>
@@ -251,7 +258,7 @@ export function ModDetailDrawer({
               <button
                 className="btn-ghost"
                 type="button"
-                disabled={anyBusy}
+                disabled={anyBusy || missingFivemPath}
                 onClick={async () => {
                   // The formats the analyzer accepts. .rar is deliberately absent
                   // — it is not supported, and offering it here would only produce
@@ -303,7 +310,7 @@ export function ModDetailDrawer({
             <button
               className="btn-ghost btn-danger"
               type="button"
-              disabled={anyBusy}
+              disabled={anyBusy || missingFivemPath}
               onClick={() => setConfirmUninstall(true)}
             >
               <svg className="icon" aria-hidden="true">
@@ -339,7 +346,7 @@ export function ModDetailDrawer({
                   disabled={anyBusy}
                   onClick={() => {
                     setConfirmUninstall(false);
-                    run("uninstall", () => invoke("uninstall_mod", { modId: mod.id, gamePath }));
+                    run("uninstall", () => invoke("uninstall_mod", { modId: mod.id, gamePath, mode }));
                   }}
                 >
                   {t("drawer.uninstall")}
