@@ -18,7 +18,7 @@ const CATEGORIES = ["callouts", "eup-peds", "vehicles", "other", "framework"];
 
 interface ModDetailDrawerProps {
   mod: InstalledMod | null;
-  /** Passed through to the lifecycle commands; null lets the backend auto-detect. */
+  /** GTA pages use the saved path when null; FiveM requires an explicit client path. */
   gamePath: string | null;
   /** The page this drawer was opened from; reinstall installs back into it. */
   mode: PageMode;
@@ -260,11 +260,9 @@ export function ModDetailDrawer({
                 type="button"
                 disabled={anyBusy || missingFivemPath}
                 onClick={async () => {
-                  // The formats the analyzer accepts. .rar is deliberately absent
-                  // — it is not supported, and offering it here would only produce
-                  // a refusal after the user had already chosen a file.
+                  // Keep reinstall choices aligned with the install wizard's supported formats.
                   const picked = await pickFile(
-                    ["zip", "7z", "asi", "dll", "xml"],
+                    ["zip", "7z", "rar", "asi", "dll", "xml"],
                     t("drawer.choose_new_source"),
                   );
                   if (!picked) return;

@@ -216,7 +216,7 @@ export function FiveMClientPage() {
         {loadError && (
           <p className="error" role="alert">
             {t("fivemClient.load_error", { error: loadError })}{" "}
-            <button className="btn-ghost" type="button" onClick={loadMods}>
+            <button className="btn-ghost" type="button" onClick={() => loadMods()}>
               {t("fivemClient.retry")}
             </button>
           </p>

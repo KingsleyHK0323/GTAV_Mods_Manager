@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFolder } from "../lib/pickers";
 
+// OpenAI-Codex: Persist the validated automatic path when the user accepts it.
+
 interface OnboardingGateProps {
   onDone: () => void;
 }
@@ -29,11 +31,14 @@ export function OnboardingGate({ onDone }: OnboardingGateProps) {
   const [detected, setDetected] = useState<Detect | null>(null);
   const [manual, setManual] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
+  const [validatingManual, setValidatingManual] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const detect = useCallback(() => {
     setDetecting(true);
+    setManual(null);
+    setDetected(null);
     setError(null);
     invoke<Detect>("detect_game")
       .then(setDetected)
@@ -44,10 +49,11 @@ export function OnboardingGate({ onDone }: OnboardingGateProps) {
   useEffect(detect, [detect]);
 
   async function browse() {
-    const picked = await pickFolder(t("onboarding.browse_title"));
-    if (!picked) return;
+    setValidatingManual(true);
     setError(null);
     try {
+      const picked = await pickFolder(t("onboarding.browse_title"));
+      if (!picked) return;
       // Validate before accepting, so a wrong folder is caught at the point of
       // choosing rather than at the first install.
       const result = await invoke<Detect>("validate_game_path", { path: picked });
@@ -59,6 +65,8 @@ export function OnboardingGate({ onDone }: OnboardingGateProps) {
       setDetected(result);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setValidatingManual(false);
     }
   }
 
@@ -66,7 +74,10 @@ export function OnboardingGate({ onDone }: OnboardingGateProps) {
     setBusy(true);
     setError(null);
     try {
-      await invoke("complete_onboarding", { gameInstallPathOverride: manual });
+      const detectedPath = detected?.status === "found" ? detected.install_path : null;
+      await invoke("complete_onboarding", {
+        gameInstallPathOverride: manual ?? detectedPath,
+      });
       onDone();
     } catch (e) {
       setError(String(e));
@@ -112,7 +123,7 @@ export function OnboardingGate({ onDone }: OnboardingGateProps) {
               </p>
             )}
           </div>
-          <button className="btn-ghost" type="button" onClick={browse}>
+          <button className="btn-ghost" type="button" onClick={browse} disabled={detecting || validatingManual || busy}>
             {found ? t("onboarding.change") : t("onboarding.browse")}
           </button>
         </div>
@@ -132,13 +143,13 @@ export function OnboardingGate({ onDone }: OnboardingGateProps) {
             marginTop: "var(--space-6)",
           }}
         >
-          <button className="btn-ghost" type="button" onClick={detect} disabled={detecting}>
+          <button className="btn-ghost" type="button" onClick={detect} disabled={detecting || validatingManual || busy}>
             <svg className="icon" aria-hidden="true">
               <use href="#i-refresh" />
             </svg>
             {detecting ? t("onboarding.detecting") : t("onboarding.detect_again")}
           </button>
-          <button className="btn-primary" type="button" onClick={finish} disabled={busy}>
+          <button className="btn-primary" type="button" onClick={finish} disabled={busy || detecting || validatingManual}>
             {busy ? t("terms.saving") : t("onboarding.continue")}
           </button>
         </div>

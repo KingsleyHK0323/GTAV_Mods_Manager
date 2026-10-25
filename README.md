@@ -12,6 +12,8 @@ Enhanced single-player mods, LSPDFR, and FiveM.
 <!-- Updated by OpenAI-Codex: recycle-bin restores use recorded roots and preserve incomplete snapshots. -->
 <!-- OpenAI-Codex: Translation supports provider-specific AI adapters and refuses output collisions. -->
 <!-- OpenAI-Codex: GTA install previews and installs require a configured path and reject edition mismatches. -->
+<!-- OpenAI-Codex: Page lifecycle actions and SP/LSPDFR tools use the configured path and verify the page edition. -->
+<!-- OpenAI-Codex: Legacy SP spreadsheet exports are limited to that page's records. -->
 <!-- OpenAI-Codex: FiveM Server is temporarily unavailable in the desktop App. -->
 
 The **core engine (`gtavmm-core`) and CLI (`gtavmm-cli`) are functional and tested** — install,
@@ -32,6 +34,12 @@ in the App; and the SP→FiveM converter. Legacy SP and Legacy
 LSPDFR support batch enable/disable from the installed-mod list. GTA SP/LSPDFR previews and
 installs require a configured game path and refuse page/edition mismatches instead of falling
 back to automatic detection.
+First-run setup saves the detected install unless you choose another folder. Reinstall and
+uninstall actions, component checks, and full backup/restore use the configured path and validate
+the active page's edition before acting. App-created full backups record their GTA V edition;
+the App lists and restores only matching-edition archives and reports skipped unmarked or damaged
+archives. Older unmarked archives are rejected by App restore because their source edition cannot
+be verified. The Legacy SP Excel export includes only Legacy SP installed and uninstalled records.
 The Tools editor can generate AI translation drafts from saved INI/XML files.
 The translation tools support reviewable DLL, INI, and XML output through Ollama Local, Ollama Cloud,
 OpenAI, Anthropic, DeepSeek, OpenRouter, Google AI, or NVIDIA AI. Provider API keys are stored

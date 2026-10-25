@@ -3,7 +3,15 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFile } from "../lib/pickers";
 import { RecycleBinModal } from "./RecycleBinModal";
-import type { ComponentStatus, RecycleBinEntry } from "../types";
+import type { ComponentStatus, PageMode, RecycleBinEntry } from "../types";
+
+// OpenAI-Codex: Keep page tools on the configured GTA path and edition.
+
+interface FullBackupListResult {
+  paths: string[];
+  unmarkedCount: number;
+  unreadableCount: number;
+}
 
 /**
  * The three-panel `mini-row` (Component Checker / Full Backup / Recycle Bin) — per the
@@ -19,7 +27,13 @@ import type { ComponentStatus, RecycleBinEntry } from "../types";
  * need — an SP user has no reason to be asked about LSPDFR plugins, and vice
  * versa. Everything else in the row is the same on every page.
  */
-export function ModPageTools({ variant = "components" }: { variant?: "components" | "framework" }) {
+export function ModPageTools({
+  variant = "components",
+  mode,
+}: {
+  variant?: "components" | "framework";
+  mode: PageMode;
+}) {
   const { t } = useTranslation();
 
   const [components, setComponents] = useState<ComponentStatus[] | null>(null);
@@ -37,16 +51,30 @@ export function ModPageTools({ variant = "components" }: { variant?: "components
   const loadComponents = useCallback(() => {
     invoke<ComponentStatus[]>(variant === "framework" ? "check_framework" : "check_components", {
       gamePath: null,
+      mode,
     })
       .then(setComponents)
       .catch((e) => setComponentsError(String(e)));
-  }, [variant]);
+  }, [mode, variant]);
 
   const loadBackups = useCallback(() => {
-    invoke<string[]>("list_full_backups")
-      .then(setBackups)
-      .catch(() => {});
-  }, []);
+    setBackups(null);
+    setBackupError(null);
+    invoke<FullBackupListResult>("list_full_backups", { mode })
+      .then((listing) => {
+        setBackups(listing.paths);
+        const notices = [
+          listing.unmarkedCount > 0
+            ? t("modPageTools.backup_unmarked_ignored", { count: listing.unmarkedCount })
+            : null,
+          listing.unreadableCount > 0
+            ? t("modPageTools.backup_unreadable_ignored", { count: listing.unreadableCount })
+            : null,
+        ].filter((notice): notice is string => notice !== null);
+        setBackupError(notices.join(" ") || null);
+      })
+      .catch((e) => setBackupError(String(e)));
+  }, [mode, t]);
 
   const loadRecycleBin = useCallback(() => {
     invoke<RecycleBinEntry[]>("list_recycle_bin")
@@ -61,15 +89,14 @@ export function ModPageTools({ variant = "components" }: { variant?: "components
     invoke("sweep_expired_recycle_bin")
       .then(() => loadRecycleBin())
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadBackups, loadComponents, loadRecycleBin]);
 
   async function createBackup() {
     setBackupBusy(true);
     setBackupError(null);
     setBackupStatus(null);
     try {
-      const path = await invoke<string>("create_full_backup", { gamePath: null });
+      const path = await invoke<string>("create_full_backup", { gamePath: null, mode });
       setBackupStatus(t("modPageTools.backup_created", { path }));
       loadBackups();
     } catch (e) {
@@ -85,7 +112,7 @@ export function ModPageTools({ variant = "components" }: { variant?: "components
     setBackupError(null);
     setBackupStatus(null);
     try {
-      await invoke("restore_full_backup", { zipPath: backups[0], gamePath: null });
+      await invoke("restore_full_backup", { zipPath: backups[0], gamePath: null, mode });
       setBackupStatus(t("modPageTools.backup_restored"));
     } catch (e) {
       setBackupError(String(e));
@@ -101,7 +128,7 @@ export function ModPageTools({ variant = "components" }: { variant?: "components
     setBackupError(null);
     setBackupStatus(null);
     try {
-      await invoke("restore_full_backup", { zipPath: picked, gamePath: null });
+      await invoke("restore_full_backup", { zipPath: picked, gamePath: null, mode });
       setBackupStatus(t("modPageTools.backup_restored"));
     } catch (e) {
       setBackupError(String(e));

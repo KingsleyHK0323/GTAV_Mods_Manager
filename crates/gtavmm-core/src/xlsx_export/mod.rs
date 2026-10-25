@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Exports installed-mod records to a styled `.xlsx` workbook — the "Excel Export"
 //! feature validated by the old prototype: two sheets ("Installed Mods" for
@@ -36,14 +37,19 @@ const COLUMN_HEADERS: [&str; 7] = [
     "Link",
 ];
 
-fn load_rows(conn: &Connection, uninstalled: bool) -> CoreResult<Vec<ModRow>> {
+fn load_rows(
+    conn: &Connection,
+    uninstalled: bool,
+    mode: Option<&str>,
+) -> CoreResult<Vec<ModRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, source_type, installed_at, status, notes, link \
          FROM installed_mod \
          WHERE (status = 'uninstalled') = ?1 \
+         AND (?2 IS NULL OR mode = ?2) \
          ORDER BY id",
     )?;
-    let rows = stmt.query_map([uninstalled], |row| {
+    let rows = stmt.query_map(rusqlite::params![uninstalled, mode], |row| {
         Ok(ModRow {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -115,8 +121,21 @@ fn write_sheet(worksheet: &mut Worksheet, rows: &[ModRow]) -> CoreResult<()> {
 /// Writes `output_path` as a two-sheet `.xlsx`: "Installed Mods" (active/disabled)
 /// and "Uninstalled Mods" (historical). Overwrites `output_path` if it already exists.
 pub fn export(conn: &Connection, output_path: &Path) -> CoreResult<()> {
-    let installed = load_rows(conn, false)?;
-    let uninstalled = load_rows(conn, true)?;
+    export_filtered(conn, output_path, None)
+}
+
+/// Writes the two-sheet workbook with records limited to one App page mode.
+pub fn export_for_mode(conn: &Connection, output_path: &Path, mode: &str) -> CoreResult<()> {
+    export_filtered(conn, output_path, Some(mode))
+}
+
+fn export_filtered(
+    conn: &Connection,
+    output_path: &Path,
+    mode: Option<&str>,
+) -> CoreResult<()> {
+    let installed = load_rows(conn, false, mode)?;
+    let uninstalled = load_rows(conn, true, mode)?;
 
     let mut workbook = Workbook::new();
 
@@ -184,8 +203,8 @@ mod tests {
         insert_mod(&conn, "Active", "active", None);
         insert_mod(&conn, "Gone", "uninstalled", None);
 
-        let installed = load_rows(&conn, false).unwrap();
-        let uninstalled = load_rows(&conn, true).unwrap();
+        let installed = load_rows(&conn, false, None).unwrap();
+        let uninstalled = load_rows(&conn, true, None).unwrap();
 
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].name, "Active");
@@ -200,5 +219,41 @@ mod tests {
         let output = dir.path().join("empty.xlsx");
         export(&conn, &output).unwrap();
         assert!(output.exists());
+    }
+
+    #[test]
+    fn mode_filtered_export_only_includes_that_pages_installed_and_uninstalled_mods() {
+        let conn = crate::db::open_in_memory().unwrap();
+        for (name, status, mode) in [
+            ("LegacyActive", "active", "legacy-sp"),
+            ("LegacyRemoved", "uninstalled", "legacy-sp"),
+            ("EnhancedActive", "active", "enhanced-sp"),
+            ("LspdfrActive", "active", "legacy-lspdfr"),
+        ] {
+            conn.execute(
+                "INSERT INTO installed_mod (name, source_type, install_path, status, mode) \
+                 VALUES (?1, 'asi', '', ?2, ?3)",
+                rusqlite::params![name, status, mode],
+            )
+            .unwrap();
+        }
+
+        let installed = load_rows(&conn, false, Some("legacy-sp")).unwrap();
+        let uninstalled = load_rows(&conn, true, Some("legacy-sp")).unwrap();
+
+        assert_eq!(
+            installed
+                .iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["LegacyActive".to_string()]
+        );
+        assert_eq!(
+            uninstalled
+                .iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["LegacyRemoved".to_string()]
+        );
     }
 }

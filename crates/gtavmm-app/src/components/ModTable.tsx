@@ -7,7 +7,7 @@ import type { InstalledMod, PageMode } from "../types";
 interface ModTableProps {
   mods: InstalledMod[];
   onChanged: () => void;
-  /** Forwarded to the drawer's lifecycle calls; null lets the backend detect. */
+  /** Forwarded to lifecycle calls; GTA pages use the saved path when this is null. */
   gamePath?: string | null;
   /** Which provider a reinstall from this page should use. */
   mode?: PageMode;

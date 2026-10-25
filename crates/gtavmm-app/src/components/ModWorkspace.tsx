@@ -114,7 +114,7 @@ export function ModWorkspace({
     setExportBusy(true);
     setExportError(null);
     try {
-      await invoke("export_mods_to_xlsx", { outputPath: picked });
+      await invoke("export_mods_to_xlsx", { outputPath: picked, mode: pageMode });
     } catch (e) {
       setExportError(String(e));
     } finally {
@@ -276,7 +276,7 @@ export function ModWorkspace({
           </div>
 
           {tools}
-          <ModPageTools variant={toolsVariant} />
+          <ModPageTools variant={toolsVariant} mode={pageMode} />
         </>
       ) : (
         <HistoryPanel events={events} mods={mods} titleKey={titleKey} />

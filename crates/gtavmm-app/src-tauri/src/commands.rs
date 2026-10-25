@@ -258,6 +258,26 @@ fn ensure_page_game_edition(
     Ok(())
 }
 
+/// OpenAI-Codex: Resolve App page operations from the selected install and guard its edition.
+fn resolve_page_target(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: &str,
+) -> Result<(
+    std::path::PathBuf,
+    Box<dyn gtavmm_core::providers::ModeProvider>,
+), String> {
+    let page = crate::page_mode::PageMode::parse(mode)?;
+    let core_mode = page.provider_mode();
+    let effective_game_path = effective_game_path_impl(conn, game_path, core_mode)?;
+    let game_path = normalize_game_path_for_mode(effective_game_path.as_deref(), core_mode)?;
+    let (game_root, provider) =
+        gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), core_mode)
+            .map_err(|error| error.to_string())?;
+    ensure_page_game_edition(page, &game_root)?;
+    Ok((game_root, provider))
+}
+
 /// Read-only preview of what installing `path` would do — no files written, nothing
 /// recorded in the database. Mirrors the CLI's `inspect` command.
 pub fn inspect_mod_impl(
@@ -330,14 +350,8 @@ pub fn install_mod_impl(
     // decides where files go, and the page is what gets recorded so this mod
     // shows up on the workspace it was installed from and nowhere else.
     let page = crate::page_mode::PageMode::parse(mode)?;
-    let effective_game_path = effective_game_path_impl(conn, game_path, page.provider_mode())?;
-    let game_path =
-        normalize_game_path_for_mode(effective_game_path.as_deref(), page.provider_mode())?;
+    let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
     let input_path = std::path::Path::new(path);
-    let (game_root, provider) =
-        gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), page.provider_mode())
-            .map_err(|e| e.to_string())?;
-    ensure_page_game_edition(page, &game_root)?;
     let plan = gtavmm_core::mod_analyzer::classify(input_path, provider.as_ref())
         .map_err(|e| e.to_string())?;
     let name = name.map(str::to_string).unwrap_or_else(|| {
@@ -1010,11 +1024,11 @@ fn default_recycle_bin_root() -> Result<std::path::PathBuf, String> {
 }
 
 pub fn check_components_impl(
+    conn: &Connection,
     game_path: Option<&str>,
+    mode: &str,
 ) -> Result<Vec<gtavmm_core::components::ComponentStatus>, String> {
-    let (game_root, _) =
-        gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
-            .map_err(|e| e.to_string())?;
+    let (game_root, _provider) = resolve_page_target(conn, game_path, mode)?;
     Ok(gtavmm_core::components::check_all(&game_root))
 }
 
@@ -1065,11 +1079,19 @@ pub fn profile_import(
 
 /// The LSPDFR framework panel: RPH, LSPDFR and RAGENativeUI.
 pub fn check_framework_impl(
+    conn: &Connection,
     game_path: Option<&str>,
+    mode: &str,
 ) -> Result<Vec<gtavmm_core::components::ComponentStatus>, String> {
-    let (game_root, _) =
-        gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
-            .map_err(|e| e.to_string())?;
+    let page = crate::page_mode::PageMode::parse(mode)?;
+    if !matches!(
+        page,
+        crate::page_mode::PageMode::LegacyLspdfr
+            | crate::page_mode::PageMode::EnhancedLspdfr
+    ) {
+        return Err("framework checks require an LSPDFR page".to_string());
+    }
+    let (game_root, _provider) = resolve_page_target(conn, game_path, mode)?;
     Ok(gtavmm_core::components::check_set(
         &game_root,
         gtavmm_core::components::ComponentSet::LspdfrFramework,
@@ -1078,9 +1100,12 @@ pub fn check_framework_impl(
 
 #[tauri::command]
 pub fn check_framework(
+    state: tauri::State<crate::AppState>,
     game_path: Option<String>,
+    mode: String,
 ) -> Result<Vec<gtavmm_core::components::ComponentStatus>, String> {
-    check_framework_impl(game_path.as_deref())
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    check_framework_impl(&conn, game_path.as_deref(), &mode)
 }
 
 /// Records an LSPDFR category chosen by hand, correcting whatever was guessed.
@@ -1113,17 +1138,39 @@ pub fn set_mod_category(
 
 #[tauri::command]
 pub fn check_components(
+    state: tauri::State<crate::AppState>,
     game_path: Option<String>,
+    mode: String,
 ) -> Result<Vec<gtavmm_core::components::ComponentStatus>, String> {
-    check_components_impl(game_path.as_deref())
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    check_components_impl(&conn, game_path.as_deref(), &mode)
 }
 
-pub fn create_full_backup_impl(game_path: Option<&str>) -> Result<String, String> {
-    let (game_root, _) =
-        gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
-            .map_err(|e| e.to_string())?;
+fn full_backup_edition_for_mode(
+    mode: &str,
+) -> Result<gtavmm_core::full_backup::GameEdition, String> {
+    let page = crate::page_mode::PageMode::parse(mode)?;
+    match page.expected_game_edition() {
+        Some("legacy") => Ok(gtavmm_core::full_backup::GameEdition::Legacy),
+        Some("enhanced") => Ok(gtavmm_core::full_backup::GameEdition::Enhanced),
+        _ => Err("Full backups require a GTA V SP or LSPDFR page.".to_string()),
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FullBackupListResult {
+    pub paths: Vec<String>,
+    pub unmarked_count: usize,
+    pub unreadable_count: usize,
+}
+
+pub fn create_full_backup_impl(
+    game_root: &std::path::Path,
+    edition: gtavmm_core::full_backup::GameEdition,
+) -> Result<String, String> {
     let backup_root = default_backup_root()?;
-    let result = gtavmm_core::full_backup::create(&game_root, &backup_root)
+    let result = gtavmm_core::full_backup::create_for_edition(game_root, &backup_root, edition)
         .map(|p| p.display().to_string())
         .map_err(|e| e.to_string());
     if let Err(reason) = &result {
@@ -1133,28 +1180,51 @@ pub fn create_full_backup_impl(game_path: Option<&str>) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn create_full_backup(game_path: Option<String>) -> Result<String, String> {
-    create_full_backup_impl(game_path.as_deref())
+pub fn create_full_backup(
+    state: tauri::State<crate::AppState>,
+    game_path: Option<String>,
+    mode: String,
+) -> Result<String, String> {
+    let edition = full_backup_edition_for_mode(&mode)?;
+    let game_root = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        resolve_page_target(&conn, game_path.as_deref(), &mode)?.0
+    };
+    create_full_backup_impl(&game_root, edition)
 }
 
-pub fn list_full_backups_impl() -> Result<Vec<String>, String> {
+pub fn list_full_backups_impl(mode: &str) -> Result<FullBackupListResult, String> {
+    let edition = full_backup_edition_for_mode(mode)?;
     let backup_root = default_backup_root()?;
-    gtavmm_core::full_backup::list(&backup_root)
-        .map(|paths| paths.into_iter().map(|p| p.display().to_string()).collect())
+    gtavmm_core::full_backup::list_for_edition(&backup_root, edition)
+        .map(|listing| FullBackupListResult {
+            paths: listing
+                .paths
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            unmarked_count: listing.unmarked_count,
+            unreadable_count: listing.unreadable_count,
+        })
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn list_full_backups() -> Result<Vec<String>, String> {
-    list_full_backups_impl()
+pub fn list_full_backups(mode: String) -> Result<FullBackupListResult, String> {
+    list_full_backups_impl(&mode)
 }
 
-pub fn restore_full_backup_impl(zip_path: &str, game_path: Option<&str>) -> Result<(), String> {
-    let (game_root, _) =
-        gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
-            .map_err(|e| e.to_string())?;
-    let result = gtavmm_core::full_backup::restore(std::path::Path::new(zip_path), &game_root)
-        .map_err(|e| e.to_string());
+pub fn restore_full_backup_impl(
+    zip_path: &str,
+    game_root: &std::path::Path,
+    edition: gtavmm_core::full_backup::GameEdition,
+) -> Result<(), String> {
+    let result = gtavmm_core::full_backup::restore_for_edition(
+        std::path::Path::new(zip_path),
+        game_root,
+        edition,
+    )
+    .map_err(|e| e.to_string());
     if let Err(reason) = &result {
         let _ = gtavmm_core::app_log::error(&format!(
             "restore_full_backup failed for '{zip_path}': {reason}"
@@ -1164,8 +1234,18 @@ pub fn restore_full_backup_impl(zip_path: &str, game_path: Option<&str>) -> Resu
 }
 
 #[tauri::command]
-pub fn restore_full_backup(zip_path: String, game_path: Option<String>) -> Result<(), String> {
-    restore_full_backup_impl(&zip_path, game_path.as_deref())
+pub fn restore_full_backup(
+    state: tauri::State<crate::AppState>,
+    zip_path: String,
+    game_path: Option<String>,
+    mode: String,
+) -> Result<(), String> {
+    let edition = full_backup_edition_for_mode(&mode)?;
+    let game_root = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        resolve_page_target(&conn, game_path.as_deref(), &mode)?.0
+    };
+    restore_full_backup_impl(&zip_path, &game_root, edition)
 }
 
 pub fn list_recycle_bin_impl(
@@ -1316,8 +1396,20 @@ pub fn delete_prompt_template(state: tauri::State<crate::AppState>, id: i64) -> 
 // has always had an "Export to Excel" button, but nothing backed it.
 // ---------------------------------------------------------------------------
 
-pub fn export_mods_to_xlsx_impl(conn: &Connection, output_path: &str) -> Result<(), String> {
-    gtavmm_core::xlsx_export::export(conn, std::path::Path::new(output_path))
+pub fn export_mods_to_xlsx_impl(
+    conn: &Connection,
+    output_path: &str,
+    mode: &str,
+) -> Result<(), String> {
+    let page = crate::page_mode::PageMode::parse(mode)?;
+    if page != crate::page_mode::PageMode::LegacySp {
+        return Err("Excel export is only available for the Legacy SP page".to_string());
+    }
+    gtavmm_core::xlsx_export::export_for_mode(
+        conn,
+        std::path::Path::new(output_path),
+        page.as_str(),
+    )
         .map_err(|e| e.to_string())
 }
 
@@ -1325,9 +1417,10 @@ pub fn export_mods_to_xlsx_impl(conn: &Connection, output_path: &str) -> Result<
 pub fn export_mods_to_xlsx(
     state: tauri::State<crate::AppState>,
     output_path: String,
+    mode: String,
 ) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    export_mods_to_xlsx_impl(&conn, &output_path)
+    export_mods_to_xlsx_impl(&conn, &output_path, &mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,14 +1580,7 @@ pub fn uninstall_mod_for_page_impl(
     mode: &str,
     recycle_bin_root: &std::path::Path,
 ) -> Result<(), String> {
-    let core_mode = mode_from_str(mode)?;
-    let game_path = normalize_game_path_for_mode(game_path, core_mode)?;
-
-    let (game_root, _) = gtavmm_core::providers::resolve(
-        game_path.map(std::path::Path::new),
-        core_mode,
-    )
-    .map_err(|e| e.to_string())?;
+    let (game_root, _provider) = resolve_page_target(conn, game_path, mode)?;
     let result = gtavmm_core::uninstall::uninstall(conn, mod_id, &game_root, recycle_bin_root)
         .map_err(|e| e.to_string());
     if let Err(reason) = &result {
@@ -1544,10 +1630,7 @@ pub fn reinstall_mod_impl(
     backup_root: &std::path::Path,
     recycle_bin_root: &std::path::Path,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
-    let core_mode = mode_from_str(mode)?;
-    let (game_root, provider) =
-        gtavmm_core::providers::resolve(game_path.map(std::path::Path::new), core_mode)
-            .map_err(|e| e.to_string())?;
+    let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
     let options = gtavmm_core::install::InstallOptions {
         auto_backup: true,
         override_foreign_conflicts: false,
@@ -1904,6 +1987,59 @@ mod tests {
     }
 
     #[test]
+    fn page_target_uses_the_saved_game_path_when_no_path_is_passed() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let (game_root, _provider) = resolve_page_target(&conn, None, "legacy-sp").unwrap();
+
+        assert_eq!(game_root, saved_game_dir.path().to_path_buf());
+    }
+
+    #[test]
+    fn page_target_rejects_a_saved_path_for_the_wrong_edition() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let enhanced_game_dir = fake_enhanced_game_root();
+        complete_onboarding_impl(&conn, enhanced_game_dir.path().to_str()).unwrap();
+
+        let err = match resolve_page_target(&conn, None, "legacy-lspdfr") {
+            Err(error) => error,
+            Ok(_) => panic!("a Legacy LSPDFR page must reject an Enhanced install"),
+        };
+
+        assert!(err.contains("requires a legacy"), "{err}");
+    }
+
+    #[test]
+    fn page_target_rejects_bare_provider_aliases_that_have_no_edition() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let saved_game_dir = fake_game_root();
+        complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
+
+        let err = match resolve_page_target(&conn, None, "sp") {
+            Err(error) => error,
+            Ok(_) => panic!("page-specific actions must require an edition-bearing page mode"),
+        };
+
+        assert!(err.contains("unknown page mode"), "{err}");
+    }
+
+    #[test]
+    fn full_backup_edition_requires_a_gta_page() {
+        assert_eq!(
+            full_backup_edition_for_mode("legacy-sp").unwrap(),
+            gtavmm_core::full_backup::GameEdition::Legacy
+        );
+        assert_eq!(
+            full_backup_edition_for_mode("enhanced-lspdfr").unwrap(),
+            gtavmm_core::full_backup::GameEdition::Enhanced
+        );
+        assert!(full_backup_edition_for_mode("fivem-client").is_err());
+        assert!(full_backup_edition_for_mode("sp").is_err());
+    }
+
+    #[test]
     fn inspect_mod_for_settings_prefers_an_explicit_game_path_over_the_saved_override() {
         let conn = gtavmm_core::db::open_in_memory().unwrap();
         let saved_game_dir = fake_game_root();
@@ -1948,6 +2084,15 @@ mod tests {
     #[test]
     fn mode_from_str_preserves_the_bare_lspdfr_provider_alias() {
         assert_eq!(mode_from_str("lspdfr").unwrap(), gtavmm_core::providers::Mode::Lspdfr);
+    }
+
+    #[test]
+    fn xlsx_export_command_rejects_pages_other_than_legacy_sp() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+
+        let err = export_mods_to_xlsx_impl(&conn, "unused.xlsx", "legacy-lspdfr").unwrap_err();
+
+        assert!(err.contains("only available for the Legacy SP page"), "{err}");
     }
 
     #[test]
@@ -2730,6 +2875,55 @@ mod tests {
             b"newer asi bytes",
             "the deployed file should be the new source's contents"
         );
+    }
+
+    #[test]
+    fn reinstall_uses_the_saved_path_when_no_path_is_passed() {
+        let (mut conn, game_dir, work, _staging, id) = installed_fixture();
+        complete_onboarding_impl(&conn, game_dir.path().to_str()).unwrap();
+        let deployed = game_dir.path().join("LifecycleMod.asi");
+        let newer = work.path().join("v2").join("LifecycleMod.asi");
+        std::fs::create_dir_all(newer.parent().unwrap()).unwrap();
+        std::fs::write(&newer, b"saved-root reinstall").unwrap();
+
+        reinstall_mod_impl(
+            &mut conn,
+            id,
+            newer.to_str().unwrap(),
+            "2.1",
+            "legacy-sp",
+            None,
+            &work.path().join("backups-saved-root"),
+            &work.path().join("recycle-bin-saved-root"),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&deployed).unwrap(), b"saved-root reinstall");
+    }
+
+    #[test]
+    fn reinstall_rejects_the_wrong_saved_edition_before_uninstalling() {
+        let (mut conn, game_dir, work, _staging, id) = installed_fixture();
+        let enhanced_game_dir = fake_enhanced_game_root();
+        complete_onboarding_impl(&conn, enhanced_game_dir.path().to_str()).unwrap();
+        let deployed = game_dir.path().join("LifecycleMod.asi");
+        let before = std::fs::read(&deployed).unwrap();
+
+        let err = reinstall_mod_impl(
+            &mut conn,
+            id,
+            "missing-new-source.asi",
+            "2.1",
+            "legacy-sp",
+            None,
+            &work.path().join("backups-wrong-edition"),
+            &work.path().join("recycle-bin-wrong-edition"),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("requires a legacy"), "{err}");
+        assert_eq!(std::fs::read(&deployed).unwrap(), before);
+        assert_eq!(status_of(&conn, id), "active");
     }
 
     #[test]

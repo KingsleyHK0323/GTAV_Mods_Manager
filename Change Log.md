@@ -17,10 +17,18 @@
 - Added provider-specific AI translation support for Ollama Local, Ollama Cloud, OpenAI, Anthropic, and DeepSeek. Each API-key provider uses a separate OS credential-store entry; the prior generic cloud configuration remains available for saved settings.
 - Added OpenRouter, Google AI, and NVIDIA AI providers to the shared AI translation and diagnosis layer, each with a separate OS credential-store entry.
 - Added cloud-data and usage-cost notices beside translation actions and in AI provider settings.
-- Added regression coverage for the bare LSPDFR provider alias, explicit FiveM Client paths, and App preview database-lock release.
+- Added regression coverage for provider aliases, explicit FiveM Client paths, App preview database-lock release, and full-backup edition isolation.
 
 ### Fixed
 
+- Marked App full backups with their GTA V edition, blocked unmarked or mismatched restores, and kept readable backups available when another archive is damaged.
+- Made page-target resolution require a concrete App page so provider aliases cannot bypass edition checks.
+- Routed App page lifecycle actions and page tools through the configured GTA path and rejected page/edition mismatches before acting.
+- Saved the detected GTA install path when first-run onboarding is completed without a manual path selection.
+- Kept onboarding path selection, detection, and completion from racing during validation; re-detection clears the previous manual selection so the displayed and saved path stay aligned.
+- Added `.rar` to the reinstall file picker and removed unsupported `.oiv` packages from the install picker.
+- Limited the Legacy SP App Excel export to Legacy SP installed and uninstalled records.
+- Fixed the FiveM Client retry button passing a React mouse event to the optional boolean argument of the mod loader.
 - Marked FiveM Server temporarily unavailable in App navigation and page routing while preserving its implementation for future re-enabling.
 - Updated App GTA SP/LSPDFR previews and installs to require a configured path and reject page/edition mismatches instead of falling back to automatic detection.
 - Recorded the target root and exact snapshotted file set for recycle-bin entries. Restore now uses that root, does not require GTA V root detection for entries with metadata, and preserves the entry when any recorded snapshot is missing.

@@ -75,7 +75,10 @@ export function InstallWizard({
 
   async function pickAndAnalyze() {
     try {
-      const picked = await pickFile(["asi", "dll", "xml", "zip", "7z", "rar", "oiv"], t("installWizard.pick_title"));
+      const picked = await pickFile(
+        ["asi", "dll", "xml", "zip", "7z", "rar"],
+        t("installWizard.pick_title"),
+      );
       if (!picked) return;
       setPath(picked);
       setStep("analyzing");
