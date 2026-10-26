@@ -262,7 +262,8 @@ fn append_xml_general_references(
     text: &BytesText<'_>,
     entries: &mut Vec<XmlStructureEntry>,
 ) -> Result<(), String> {
-    text.unescape_with(|entity| Some(entity))
+    // The resolved value is discarded; a static value keeps the 0.36.2 resolver lifetime-safe.
+    text.unescape_with(|_entity| Some(""))
         .map_err(|error| format!("invalid XML text reference: {error}"))?;
 
     let mut remaining = text.as_ref();
