@@ -577,6 +577,7 @@ pub fn translate_dll_draft_impl(
     dll_path: &str,
     target_language: &str,
 ) -> Result<Vec<gtavmm_core::dll_translation::TranslatedDraftEntry>, String> {
+    let target_language = gtavmm_core::translation::validate_target_language(target_language)?;
     let result = gtavmm_core::dll_translation::translate_draft(
         conn,
         std::path::Path::new(dll_path),
@@ -611,6 +612,7 @@ pub fn patch_dll_translations_impl(
     translations: Vec<String>,
     output_path: Option<&str>,
 ) -> Result<gtavmm_core::dll_translation::DllTranslationOutcome, String> {
+    let target_language = gtavmm_core::translation::validate_target_language(target_language)?;
     let output_path = output_path.map(std::path::Path::new);
     let result = gtavmm_core::dll_translation::patch_with_translations(
         std::path::Path::new(dll_path),
@@ -662,28 +664,7 @@ pub fn generate_config_translation_draft_impl(
     source_path: &str,
     target_language: &str,
 ) -> Result<String, String> {
-    let target_language = target_language.trim();
-    let mut language_parts = target_language.split('-');
-    let primary_language = language_parts.next().unwrap_or_default();
-    if target_language.is_empty()
-        || target_language.len() > 35
-        || !(2..=8).contains(&primary_language.len())
-        || !primary_language
-            .bytes()
-            .all(|character| character.is_ascii_alphabetic())
-        || language_parts.any(|part| {
-            part.is_empty()
-                || part.len() > 8
-                || !part
-                    .bytes()
-                    .all(|character| character.is_ascii_alphanumeric())
-        })
-    {
-        return Err(
-            "target language must start with a 2-8 letter code and use optional 1-8 character ASCII subtags"
-                .to_string(),
-        );
-    }
+    let target_language = gtavmm_core::translation::validate_target_language(target_language)?;
 
     let source_path = std::path::Path::new(source_path);
     let extension = source_path

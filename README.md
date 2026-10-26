@@ -49,7 +49,8 @@ The translation tools support reviewable DLL, INI, and XML output through Ollama
 OpenAI, Anthropic, DeepSeek, OpenRouter, Google AI, or NVIDIA AI. Provider API keys are stored
 separately in the operating system's credential store. Cloud translation sends selected file text to
 the configured provider and may incur usage charges; source files and existing translation outputs
-are not overwritten.
+are not overwritten. DLL target-language tags are validated, and default translated DLLs remain
+beside their source files.
 
 Other workflows remain in progress — the CLI remains the most complete way to use the tool today. See the
 [Wiki](https://github.com/SpaceSquare640/GTAV_Mods_Manager/wiki) for a full breakdown of what's

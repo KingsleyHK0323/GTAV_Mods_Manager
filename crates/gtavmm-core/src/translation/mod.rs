@@ -25,6 +25,35 @@ use crate::error::{CoreError, CoreResult};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["ini", "xml"];
 
+/// Validates and trims the language tag used in prompts and generated file names.
+/// The syntax is restricted to ASCII subtags so it cannot inject path separators or
+/// platform-specific file-name syntax.
+pub fn validate_target_language(target_language: &str) -> Result<&str, String> {
+    let target_language = target_language.trim();
+    let mut language_parts = target_language.split('-');
+    let primary_language = language_parts.next().unwrap_or_default();
+    if target_language.is_empty()
+        || target_language.len() > 35
+        || !(2..=8).contains(&primary_language.len())
+        || !primary_language
+            .bytes()
+            .all(|character| character.is_ascii_alphabetic())
+        || language_parts.any(|part| {
+            part.is_empty()
+                || part.len() > 8
+                || !part
+                    .bytes()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+    {
+        return Err(
+            "target language must start with a 2-8 letter code and use optional 1-8 character ASCII subtags"
+                .to_string(),
+        );
+    }
+    Ok(target_language)
+}
+
 const TRANSLATION_PROMPT_PREFIX_TEMPLATE: &str = "You are translating the human-readable \
     text inside a GTA V mod's configuration file into {target_language}. Preserve every \
     key, tag, attribute name, and structural character exactly as-is — translate only the \
@@ -41,6 +70,8 @@ pub fn generate_draft(
     source_path: &Path,
     target_language: &str,
 ) -> CoreResult<PathBuf> {
+    let target_language = validate_target_language(target_language)
+        .map_err(|reason| CoreError::AiAssistant { reason })?;
     let ext = source_path
         .extension()
         .and_then(|e| e.to_str())
@@ -74,6 +105,8 @@ pub fn generate_draft(
 }
 
 fn sibling_draft_path(source_path: &Path, target_language: &str) -> CoreResult<PathBuf> {
+    let target_language = validate_target_language(target_language)
+        .map_err(|reason| CoreError::AiAssistant { reason })?;
     let stem = source_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -94,6 +127,43 @@ fn sibling_draft_path(source_path: &Path, target_language: &str) -> CoreResult<P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_target_language_trims_and_accepts_language_tags() {
+        assert_eq!(validate_target_language(" zh-TW ").unwrap(), "zh-TW");
+        assert_eq!(
+            validate_target_language("sr-Latn-RS").unwrap(),
+            "sr-Latn-RS"
+        );
+    }
+
+    #[test]
+    fn validate_target_language_rejects_path_syntax_and_invalid_subtags() {
+        for candidate in [
+            "../outside",
+            r"..\outside",
+            "en/US",
+            r"en\US",
+            "/tmp/zh-TW",
+            "x",
+            "zh--TW",
+        ] {
+            assert!(
+                validate_target_language(candidate).is_err(),
+                "accepted unsafe or invalid target language: {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn sibling_draft_path_rejects_path_syntax_in_target_language() {
+        for candidate in ["../outside", r"..\outside", "en/US", r"en\US"] {
+            assert!(
+                sibling_draft_path(Path::new("C:/mods/outfit.xml"), candidate).is_err(),
+                "accepted unsafe target language: {candidate}"
+            );
+        }
+    }
 
     #[test]
     fn refuses_unsupported_extensions_before_touching_the_ai_provider() {

@@ -13,6 +13,16 @@ function defaultOutputPath(path: string, targetLanguage: string): string {
   return `${stem}.${targetLanguage}.dll`;
 }
 
+function isValidTargetLanguage(value: string): boolean {
+  const targetLanguage = value.trim();
+  if (!targetLanguage || targetLanguage.length > 35) return false;
+  const [primaryLanguage, ...subtags] = targetLanguage.split("-");
+  return (
+    /^[A-Za-z]{2,8}$/.test(primaryLanguage) &&
+    subtags.every((part) => /^[A-Za-z0-9]{1,8}$/.test(part))
+  );
+}
+
 const REVIEW_LIST_HEIGHT = 360;
 const REVIEW_ROW_HEIGHT = 76;
 
@@ -46,6 +56,8 @@ export function DllTranslationPage() {
   const [customOutputPath, setCustomOutputPath] = useState<string | null>(null);
   const [overwriteOriginal, setOverwriteOriginal] = useState(false);
   const [confirmingOverwrite, setConfirmingOverwrite] = useState(false);
+  const targetLanguageValid = isValidTargetLanguage(targetLanguage);
+  const normalizedTargetLanguage = targetLanguage.trim();
 
   async function pickAndInspect() {
     try {
@@ -65,13 +77,13 @@ export function DllTranslationPage() {
   }
 
   async function aiTranslateAll() {
-    if (!path) return;
+    if (!path || !targetLanguageValid) return;
     setAiBusy(true);
     setError(null);
     try {
       const drafts = await invoke<TranslatedDraftEntry[]>("translate_dll_draft", {
         dllPath: path,
-        targetLanguage,
+        targetLanguage: normalizedTargetLanguage,
       });
       setTranslations((prev) => {
         const next = [...prev];
@@ -94,19 +106,19 @@ export function DllTranslationPage() {
   }
 
   async function chooseOutputPath() {
-    if (!path) return;
-    const picked = await pickSaveFile(defaultOutputPath(path, targetLanguage), ["dll"]);
+    if (!path || !targetLanguageValid) return;
+    const picked = await pickSaveFile(defaultOutputPath(path, normalizedTargetLanguage), ["dll"]);
     if (picked) setCustomOutputPath(picked);
   }
 
   async function runPatch() {
-    if (!path) return;
+    if (!path || !targetLanguageValid) return;
     setPatching(true);
     setError(null);
     try {
       const result = await invoke<DllTranslationOutcome>("patch_dll_translations", {
         dllPath: path,
-        targetLanguage,
+        targetLanguage: normalizedTargetLanguage,
         translations,
         outputPath: overwriteOriginal ? path : customOutputPath,
       });
@@ -122,6 +134,7 @@ export function DllTranslationPage() {
   }
 
   function patchAll() {
+    if (!targetLanguageValid) return;
     if (overwriteOriginal) {
       setConfirmingOverwrite(true);
       return;
@@ -178,14 +191,27 @@ export function DllTranslationPage() {
                 <input
                   type="text"
                   value={targetLanguage}
+                  maxLength={35}
+                  aria-invalid={!targetLanguageValid}
+                  aria-describedby={!targetLanguageValid ? "dll-target-language-error" : undefined}
                   onChange={(e) => setTargetLanguage(e.target.value)}
                   style={{ width: 100 }}
                 />
               </label>
-              <button className="btn-ghost" type="button" onClick={aiTranslateAll} disabled={aiBusy}>
+              <button
+                className="btn-ghost"
+                type="button"
+                onClick={aiTranslateAll}
+                disabled={aiBusy || !targetLanguageValid}
+              >
                 {aiBusy ? t("dllTranslation.ai_translating") : t("dllTranslation.ai_translate_button")}
               </button>
             </div>
+            {!targetLanguageValid && (
+              <p id="dll-target-language-error" className="error" role="alert">
+                {t("dllTranslation.target_language_invalid")}
+              </p>
+            )}
             <p className="diagnosis-disclaimer" style={{ margin: "0 0 12px" }}>
               {t("dllTranslation.ai_provider_notice")}
             </p>
@@ -257,14 +283,19 @@ export function DllTranslationPage() {
                 <span className="value mono">
                   {overwriteOriginal
                     ? t("dllTranslation.output_overwriting", { path })
-                    : customOutputPath ?? t("dllTranslation.output_default", { path: defaultOutputPath(path, targetLanguage) })}
+                    : customOutputPath ??
+                      (targetLanguageValid
+                        ? t("dllTranslation.output_default", {
+                            path: defaultOutputPath(path, normalizedTargetLanguage),
+                          })
+                        : t("dllTranslation.output_language_invalid"))}
                 </span>
               </div>
               <button
                 className="btn-ghost"
                 type="button"
                 onClick={chooseOutputPath}
-                disabled={overwriteOriginal}
+                disabled={overwriteOriginal || !targetLanguageValid}
               >
                 {t("dllTranslation.choose_output_button")}
               </button>
@@ -275,7 +306,12 @@ export function DllTranslationPage() {
               )}
             </div>
 
-            <button className="btn-primary" type="button" onClick={patchAll} disabled={patching}>
+            <button
+              className="btn-primary"
+              type="button"
+              onClick={patchAll}
+              disabled={patching || !targetLanguageValid}
+            >
               {patching ? t("dllTranslation.patching") : t("dllTranslation.patch_button")}
             </button>{" "}
             <button className="icon-btn" type="button" onClick={reset}>

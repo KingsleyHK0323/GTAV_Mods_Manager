@@ -167,6 +167,8 @@ pub fn translate_draft(
     target_language: &str,
     batch_size: usize,
 ) -> CoreResult<Vec<TranslatedDraftEntry>> {
+    let target_language = crate::translation::validate_target_language(target_language)
+        .map_err(|reason| CoreError::DllTranslation { reason })?;
     let bytes = std::fs::read(dll_path)?;
     let layout = parse_and_guard(&bytes)?;
     let Candidates { source_texts, .. } = extract_candidates(&bytes, &layout)?;
@@ -215,6 +217,8 @@ pub fn patch_with_translations(
     translations: &[String],
     output_path: Option<&Path>,
 ) -> CoreResult<DllTranslationOutcome> {
+    let target_language = crate::translation::validate_target_language(target_language)
+        .map_err(|reason| CoreError::DllTranslation { reason })?;
     let bytes = std::fs::read(dll_path)?;
     let layout = parse_and_guard(&bytes)?;
     let Candidates {
@@ -315,6 +319,8 @@ fn parse_and_guard(bytes: &[u8]) -> CoreResult<pe::PeLayout> {
 }
 
 fn sibling_translated_path(dll_path: &Path, target_language: &str) -> CoreResult<PathBuf> {
+    let target_language = crate::translation::validate_target_language(target_language)
+        .map_err(|reason| CoreError::DllTranslation { reason })?;
     let stem = dll_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -322,7 +328,13 @@ fn sibling_translated_path(dll_path: &Path, target_language: &str) -> CoreResult
             reason: format!("could not determine a file name for {}", dll_path.display()),
         })?;
     let file_name = format!("{stem}.{target_language}.dll");
-    Ok(dll_path.with_file_name(file_name))
+    let output_path = dll_path.with_file_name(file_name);
+    if output_path.parent() != dll_path.parent() {
+        return Err(CoreError::DllTranslation {
+            reason: "default translation output must remain beside the source DLL".to_string(),
+        });
+    }
+    Ok(output_path)
 }
 
 /// Sends one batch through [`crate::ai_assistant::call_provider`] — the same single
@@ -391,7 +403,39 @@ mod tests {
         let original = Path::new("H:/mods/GangModV1.dll");
         let out = sibling_translated_path(original, "zh-TW").unwrap();
         assert_eq!(out, Path::new("H:/mods/GangModV1.zh-TW.dll"));
+        assert_eq!(out.parent(), original.parent());
         assert_ne!(out, original);
+    }
+
+    #[test]
+    fn sibling_translated_path_rejects_path_syntax_in_target_language() {
+        let original = Path::new("H:/mods/GangModV1.dll");
+        for candidate in ["../outside", r"..\outside", "en/US", r"en\US"] {
+            assert!(
+                sibling_translated_path(original, candidate).is_err(),
+                "accepted unsafe target language: {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_rejects_unsafe_target_language_before_reading_or_creating_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_source = dir.path().join("missing.dll");
+        let custom_output = dir.path().join("should-not-exist.dll");
+        let err = patch_with_translations(&missing_source, "../outside", &[], Some(&custom_output))
+            .unwrap_err();
+
+        match err {
+            CoreError::DllTranslation { reason } => {
+                assert!(
+                    reason.contains("target language"),
+                    "unexpected error: {reason}"
+                );
+            }
+            other => panic!("expected a target-language validation error, got {other:?}"),
+        }
+        assert!(!custom_output.exists());
     }
 
     #[test]
