@@ -1,0 +1,103 @@
+<!-- OpenAI-Codex_Responsible: Website -->
+---
+interface Props {
+	locale: 'zh-TW' | 'en';
+}
+
+import packageInfo from '../../package.json';
+
+const { locale } = Astro.props;
+const english = locale === 'en';
+const version = packageInfo.version;
+---
+
+<div class="landing-sections">
+	<section class="landing-lead" aria-labelledby="landing-lead-title">
+		<p class="version-label">Version {version} · {english ? 'Initial website preview' : '網站初版預覽'}</p>
+		<p class="folder-label">{english ? 'A calmer mod workflow' : '模組管理，清楚一點'}</p>
+		<h2 id="landing-lead-title">{english ? 'See the important details before you act.' : '先看清楚，再進行操作。'}</h2>
+		<p>{english ? 'Keep the library, install review, language variants, and change summary close together. The web preview below uses sample records only.' : '把模組清單、安裝檢視、語言版本與變更摘要整理在一起。以下畫面都是範例資料。'}</p>
+	</section>
+
+	<p class="landing-note">{english ? 'The live demo is isolated from your PC. It does not scan, read, or write GTA V files.' : '線上 Demo 與你的電腦隔離，不會掃描、讀取或寫入 GTA V 檔案。'}</p>
+
+	<section aria-label={english ? 'Product interface previews' : '產品介面預覽'}>
+		<div class="landing-grid">
+			<article class="landing-card">
+				<span class="folder-label">{english ? 'Library' : '模組庫'}</span>
+				<h3>{english ? 'Know what is enabled.' : '一眼掌握啟用狀態。'}</h3>
+				<div class="mini-window" aria-label={english ? 'Sample library interface' : '範例模組清單介面'}>
+					<div class="mini-window-head"><span>{english ? 'My library' : '我的模組庫'}</span><span>03</span></div>
+					<div class="mini-list">
+						<div class="mini-row"><span>Night Lighting Pack</span><span class="mini-status" data-state="ready">{english ? 'Enabled' : '已啟用'}</span></div>
+						<div class="mini-row"><span>Harbor Weather Set</span><span class="mini-status" data-state="paused">{english ? 'Paused' : '已停用'}</span></div>
+						<div class="mini-row"><span>Coastal Detail Kit</span><span class="mini-status" data-state="ready">{english ? 'Enabled' : '已啟用'}</span></div>
+					</div>
+				</div>
+				<p>{english ? 'A readable list keeps names, categories, and status within easy reach.' : '名稱、分類與狀態放在容易查看的位置。'}</p>
+			</article>
+
+			<article class="landing-card">
+				<span class="folder-label">{english ? 'Install review' : '安裝檢視'}</span>
+				<h3>{english ? 'Review a sample change.' : '先預覽範例變更。'}</h3>
+				<div class="mini-window" aria-label={english ? 'Sample install review' : '範例安裝檢視'}>
+					<div class="mini-window-head"><span>{english ? 'Install preview' : '安裝預覽'}</span><span class="mini-chip">{english ? 'Ready to review' : '等待檢視'}</span></div>
+					<div class="mini-summary">
+						<div class="mini-summary-row"><span>{english ? 'Package' : '套件'}</span><strong>Harbor Weather Set</strong></div>
+						<div class="mini-summary-row"><span>{english ? 'Files in sample' : '範例檔案數'}</span><strong>4</strong></div>
+						<div class="mini-summary-row"><span>{english ? 'Game folders changed' : '實際遊戲資料夾'}</span><strong>0</strong></div>
+					</div>
+				</div>
+				<p>{english ? 'The demo explains each action before changing its in-memory sample list.' : 'Demo 會先說明動作，再變更頁面記憶體中的範例清單。'}</p>
+			</article>
+
+			<article class="landing-card">
+				<span class="folder-label">{english ? 'Language sets' : '語言版本'}</span>
+				<h3>{english ? 'Keep language variants together.' : '把不同語言版本放在一起。'}</h3>
+				<div class="mini-window" aria-label={english ? 'Sample language variants' : '範例語言版本'}>
+					<div class="mini-window-head"><span>Radio Pack</span><span>2</span></div>
+					<div class="mini-languages">
+						<div class="mini-language-row"><span>{english ? 'English' : '英文'}</span><span class="mini-chip">EN</span></div>
+						<div class="mini-language-row"><span>{english ? 'Traditional Chinese' : '繁體中文'}</span><span class="mini-chip">ZH-TW</span></div>
+					</div>
+				</div>
+				<p>{english ? 'Group translations with the mod they belong to, so you can find the right variant later.' : '讓翻譯與所屬模組一起管理，日後更容易找到正確版本。'}</p>
+			</article>
+
+			<article class="landing-card">
+				<span class="folder-label">{english ? 'Change summary' : '變更摘要'}</span>
+				<h3>{english ? 'Keep each step understandable.' : '每一步都看得明白。'}</h3>
+				<div class="mini-window" aria-label={english ? 'Sample change summary' : '範例變更摘要'}>
+					<div class="mini-window-head"><span>{english ? 'This demo session' : '本次 Demo 操作'}</span><span class="mini-chip">{english ? 'Local preview' : '頁面預覽'}</span></div>
+					<div class="mini-summary">
+						<div class="mini-summary-row"><span>{english ? 'Sample entries' : '範例項目'}</span><strong>3</strong></div>
+						<div class="mini-summary-row"><span>{english ? 'Real files touched' : '實際檔案變更'}</span><strong>0</strong></div>
+						<div class="mini-summary-row"><span>{english ? 'Changes saved' : '已儲存變更'}</span><strong>{english ? 'No' : '否'}</strong></div>
+					</div>
+				</div>
+				<p>{english ? 'The sample state resets when you leave or refresh the demo page.' : '離開或重新整理 Demo 頁面後，範例狀態就會重設。'}</p>
+			</article>
+		</div>
+	</section>
+
+	<section class="workflow-grid" aria-label={english ? 'Three-step workflow' : '三步操作流程'}>
+		<article class="workflow-step"><span class="step-number">01</span><h3>{english ? 'Choose' : '選擇'}</h3><p>{english ? 'Find a mod or language variant in your library.' : '在模組庫中找到模組或語言版本。'}</p></article>
+		<article class="workflow-step"><span class="step-number">02</span><h3>{english ? 'Review' : '檢視'}</h3><p>{english ? 'Read the summary and check which action you are taking.' : '閱讀摘要，確認將執行的動作。'}</p></article>
+		<article class="workflow-step"><span class="step-number">03</span><h3>{english ? 'Manage' : '管理'}</h3><p>{english ? 'Return later to find the item and its current state.' : '之後仍可回來查看項目與目前狀態。'}</p></article>
+	</section>
+
+	<section class="landing-cta" aria-labelledby="landing-cta-title">
+		<div>
+			<h2 id="landing-cta-title">{english ? 'Try the sample workflow.' : '試試範例操作流程。'}</h2>
+			<p>{english ? 'The interactive demo is ready in your browser.' : '互動 Demo 可直接在瀏覽器中操作。'}</p>
+		</div>
+		<div class="landing-cta-actions">
+			<a class="sl-link-button primary" href={english ? '/en/demo/' : '/demo/'}>{english ? 'Open the demo' : '開啟互動 Demo'}</a>
+			<a class="sl-link-button secondary" href="https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases">{english ? 'Desktop app releases' : '查看桌面版發布'}</a>
+			<nav class="landing-cta-community" aria-label={english ? 'Community and project links' : '社群與專案連結'}>
+				<a href="https://discord.gg/aaUQVJeCgC">Discord {english ? 'community' : '社群'}</a>
+				<a href="https://github.com/SpaceSquare640/GTAV_Mods_Manager">GitHub {english ? 'project' : '專案'}</a>
+			</nav>
+		</div>
+	</section>
+</div>

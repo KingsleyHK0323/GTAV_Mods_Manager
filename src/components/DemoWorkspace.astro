@@ -1,0 +1,86 @@
+<!-- OpenAI-Codex_Responsible: Website -->
+---
+interface Props {
+	locale: 'zh-TW' | 'en';
+}
+
+const { locale } = Astro.props;
+const english = locale === 'en';
+---
+
+<section class="demo-workspace" data-demo-root data-locale={locale} aria-labelledby="demo-title">
+	<p class="folder-label">{english ? 'Sample data only' : '僅使用範例資料'}</p>
+	<h2 id="demo-title">{english ? 'Try the mod library.' : '試用模組清單。'}</h2>
+	<p>{english ? 'Search, filter, and change a sample item. Every change stays in this page’s memory.' : '搜尋、篩選並切換範例項目。所有操作只留在目前頁面的記憶體中。'}</p>
+	<div class="demo-safety-note" role="note">
+		<strong>{english ? 'This demo cannot access your game files.' : '此 Demo 不會存取你的遊戲檔案。'}</strong>
+		<span> {english ? 'It does not read folders, install mods, call APIs from its controls, or save your actions.' : '它不會讀取資料夾、安裝模組、由操作介面呼叫 API 或儲存你的操作。'}</span>
+	</div>
+
+	<div class="demo-toolbar">
+		<label class="demo-field" for="demo-search">
+			{english ? 'Find a sample mod' : '搜尋範例模組'}
+			<input id="demo-search" type="search" autocomplete="off" data-demo-search placeholder={english ? 'Search by name or category' : '依名稱或分類搜尋'} />
+		</label>
+		<label class="demo-field" for="demo-filter">
+			{english ? 'Show status' : '顯示狀態'}
+			<select id="demo-filter" data-demo-filter>
+				<option value="all">{english ? 'All items' : '所有項目'}</option>
+				<option value="enabled">{english ? 'Enabled' : '已啟用'}</option>
+				<option value="disabled">{english ? 'Disabled' : '已停用'}</option>
+			</select>
+		</label>
+		<button class="demo-button demo-button-primary" type="button" data-demo-install>{english ? 'Preview sample install' : '預覽範例安裝'}</button>
+		<button class="demo-button" type="button" data-demo-reset>{english ? 'Reset demo' : '重設 Demo'}</button>
+	</div>
+
+	<p class="sr-only" id="demo-instructions" data-demo-instructions>{english ? 'Use the Options button, right-click a row, or press Shift plus F10 to open row actions.' : '使用「選項」按鈕、在項目上按右鍵，或按 Shift 加 F10 開啟項目操作。'}</p>
+	<div class="demo-summary">
+		<span><strong data-summary-total>3</strong> <span data-summary-total-label>{english ? 'sample items' : '個範例項目'}</span></span>
+		<span><strong data-summary-enabled>2</strong> <span data-summary-enabled-label>{english ? 'enabled' : '個已啟用'}</span></span>
+		<span><strong data-summary-disabled>1</strong> <span data-summary-disabled-label>{english ? 'disabled' : '個已停用'}</span></span>
+	</div>
+
+	<div class="demo-table-wrap">
+		<table class="demo-table" aria-describedby="demo-instructions">
+			<thead>
+				<tr>
+					<th scope="col">{english ? 'Mod' : '模組'}</th>
+					<th scope="col">{english ? 'Language' : '語言'}</th>
+					<th scope="col">{english ? 'Status' : '狀態'}</th>
+					<th scope="col"><span class="sr-only">{english ? 'Actions' : '操作'}</span></th>
+				</tr>
+			</thead>
+			<tbody data-demo-list>
+				<tr><td colspan="4">{english ? 'Loading sample list…' : '正在載入範例清單…'}</td></tr>
+			</tbody>
+		</table>
+	</div>
+
+	<div class="demo-context-menu" role="menu" aria-label={english ? 'Sample mod actions' : '範例模組操作'} data-context-menu hidden>
+		<button class="demo-menu-item" type="button" role="menuitem" data-menu-toggle></button>
+		<button class="demo-menu-item" type="button" role="menuitem" data-menu-details>{english ? 'View details' : '查看詳細資料'}</button>
+	</div>
+
+	<dialog class="demo-dialog" aria-labelledby="install-dialog-title" data-install-dialog>
+		<h2 id="install-dialog-title">{english ? 'Review sample install' : '檢視範例安裝'}</h2>
+		<p>{english ? 'This adds one sample item to the list in this page only. No files will be read or changed.' : '這只會在目前頁面的清單中加入一個範例項目，不會讀取或變更任何檔案。'}</p>
+		<div class="dialog-actions">
+			<button class="demo-button demo-button-primary" type="button" data-install-confirm>{english ? 'Add sample item' : '加入範例項目'}</button>
+			<button class="demo-button" type="button" data-install-cancel>{english ? 'Cancel' : '取消'}</button>
+		</div>
+	</dialog>
+
+	<dialog class="demo-dialog" aria-labelledby="details-dialog-title" data-details-dialog>
+		<h2 id="details-dialog-title">{english ? 'Sample item details' : '範例項目詳細資料'}</h2>
+		<p data-details-copy></p>
+		<div class="dialog-actions">
+			<button class="demo-button" type="button" data-details-close>{english ? 'Close' : '關閉'}</button>
+		</div>
+	</dialog>
+	<p class="demo-toast" data-demo-announcement aria-live="polite"></p>
+</section>
+
+<script>
+	import '../scripts/demo.js';
+</script>

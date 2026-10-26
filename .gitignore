@@ -1,0 +1,7 @@
+# OpenAI-Codex_Responsible: Website
+node_modules/
+dist/
+.astro/
+.taste-skill/
+.DS_Store
+Thumbs.db
