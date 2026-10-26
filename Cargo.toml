@@ -36,7 +36,7 @@ keyring = "3"
 rpf-archive = "0.7"
 
 [workspace.dependencies.winreg]
-version = "0.52"
+version = "0.55"
 
 [workspace.dependencies.ureq]
 version = "2"
