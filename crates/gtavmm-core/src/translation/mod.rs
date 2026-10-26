@@ -19,7 +19,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesStart, BytesText, Event};
 use quick_xml::Reader;
 use rusqlite::Connection;
 
@@ -89,9 +89,9 @@ enum XmlStructureEntry {
     End(String),
     GeneralReference(Vec<u8>),
     Declaration {
-        version: String,
-        encoding: Option<String>,
-        standalone: Option<String>,
+        version: Vec<u8>,
+        encoding: Option<Vec<u8>>,
+        standalone: Option<Vec<u8>>,
     },
     DocType(Vec<u8>),
     ProcessingInstruction(Vec<u8>),
@@ -257,6 +257,39 @@ fn xml_element_signature(
     Ok((name, attributes))
 }
 
+// OpenAI-Codex_Responsible: Source_Code: preserve custom entity references in 0.36.2 text events.
+fn append_xml_general_references(
+    text: &BytesText<'_>,
+    entries: &mut Vec<XmlStructureEntry>,
+) -> Result<(), String> {
+    text.unescape_with(|entity| Some(entity))
+        .map_err(|error| format!("invalid XML text reference: {error}"))?;
+
+    let mut remaining = text.as_ref();
+    while let Some(ampersand_index) = remaining.iter().position(|byte| *byte == b'&') {
+        let after_ampersand = &remaining[ampersand_index + 1..];
+        let semicolon_index = after_ampersand
+            .iter()
+            .position(|byte| *byte == b';')
+            .ok_or_else(|| "unterminated XML entity reference".to_string())?;
+        let reference_name = &after_ampersand[..semicolon_index];
+        if reference_name.is_empty() {
+            return Err("empty XML entity reference".to_string());
+        }
+        let is_predefined_reference = reference_name == b"amp"
+            || reference_name == b"lt"
+            || reference_name == b"gt"
+            || reference_name == b"apos"
+            || reference_name == b"quot";
+        if !reference_name.starts_with(b"#") && !is_predefined_reference {
+            entries.push(XmlStructureEntry::GeneralReference(reference_name.to_vec()));
+        }
+        remaining = &after_ampersand[semicolon_index + 1..];
+    }
+
+    Ok(())
+}
+
 /// Parses a complete XML document and captures its ordered element/attribute structure.
 /// Text and attribute values are intentionally ignored because they are translation targets.
 fn xml_structure_signature(content: &str) -> Result<Vec<XmlStructureEntry>, String> {
@@ -320,29 +353,12 @@ fn xml_structure_signature(content: &str) -> Result<Vec<XmlStructureEntry>, Stri
                         );
                     }
                     declaration_allowed = false;
+                } else {
+                    append_xml_general_references(&text, &mut entries)?;
                 }
             }
             Ok(Event::CData(_)) if open_elements.is_empty() => {
                 return Err("content appears outside the root element".to_string());
-            }
-            Ok(Event::GeneralRef(reference)) => {
-                if open_elements.is_empty() {
-                    return Err("content appears outside the root element".to_string());
-                }
-                let raw_reference = reference.as_ref();
-                let reference_content = raw_reference.strip_prefix(b"&").unwrap_or(raw_reference);
-                let reference_name = reference_content
-                    .strip_suffix(b";")
-                    .unwrap_or(reference_content);
-                let is_text_reference = reference_name.starts_with(b"#")
-                    || reference_name == b"amp"
-                    || reference_name == b"lt"
-                    || reference_name == b"gt"
-                    || reference_name == b"apos"
-                    || reference_name == b"quot";
-                if !is_text_reference {
-                    entries.push(XmlStructureEntry::GeneralReference(reference_name.to_vec()));
-                }
             }
             Ok(Event::Decl(declaration)) => {
                 if root_seen || declaration_seen || !declaration_allowed {
@@ -365,7 +381,7 @@ fn xml_structure_signature(content: &str) -> Result<Vec<XmlStructureEntry>, Stri
                     .map(|value| value.into_owned());
                 if encoding
                     .as_deref()
-                    .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("UTF-8"))
+                    .is_some_and(|encoding| !encoding.eq_ignore_ascii_case(b"UTF-8"))
                 {
                     return Err("only UTF-8 XML encoding declarations are supported".to_string());
                 }
@@ -693,6 +709,15 @@ mod tests {
     }
 
     #[test]
+    fn xml_structure_allows_text_translation_around_an_unchanged_general_entity_reference() {
+        let source = "<!DOCTYPE root [<!ENTITY field \"fixed\">]><root>Loading &field; now.</root>";
+        let translated =
+            "<!DOCTYPE root [<!ENTITY field \"fixed\">]><root>正在載入 &field;。</root>";
+
+        assert!(validate_translation_structure(Path::new("mod.xml"), source, translated).is_ok());
+    }
+
+    #[test]
     fn xml_structure_allows_equivalent_numeric_character_references() {
         let source = "<Settings>&#x4E2D;&amp;</Settings>";
         let translated = "<Settings>中&amp;</Settings>";
@@ -714,6 +739,16 @@ mod tests {
         let translated = r#"<?xml version="1.0" encoding="ISO-8859-1"?><Settings><Label>你好</Label></Settings>"#;
 
         assert!(validate_translation_structure(Path::new("mod.xml"), source, translated).is_err());
+    }
+
+    #[test]
+    fn xml_structure_accepts_lowercase_utf8_declaration() {
+        let source =
+            r#"<?xml version="1.0" encoding="utf-8"?><Settings><Label>Hello</Label></Settings>"#;
+        let translated =
+            r#"<?xml version="1.0" encoding="utf-8"?><Settings><Label>你好</Label></Settings>"#;
+
+        assert!(validate_translation_structure(Path::new("mod.xml"), source, translated).is_ok());
     }
 
     #[test]

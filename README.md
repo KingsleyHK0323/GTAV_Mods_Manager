@@ -44,12 +44,14 @@ the active page's edition before acting. App-created full backups record their G
 the App lists and restores only matching-edition archives and reports skipped unmarked or damaged
 archives. Older unmarked archives are rejected by App restore because their source edition cannot
 be verified. The Legacy SP Excel export includes only Legacy SP installed and uninstalled records.
-<!-- OpenAI-Codex: generated INI/XML drafts are structurally checked before writing. -->
+<!-- OpenAI-Codex_Responsible: Source_Code: generated INI/XML drafts use quick-xml 0.36.2 structural checks. -->
 The Tools editor can generate AI translation drafts from saved INI/XML files. The core rejects
 drafts that change INI section or key syntax, contain XML parse errors, or change XML element,
-attribute, namespace binding, or nesting structure. The original file and any existing draft
-remain unchanged when validation fails. Indented INI lines that look like assignments or section
-headers remain structural; the validator does not guess mod-specific continuation syntax.
+attribute, namespace binding, or nesting structure. Custom XML entity references in element text
+must remain unchanged; predefined and numeric character references are excluded from the structural
+signature. The original file and any existing draft remain unchanged when validation fails. Indented
+INI lines that look like assignments or section headers remain structural; the validator does not
+guess mod-specific continuation syntax.
 The translation tools support reviewable DLL, INI, and XML output through Ollama Local, Ollama Cloud,
 OpenAI, Anthropic, DeepSeek, OpenRouter, Google AI, or NVIDIA AI. Provider API keys are stored
 separately in the operating system's credential store. Translation inputs are sent unchanged and may
