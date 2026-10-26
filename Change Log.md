@@ -2,6 +2,11 @@
 <!-- OpenAI-Codex_Responsible: Website -->
 # Change Log
 
+## 0.1.1 — 2026-10-27
+
+- Fix the English mod installation guide's MDX comment so the documentation build succeeds.
+- Update the website version to `0.1.1`.
+
 ## 0.1.0 — 2026-10-26
 
 - Restore the Starlight docs collection loader and schema required to generate the documentation routes.
