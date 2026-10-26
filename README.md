@@ -84,7 +84,7 @@ unless a file states otherwise. Third-party content retains its own license and 
 
 ## Author
 
-SpaceSquare
+Kingsley
 
 ## Repository
 
