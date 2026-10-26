@@ -2,6 +2,11 @@
 <!-- OpenAI-Codex_Responsible: Website -->
 # Change Log
 
+## 0.1.2 — 2026-10-27
+
+- Move the component signature comments into Astro frontmatter so the compiler can parse component props.
+- Update the website version to `0.1.2`.
+
 ## 0.1.1 — 2026-10-27
 
 - Fix the English mod installation guide's MDX comment so the documentation build succeeds.

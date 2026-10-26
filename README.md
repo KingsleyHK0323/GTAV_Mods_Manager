@@ -2,7 +2,7 @@
 <!-- OpenAI-Codex_Responsible: Website -->
 # GTAV Mods Manager Website
 
-Version `0.1.1` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
+Version `0.1.2` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
 
 > **Visit the website:** [Open the GTAV Mods Manager website](https://spacesquare640.github.io/GTAV_Mods_Manager/)
 
@@ -18,7 +18,7 @@ Copyright © Kingsley.
 
 ## Versioning
 
-The website uses Semantic Versioning (`MAJOR.MINOR.PATCH`). `MAJOR` marks incompatible changes, `MINOR` adds functionality or content compatibly, and `PATCH` covers backward-compatible fixes. The current version is `0.1.1`.
+The website uses Semantic Versioning (`MAJOR.MINOR.PATCH`). `MAJOR` marks incompatible changes, `MINOR` adds functionality or content compatibly, and `PATCH` covers backward-compatible fixes. The current version is `0.1.2`.
 
 ## Build automation
 
