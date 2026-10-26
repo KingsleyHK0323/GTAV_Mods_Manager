@@ -21,6 +21,8 @@
 
 ### Fixed
 
+- Validated generated INI/XML translation drafts before writing; changed INI sections/keys, XML parse errors, and changed XML element/attribute/namespace structure are rejected without creating a draft.
+- Kept indented INI assignments and section headers structural when continuation semantics are ambiguous.
 - Validated DLL translation language tags at the UI, Tauri, and core boundaries, and constrained default output paths to the source directory.
 - Formatted the Rust source files reported by GitHub Actions so the workspace formatting check passes.
 - Preserved explicit LSPDFR game-root layouts in mod folders and archives, including one `Grand Theft Auto V` wrapper, while keeping ordinary replacer files under `mods` and refusing ambiguous DLL packages.
