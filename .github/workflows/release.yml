@@ -1,5 +1,6 @@
 name: Release
 
+# OpenAI-Codex_Responsible: Source_Code
 # OpenAI-Codex: Reuse the CI validation workflow before publishing installers.
 # Builds real Tauri installers (Windows .msi/.exe, Linux .deb/.rpm) for
 # gtavmm-app and publishes them as a GitHub Release, gated by the full test suite.
@@ -70,6 +71,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "GTAV Mods Manager ${{ github.ref_name }}"
           releaseBody: "See CHANGELOG / commit history for details. Installers are unsigned — Windows SmartScreen / macOS Gatekeeper may warn on first run."
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false

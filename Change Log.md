@@ -6,6 +6,7 @@
 
 ### Added
 
+- Added weekly Dependabot version-update checks for Cargo, npm, and GitHub Actions; tagged installer releases now include GitHub-generated release notes.
 - Added bounded `.rar` mod archive extraction for unencrypted, single-volume RAR 1.5+ archives with UTF-8 or Unicode metadata names. RAR 1.3/1.4, legacy names that require an unspecified code page, symbolic links, redirected entries, unsafe paths, duplicate/colliding names, and archives beyond configured entry or output limits are rejected.
 - Added FiveM Client mod details and lifecycle controls for editing metadata, enabling, disabling, reinstalling, and uninstalling mods.
 - Added mode-aware uninstall path resolution. FiveM Client uninstall now requires an explicit existing client directory; calls that omit a page mode keep the existing GTA V path behavior.
@@ -21,6 +22,7 @@
 
 ### Fixed
 
+- Matched the Tauri DLL inspection command return type to the fingerprinted snapshot consumed by the App.
 - Validated generated INI/XML translation drafts before writing; changed INI sections/keys, XML parse errors, and changed XML element/attribute/namespace structure are rejected without creating a draft.
 - Validated source XML and UTF-8 encoding declarations before contacting an AI provider.
 - Preserved custom XML entity references in escaped text events, validated them with quick-xml 0.36.2's lifetime-safe resolver API, and matched declaration metadata to its byte-based API.

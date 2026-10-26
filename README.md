@@ -11,6 +11,7 @@ Enhanced single-player mods, LSPDFR, and FiveM.
 <!-- Updated by OpenAI-Codex: FiveM Client folder path is saved locally. -->
 <!-- Updated by OpenAI-Codex: recycle-bin restores use recorded roots and preserve incomplete snapshots. -->
 <!-- OpenAI-Codex: Translation supports provider-specific AI adapters and refuses output collisions. -->
+<!-- OpenAI-Codex_Responsible: Source_Code -->
 <!-- OpenAI-Codex: GTA install previews and installs require a configured path and reject edition mismatches. -->
 <!-- OpenAI-Codex: Page lifecycle actions and SP/LSPDFR tools use the configured path and verify the page edition. -->
 <!-- OpenAI-Codex: Legacy SP spreadsheet exports are limited to that page's records. -->
@@ -116,7 +117,10 @@ obtained elsewhere.
 
 Automated Rust and frontend validation runs on GitHub-hosted Windows and Ubuntu runners through
 [GitHub Actions CI](.github/workflows/ci.yml). Release builds reuse the same validation workflow
-before publishing installers. Local commands below remain available for interactive development.
+before publishing Windows and Linux installers for `v*.*.*` tags. Release descriptions include
+GitHub-generated notes and retain the installer-signing notice. Dependabot checks Cargo, the App's
+npm dependencies, and GitHub Actions weekly and opens update pull requests when needed. Local
+commands below remain available for interactive development.
 
 ```
 cargo build

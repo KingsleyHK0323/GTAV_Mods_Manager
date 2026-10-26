@@ -569,9 +569,11 @@ pub fn inspect_dll_impl(
 #[tauri::command]
 pub fn inspect_dll(
     dll_path: String,
-) -> Result<gtavmm_core::dll_translation::DllInspection, String> {
+) -> Result<gtavmm_core::dll_translation::DllInspectionSnapshot, String> {
     inspect_dll_impl(&dll_path)
 }
+
+// OpenAI-Codex_Responsible: Source_Code
 
 pub fn translate_dll_draft_impl(
     conn: &Connection,

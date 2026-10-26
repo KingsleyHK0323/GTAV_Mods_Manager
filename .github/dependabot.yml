@@ -1,0 +1,26 @@
+# OpenAI-Codex_Responsible: Source_Code
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Hong_Kong
+
+  - package-ecosystem: npm
+    directory: "/crates/gtavmm-app"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Hong_Kong
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Hong_Kong
