@@ -1,6 +1,11 @@
 <!-- OpenAI-Codex_Responsible: Website -->
 # Change Log
 
+## 0.0.2 — 2026-10-26
+
+- Fix the Starlight logo asset path so Astro can resolve the supplied JPG during the static build.
+- Clarify Kingsley's copyright and the CC BY-NC-SA 4.0 scope for all website content, including supplied images.
+
 ## 0.0.1 — 2026-10-26
 
 - Add the Astro and Starlight website foundation with Traditional Chinese and English routes.

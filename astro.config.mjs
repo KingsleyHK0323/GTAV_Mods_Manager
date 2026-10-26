@@ -16,7 +16,7 @@ export default defineConfig({
 				en: { label: 'English' },
 			},
 			logo: {
-				src: '/assets/app-icon.jpg',
+				src: './src/assets/app-icon.jpg',
 				alt: 'GTAV Mods Manager',
 			},
 			favicon: '/assets/app-icon.jpg',

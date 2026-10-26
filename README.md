@@ -3,6 +3,8 @@
 
 Version `0.0.1` is the first Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
 
+Copyright © Kingsley.
+
 ## What is included
 
 - Traditional Chinese and English pages with Starlight search and navigation.
@@ -13,7 +15,7 @@ Version `0.0.1` is the first Astro and Starlight website draft for GTAV Mods Man
 
 ## Versioning
 
-The website version follows the `x.x.x` version assigned to each website commit and push. The initial version is `0.0.1`.
+The website version follows the `x.x.x` version assigned to each website commit and push. The current version is `0.0.2`.
 
 ## Build automation
 
@@ -21,13 +23,13 @@ The workflow in `.github/workflows/site-build.yml` installs dependencies, audits
 
 ## Visual assets
 
-The project owner supplied JPG versions of the app icon and social preview; both are copied byte-for-byte into `public/assets/`. The app icon is used by the site header and browser icon. The social preview is used for the home page hero and Open Graph/Twitter metadata. The original PNG files remain in the directory but are not used by the site.
+The project owner supplied JPG versions of the app icon and social preview. The app icon is copied byte-for-byte to `src/assets/app-icon.jpg` for the Starlight logo and `public/assets/app-icon.jpg` for the browser icon. The social preview is copied to `public/assets/social-preview.jpg` for the home page hero and Open Graph/Twitter metadata. The original PNG files remain in the directory but are not used by the site.
 
 ## Licenses
 
 - Website source code: [PolyForm Noncommercial License 1.0.0](./LICENSE.md).
-- Website text and original visual content: [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International](./LICENSE-CONTENT.md).
-- The supplied app icon and social preview remain credited to their original owner, Kingsley; the content license does not override rights in those supplied assets.
+- All website content, including text and visual assets such as the supplied app icon and social preview, is licensed under [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International](./LICENSE-CONTENT.md).
+- Website copyright: Kingsley.
 - The license text comes from the [official PolyForm plain-text license](https://polyformproject.org/licenses/noncommercial/1.0.0.txt) and [official Creative Commons legal code](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt). A trailing HTML comment identifies the implementation signature without changing the license wording.
 
 These terms make this project source-available under noncommercial licenses.
