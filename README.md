@@ -52,10 +52,13 @@ remain unchanged when validation fails. Indented INI lines that look like assign
 headers remain structural; the validator does not guess mod-specific continuation syntax.
 The translation tools support reviewable DLL, INI, and XML output through Ollama Local, Ollama Cloud,
 OpenAI, Anthropic, DeepSeek, OpenRouter, Google AI, or NVIDIA AI. Provider API keys are stored
-separately in the operating system's credential store. Cloud translation sends selected file text to
-the configured provider and may incur usage charges; source files and existing translation outputs
-are not overwritten. DLL target-language tags are validated, and default translated DLLs remain
-beside their source files.
+separately in the operating system's credential store. Translation inputs are sent unchanged and may
+include local paths or other sensitive values; diagnosis de-identification does not apply to
+translation. Cloud translation may incur usage charges. Source files and existing translation outputs
+are not overwritten. Config translation requires UTF-8-readable files and rejects XML declarations
+that specify another encoding before contacting a provider. DLL translations are bound to the
+inspected source file, discard pending results after the selected file or target language changes,
+and default translated DLLs remain beside their source files.
 
 Other workflows remain in progress — the CLI remains the most complete way to use the tool today. See the
 [Wiki](https://github.com/SpaceSquare640/GTAV_Mods_Manager/wiki) for a full breakdown of what's

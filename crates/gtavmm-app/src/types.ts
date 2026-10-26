@@ -110,6 +110,7 @@ export interface TranslatableString {
 }
 
 export interface DllInspection {
+  source_sha256: string;
   total_strings: number;
   excluded_technical: number;
   translatable: TranslatableString[];

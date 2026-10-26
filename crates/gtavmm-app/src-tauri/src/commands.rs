@@ -561,8 +561,9 @@ pub fn set_language(state: tauri::State<crate::AppState>, language: String) -> R
 
 pub fn inspect_dll_impl(
     dll_path: &str,
-) -> Result<gtavmm_core::dll_translation::DllInspection, String> {
-    gtavmm_core::dll_translation::inspect(std::path::Path::new(dll_path)).map_err(|e| e.to_string())
+) -> Result<gtavmm_core::dll_translation::DllInspectionSnapshot, String> {
+    gtavmm_core::dll_translation::inspect_with_fingerprint(std::path::Path::new(dll_path))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -576,12 +577,14 @@ pub fn translate_dll_draft_impl(
     conn: &Connection,
     dll_path: &str,
     target_language: &str,
+    expected_sha256: &str,
 ) -> Result<Vec<gtavmm_core::dll_translation::TranslatedDraftEntry>, String> {
     let target_language = gtavmm_core::translation::validate_target_language(target_language)?;
-    let result = gtavmm_core::dll_translation::translate_draft(
+    let result = gtavmm_core::dll_translation::translate_draft_for_source(
         conn,
         std::path::Path::new(dll_path),
         target_language,
+        expected_sha256,
         15,
     )
     .map_err(|e| e.to_string());
@@ -601,22 +604,25 @@ pub fn translate_dll_draft(
     state: tauri::State<crate::AppState>,
     dll_path: String,
     target_language: String,
+    expected_sha256: String,
 ) -> Result<Vec<gtavmm_core::dll_translation::TranslatedDraftEntry>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    translate_dll_draft_impl(&conn, &dll_path, &target_language)
+    translate_dll_draft_impl(&conn, &dll_path, &target_language, &expected_sha256)
 }
 
 pub fn patch_dll_translations_impl(
     dll_path: &str,
     target_language: &str,
+    expected_sha256: &str,
     translations: Vec<String>,
     output_path: Option<&str>,
 ) -> Result<gtavmm_core::dll_translation::DllTranslationOutcome, String> {
     let target_language = gtavmm_core::translation::validate_target_language(target_language)?;
     let output_path = output_path.map(std::path::Path::new);
-    let result = gtavmm_core::dll_translation::patch_with_translations(
+    let result = gtavmm_core::dll_translation::patch_with_translations_for_source(
         std::path::Path::new(dll_path),
         target_language,
+        expected_sha256,
         &translations,
         output_path,
     )
@@ -647,12 +653,14 @@ pub fn patch_dll_translations_impl(
 pub fn patch_dll_translations(
     dll_path: String,
     target_language: String,
+    expected_sha256: String,
     translations: Vec<String>,
     output_path: Option<String>,
 ) -> Result<gtavmm_core::dll_translation::DllTranslationOutcome, String> {
     patch_dll_translations_impl(
         &dll_path,
         &target_language,
+        &expected_sha256,
         translations,
         output_path.as_deref(),
     )
@@ -2656,7 +2664,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("not-a-dll.dll");
         std::fs::write(&path, b"not a real PE file").unwrap();
-        assert!(translate_dll_draft_impl(&conn, path.to_str().unwrap(), "zh-TW").is_err());
+        let source_sha256 = gtavmm_core::hash_calculator::compute(&path).unwrap().sha256;
+        assert!(
+            translate_dll_draft_impl(&conn, path.to_str().unwrap(), "zh-TW", &source_sha256)
+                .is_err()
+        );
         assert!(!dir.path().join("not-a-dll.zh-TW.dll").exists());
     }
 
@@ -2665,9 +2677,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("not-a-dll.dll");
         std::fs::write(&path, b"not a real PE file").unwrap();
+        let source_sha256 = gtavmm_core::hash_calculator::compute(&path).unwrap().sha256;
         let result = patch_dll_translations_impl(
             path.to_str().unwrap(),
             "zh-TW",
+            &source_sha256,
             vec!["手動翻譯".to_string()],
             None,
         );
@@ -2681,9 +2695,11 @@ mod tests {
         let path = dir.path().join("not-a-dll.dll");
         std::fs::write(&path, b"not a real PE file").unwrap();
         let custom_output = dir.path().join("elsewhere.dll");
+        let source_sha256 = gtavmm_core::hash_calculator::compute(&path).unwrap().sha256;
         let result = patch_dll_translations_impl(
             path.to_str().unwrap(),
             "zh-TW",
+            &source_sha256,
             vec!["手動翻譯".to_string()],
             Some(custom_output.to_str().unwrap()),
         );

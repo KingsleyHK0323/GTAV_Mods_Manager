@@ -142,6 +142,22 @@ fn validate_translation_structure(
     Ok(())
 }
 
+fn validate_xml_source_before_provider(source_path: &Path, source: &str) -> CoreResult<()> {
+    let is_xml = source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"));
+    if !is_xml {
+        return Ok(());
+    }
+
+    xml_structure_signature(source)
+        .map(|_| ())
+        .map_err(|reason| CoreError::AiAssistant {
+            reason: format!("source XML is not structurally valid: {reason}"),
+        })
+}
+
 /// Captures INI sections and assignment keys while ignoring translatable values and comments.
 /// Unknown non-comment syntax is retained verbatim so the provider cannot silently rewrite it.
 /// For unknown INI dialects, key and section syntax remains structural even when indented.
@@ -347,6 +363,12 @@ fn xml_structure_signature(content: &str) -> Result<Vec<XmlStructureEntry>, Stri
                     .transpose()
                     .map_err(|error| format!("invalid XML declaration: {error}"))?
                     .map(|value| value.into_owned());
+                if encoding
+                    .as_deref()
+                    .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("UTF-8"))
+                {
+                    return Err("only UTF-8 XML encoding declarations are supported".to_string());
+                }
                 entries.push(XmlStructureEntry::Declaration {
                     version,
                     encoding,
@@ -435,6 +457,7 @@ pub fn generate_draft(
     }
 
     let content = std::fs::read_to_string(source_path)?;
+    validate_xml_source_before_provider(source_path, &content)?;
     let prompt = format!(
         "{}{content}",
         TRANSLATION_PROMPT_PREFIX_TEMPLATE.replace("{target_language}", target_language)
@@ -525,6 +548,41 @@ mod tests {
         let conn = crate::db::open_in_memory().unwrap();
         let err = generate_draft(&conn, &path, "zh-TW").unwrap_err();
         assert!(matches!(err, CoreError::AiAssistant { .. }));
+    }
+
+    #[test]
+    fn rejects_malformed_xml_before_consulting_the_ai_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mod.xml");
+        std::fs::write(&path, "<Settings>").unwrap();
+
+        let conn = crate::db::open_in_memory().unwrap();
+        let err = generate_draft(&conn, &path, "zh-TW").unwrap_err();
+        let CoreError::AiAssistant { reason } = err else {
+            panic!("expected an XML validation error");
+        };
+
+        assert!(reason.contains("source XML is not structurally valid"));
+        assert!(!reason.contains("AI assistant is disabled"));
+        assert!(!dir.path().join("mod.zh-TW.xml").exists());
+    }
+
+    #[test]
+    fn rejects_non_utf8_xml_encoding_before_consulting_the_ai_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mod.xml");
+        let source = r#"<?xml version="1.0" encoding="ISO-8859-1"?><Settings><Label>Hello</Label></Settings>"#;
+        std::fs::write(&path, source).unwrap();
+
+        let conn = crate::db::open_in_memory().unwrap();
+        let err = generate_draft(&conn, &path, "zh-TW").unwrap_err();
+        let CoreError::AiAssistant { reason } = err else {
+            panic!("expected an XML encoding validation error");
+        };
+
+        assert!(reason.contains("UTF-8"));
+        assert!(!reason.contains("AI assistant is disabled"));
+        assert!(!dir.path().join("mod.zh-TW.xml").exists());
     }
 
     #[test]

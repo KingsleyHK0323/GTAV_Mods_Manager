@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFile, pickSaveFile } from "../lib/pickers";
@@ -56,10 +56,13 @@ export function DllTranslationPage() {
   const [customOutputPath, setCustomOutputPath] = useState<string | null>(null);
   const [overwriteOriginal, setOverwriteOriginal] = useState(false);
   const [confirmingOverwrite, setConfirmingOverwrite] = useState(false);
+  const translationRequestId = useRef(0);
   const targetLanguageValid = isValidTargetLanguage(targetLanguage);
   const normalizedTargetLanguage = targetLanguage.trim();
 
   async function pickAndInspect() {
+    translationRequestId.current += 1;
+    setAiBusy(false);
     try {
       const picked = await pickFile(["dll"], t("dllTranslation.pick_title"));
       if (!picked) return;
@@ -77,23 +80,26 @@ export function DllTranslationPage() {
   }
 
   async function aiTranslateAll() {
-    if (!path || !targetLanguageValid) return;
+    if (!path || !inspection || !targetLanguageValid) return;
+    const requestId = ++translationRequestId.current;
     setAiBusy(true);
     setError(null);
     try {
       const drafts = await invoke<TranslatedDraftEntry[]>("translate_dll_draft", {
         dllPath: path,
         targetLanguage: normalizedTargetLanguage,
+        expectedSha256: inspection.source_sha256,
       });
+      if (requestId !== translationRequestId.current) return;
       setTranslations((prev) => {
         const next = [...prev];
         for (const d of drafts) next[d.index] = d.translated;
         return next;
       });
     } catch (e) {
-      setError(String(e));
+      if (requestId === translationRequestId.current) setError(String(e));
     } finally {
-      setAiBusy(false);
+      if (requestId === translationRequestId.current) setAiBusy(false);
     }
   }
 
@@ -112,13 +118,14 @@ export function DllTranslationPage() {
   }
 
   async function runPatch() {
-    if (!path || !targetLanguageValid) return;
+    if (!path || !inspection || !targetLanguageValid) return;
     setPatching(true);
     setError(null);
     try {
       const result = await invoke<DllTranslationOutcome>("patch_dll_translations", {
         dllPath: path,
         targetLanguage: normalizedTargetLanguage,
+        expectedSha256: inspection.source_sha256,
         translations,
         outputPath: overwriteOriginal ? path : customOutputPath,
       });
@@ -143,6 +150,8 @@ export function DllTranslationPage() {
   }
 
   function reset() {
+    translationRequestId.current += 1;
+    setAiBusy(false);
     setStep("pick");
     setPath(null);
     setInspection(null);
@@ -194,7 +203,11 @@ export function DllTranslationPage() {
                   maxLength={35}
                   aria-invalid={!targetLanguageValid}
                   aria-describedby={!targetLanguageValid ? "dll-target-language-error" : undefined}
-                  onChange={(e) => setTargetLanguage(e.target.value)}
+                  onChange={(e) => {
+                    translationRequestId.current += 1;
+                    setAiBusy(false);
+                    setTargetLanguage(e.target.value);
+                  }}
                   style={{ width: 100 }}
                 />
               </label>

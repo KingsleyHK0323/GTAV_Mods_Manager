@@ -22,6 +22,9 @@
 ### Fixed
 
 - Validated generated INI/XML translation drafts before writing; changed INI sections/keys, XML parse errors, and changed XML element/attribute/namespace structure are rejected without creating a draft.
+- Validated source XML and UTF-8 encoding declarations before contacting an AI provider.
+- Bound DLL translation and patching to the inspected file's SHA-256 fingerprint, discard stale in-flight AI results when the file or language changes, and preserve the public core inspection type's struct-literal compatibility.
+- Clarified that translation inputs are sent unchanged and are not covered by diagnosis path de-identification.
 - Kept indented INI assignments and section headers structural when continuation semantics are ambiguous.
 - Validated DLL translation language tags at the UI, Tauri, and core boundaries, and constrained default output paths to the source directory.
 - Formatted the Rust source files reported by GitHub Actions so the workspace formatting check passes.

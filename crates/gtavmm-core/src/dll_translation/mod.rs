@@ -44,6 +44,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::error::{CoreError, CoreResult};
 
@@ -65,12 +66,44 @@ pub struct DllInspection {
     pub translatable: Vec<TranslatableString>,
 }
 
+/// App-facing inspection result that binds later operations to these exact bytes.
+/// Kept separate so the fingerprint does not break existing `DllInspection` literals.
+#[derive(Debug, Clone, Serialize)]
+pub struct DllInspectionSnapshot {
+    pub source_sha256: String,
+    pub total_strings: usize,
+    pub excluded_technical: usize,
+    pub translatable: Vec<TranslatableString>,
+}
+
 /// Reads `dll_path` and reports its guardrail status plus every string judged real
 /// translatable user-facing text. Does not modify anything.
 pub fn inspect(dll_path: &Path) -> CoreResult<DllInspection> {
     let bytes = std::fs::read(dll_path)?;
-    let layout = parse_and_guard(&bytes)?;
-    let entries = pe::parse_us_heap(&bytes, layout.us_heap_offset, layout.us_heap_size);
+    let (total_strings, excluded_technical, translatable) = inspect_bytes(&bytes)?;
+    Ok(DllInspection {
+        total_strings,
+        excluded_technical,
+        translatable,
+    })
+}
+
+/// Inspects a DLL and returns its SHA-256 fingerprint with the displayed strings.
+pub fn inspect_with_fingerprint(dll_path: &Path) -> CoreResult<DllInspectionSnapshot> {
+    let bytes = std::fs::read(dll_path)?;
+    let source_sha256 = source_sha256(&bytes);
+    let (total_strings, excluded_technical, translatable) = inspect_bytes(&bytes)?;
+    Ok(DllInspectionSnapshot {
+        source_sha256,
+        total_strings,
+        excluded_technical,
+        translatable,
+    })
+}
+
+fn inspect_bytes(bytes: &[u8]) -> CoreResult<(usize, usize, Vec<TranslatableString>)> {
+    let layout = parse_and_guard(bytes)?;
+    let entries = pe::parse_us_heap(bytes, layout.us_heap_offset, layout.us_heap_size);
     let total_strings = entries.len();
     let translatable: Vec<TranslatableString> = entries
         .iter()
@@ -81,11 +114,22 @@ pub fn inspect(dll_path: &Path) -> CoreResult<DllInspection> {
             text: e.text.clone(),
         })
         .collect();
-    Ok(DllInspection {
-        total_strings,
-        excluded_technical: total_strings - translatable.len(),
-        translatable,
-    })
+    let excluded_technical = total_strings - translatable.len();
+    Ok((total_strings, excluded_technical, translatable))
+}
+
+fn source_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn ensure_source_sha256(expected_sha256: &str, bytes: &[u8]) -> CoreResult<()> {
+    if expected_sha256 != source_sha256(bytes) {
+        return Err(CoreError::DllTranslation {
+            reason: "DLL changed since it was inspected; inspect it again before translating or patching"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -161,6 +205,8 @@ fn extract_candidates(bytes: &[u8], layout: &pe::PeLayout) -> CoreResult<Candida
 ///
 /// `batch_size` caps how many strings are sent to the provider per request (smaller
 /// free-tier models need this kept modest — 15 was proven reliable in production use).
+/// App callers can use translate_draft_for_source with the fingerprint returned by
+/// inspect to ensure the displayed strings still belong to this DLL.
 pub fn translate_draft(
     conn: &Connection,
     dll_path: &Path,
@@ -169,7 +215,30 @@ pub fn translate_draft(
 ) -> CoreResult<Vec<TranslatedDraftEntry>> {
     let target_language = crate::translation::validate_target_language(target_language)
         .map_err(|reason| CoreError::DllTranslation { reason })?;
+    let source_bytes = std::fs::read(dll_path)?;
+    let expected_sha256 = source_sha256(&source_bytes);
+    translate_draft_for_source(
+        conn,
+        dll_path,
+        target_language,
+        &expected_sha256,
+        batch_size,
+    )
+}
+
+/// Translates only when the current bytes match the SHA-256 fingerprint returned by
+/// inspect. A changed DLL is rejected before any text is sent to an AI provider.
+pub fn translate_draft_for_source(
+    conn: &Connection,
+    dll_path: &Path,
+    target_language: &str,
+    expected_sha256: &str,
+    batch_size: usize,
+) -> CoreResult<Vec<TranslatedDraftEntry>> {
+    let target_language = crate::translation::validate_target_language(target_language)
+        .map_err(|reason| CoreError::DllTranslation { reason })?;
     let bytes = std::fs::read(dll_path)?;
+    ensure_source_sha256(expected_sha256, &bytes)?;
     let layout = parse_and_guard(&bytes)?;
     let Candidates { source_texts, .. } = extract_candidates(&bytes, &layout)?;
 
@@ -211,6 +280,8 @@ pub fn translate_draft(
 /// The output path must not already exist. The original and every existing file are
 /// protected; an explicit path equal to `dll_path` is rejected by exclusive creation.
 /// OpenAI-Codex: Keep this contract aligned with the UI and exclusive file write below.
+/// App callers can use patch_with_translations_for_source with the fingerprint returned
+/// by inspect when translations must remain bound to an earlier review.
 pub fn patch_with_translations(
     dll_path: &Path,
     target_language: &str,
@@ -219,7 +290,30 @@ pub fn patch_with_translations(
 ) -> CoreResult<DllTranslationOutcome> {
     let target_language = crate::translation::validate_target_language(target_language)
         .map_err(|reason| CoreError::DllTranslation { reason })?;
+    let source_bytes = std::fs::read(dll_path)?;
+    let expected_sha256 = source_sha256(&source_bytes);
+    patch_with_translations_for_source(
+        dll_path,
+        target_language,
+        &expected_sha256,
+        translations,
+        output_path,
+    )
+}
+
+/// Patches only when the current bytes match the SHA-256 fingerprint returned by
+/// inspect; the checked byte buffer is the same one used to build the output.
+pub fn patch_with_translations_for_source(
+    dll_path: &Path,
+    target_language: &str,
+    expected_sha256: &str,
+    translations: &[String],
+    output_path: Option<&Path>,
+) -> CoreResult<DllTranslationOutcome> {
+    let target_language = crate::translation::validate_target_language(target_language)
+        .map_err(|reason| CoreError::DllTranslation { reason })?;
     let bytes = std::fs::read(dll_path)?;
+    ensure_source_sha256(expected_sha256, &bytes)?;
     let layout = parse_and_guard(&bytes)?;
     let Candidates {
         old_tokens,
@@ -296,9 +390,23 @@ pub fn translate_and_patch(
     target_language: &str,
     batch_size: usize,
 ) -> CoreResult<DllTranslationOutcome> {
-    let drafts = translate_draft(conn, dll_path, target_language, batch_size)?;
+    let source_bytes = std::fs::read(dll_path)?;
+    let expected_sha256 = source_sha256(&source_bytes);
+    let drafts = translate_draft_for_source(
+        conn,
+        dll_path,
+        target_language,
+        &expected_sha256,
+        batch_size,
+    )?;
     let translations: Vec<String> = drafts.into_iter().map(|d| d.translated).collect();
-    patch_with_translations(dll_path, target_language, &translations, None)
+    patch_with_translations_for_source(
+        dll_path,
+        target_language,
+        &expected_sha256,
+        &translations,
+        None,
+    )
 }
 
 fn parse_and_guard(bytes: &[u8]) -> CoreResult<pe::PeLayout> {
@@ -377,6 +485,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dll_inspection_retains_its_original_public_struct_literal_shape() {
+        let inspection = DllInspection {
+            total_strings: 1,
+            excluded_technical: 0,
+            translatable: vec![TranslatableString {
+                index: 0,
+                text: "Hello".to_string(),
+            }],
+        };
+
+        assert_eq!(inspection.translatable[0].text, "Hello");
+    }
+
+    #[test]
     fn inspect_rejects_a_file_that_is_not_a_pe_binary() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("not-a-dll.dll");
@@ -416,6 +538,59 @@ mod tests {
                 "accepted unsafe target language: {candidate}"
             );
         }
+    }
+
+    #[test]
+    fn source_fingerprint_accepts_the_inspected_bytes_and_rejects_changed_same_length_bytes() {
+        const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        assert!(ensure_source_sha256(SHA256_ABC, b"abc").is_ok());
+        let err = ensure_source_sha256(SHA256_ABC, b"abd").unwrap_err();
+        let CoreError::DllTranslation { reason } = err else {
+            panic!("expected a stale DLL source error");
+        };
+
+        assert!(reason.contains("changed since it was inspected"));
+    }
+
+    #[test]
+    fn translate_draft_rejects_a_stale_source_before_parsing_or_calling_ai() {
+        const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changed.dll");
+        std::fs::write(&path, b"abd").unwrap();
+
+        let err = translate_draft_for_source(&conn, &path, "zh-TW", SHA256_ABC, 15).unwrap_err();
+        let CoreError::DllTranslation { reason } = err else {
+            panic!("expected a stale DLL source error");
+        };
+
+        assert!(reason.contains("changed since it was inspected"));
+    }
+
+    #[test]
+    fn patch_rejects_a_stale_source_before_creating_an_output_file() {
+        const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changed.dll");
+        let output_path = dir.path().join("translated.dll");
+        std::fs::write(&path, b"abd").unwrap();
+
+        let err = patch_with_translations_for_source(
+            &path,
+            "zh-TW",
+            SHA256_ABC,
+            &["手動翻譯".to_string()],
+            Some(&output_path),
+        )
+        .unwrap_err();
+        let CoreError::DllTranslation { reason } = err else {
+            panic!("expected a stale DLL source error");
+        };
+
+        assert!(reason.contains("changed since it was inspected"));
+        assert!(!output_path.exists());
     }
 
     #[test]
