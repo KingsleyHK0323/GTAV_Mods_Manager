@@ -1,9 +1,12 @@
+# OpenAI-Codex
 # OpenAI-Codex_Responsible: Website
-name: Website build
+name: Website build and deploy
 
 on:
   push:
+    branches: [GTAV_Mods_Manager_Website]
   pull_request:
+    branches: [GTAV_Mods_Manager_Website]
   workflow_dispatch:
 
 permissions:
@@ -15,8 +18,11 @@ concurrency:
 
 jobs:
   build:
-    name: Build Astro site
+    name: Build and verify Astro site
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,3 +39,91 @@ jobs:
         run: npm audit --audit-level=high
       - name: Build static website
         run: npm run build
+      - name: Verify bilingual SEO output
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFile, readdir } from 'node:fs/promises';
+
+          const base = 'https://spacesquare640.github.io/GTAV_Mods_Manager';
+          const routes = ['', 'demo', 'quick-start', 'installing-mods', 'language-conversion', 'managing-mods', 'faq'];
+          const cases = routes.flatMap((slug) => {
+            const path = slug ? `/${slug}/` : '/';
+            const englishPath = `/en${path}`;
+            const chineseFile = slug ? `dist/${slug}/index.html` : 'dist/index.html';
+            const englishFile = slug ? `dist/en/${slug}/index.html` : 'dist/en/index.html';
+            return [
+              { file: chineseFile, url: `${base}${path}`, lang: 'zh-TW', paired: `${base}${englishPath}` },
+              { file: englishFile, url: `${base}${englishPath}`, lang: 'en', paired: `${base}${path}` },
+            ];
+          });
+
+          function getTags(html) {
+            return [...html.matchAll(/<(meta|link)\b[^>]*>/gi)].map(([raw]) => {
+              const attrs = Object.fromEntries(
+                [...raw.matchAll(/([:\w-]+)\s*=\s*(["'])(.*?)\2/g)].map(([, name, , value]) => [name.toLowerCase(), value]),
+              );
+              return { tag: raw.match(/^<(meta|link)/i)[1].toLowerCase(), attrs };
+            });
+          }
+
+          function findTag(tags, tag, key, value) {
+            return tags.find((item) => item.tag === tag && item.attrs[key] === value);
+          }
+
+          for (const page of cases) {
+            const html = await readFile(page.file, 'utf8');
+            const tags = getTags(html);
+            const canonical = findTag(tags, 'link', 'rel', 'canonical');
+            assert.equal(canonical?.attrs.href, page.url, `${page.file} canonical URL`);
+            assert.equal(tags.filter((item) => item.tag === 'link' && item.attrs.rel === 'canonical').length, 1, `${page.file} canonical count`);
+            assert.equal(findTag(tags, 'meta', 'property', 'og:url')?.attrs.content, page.url, `${page.file} Open Graph URL`);
+            assert.ok(findTag(tags, 'meta', 'name', 'description')?.attrs.content, `${page.file} description`);
+            assert.ok(findTag(tags, 'meta', 'property', 'og:title')?.attrs.content, `${page.file} Open Graph title`);
+            assert.ok(findTag(tags, 'meta', 'property', 'og:description')?.attrs.content, `${page.file} Open Graph description`);
+            assert.ok(findTag(tags, 'meta', 'name', 'twitter:title')?.attrs.content, `${page.file} Twitter title`);
+            assert.ok(findTag(tags, 'meta', 'name', 'twitter:description')?.attrs.content, `${page.file} Twitter description`);
+            assert.equal(findTag(tags, 'link', 'hreflang', 'zh-TW')?.attrs.href, page.lang === 'zh-TW' ? page.url : page.paired, `${page.file} Traditional Chinese alternate`);
+            assert.equal(findTag(tags, 'link', 'hreflang', 'en')?.attrs.href, page.lang === 'en' ? page.url : page.paired, `${page.file} English alternate`);
+            assert.equal(findTag(tags, 'link', 'rel', 'shortcut icon')?.attrs.href, '/GTAV_Mods_Manager/assets/app-icon.jpg', `${page.file} favicon base path`);
+            assert.equal(findTag(tags, 'link', 'rel', 'sitemap')?.attrs.href, '/GTAV_Mods_Manager/sitemap-index.xml', `${page.file} sitemap link`);
+            assert.ok(html.includes('/GTAV_Mods_Manager/assets/social-preview.jpg'), `${page.file} social image path`);
+          }
+
+          const sitemapFiles = (await readdir('dist')).filter((name) => /^sitemap-\d+\.xml$/.test(name));
+          assert.ok(sitemapFiles.length > 0, 'Generated sitemap XML');
+          const sitemap = (await Promise.all(sitemapFiles.map((name) => readFile(`dist/${name}`, 'utf8')))).join('\n');
+          for (const page of cases) assert.ok(sitemap.includes(page.url), `${page.url} in sitemap`);
+          assert.match(sitemap, /hreflang="zh-TW"/, 'Traditional Chinese sitemap alternate');
+          assert.match(sitemap, /hreflang="en"/, 'English sitemap alternate');
+          await readFile('dist/sitemap-index.xml', 'utf8');
+          console.log('Bilingual canonical, social metadata, language alternates, and sitemap verified.');
+          NODE
+      - name: Configure GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/GTAV_Mods_Manager_Website'
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+        with:
+          enablement: false
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/GTAV_Mods_Manager_Website'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        with:
+          path: ./dist
+          retention-days: 1
+
+  deploy:
+    name: Deploy GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/GTAV_Mods_Manager_Website'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

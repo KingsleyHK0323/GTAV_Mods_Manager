@@ -1,5 +1,13 @@
+<!-- OpenAI-Codex -->
 <!-- OpenAI-Codex_Responsible: Website -->
 # Change Log
+
+## 0.1.0 — 2026-10-26
+
+- Restore the Starlight docs collection loader and schema required to generate the documentation routes.
+- Configure the GitHub Pages project base path, localized sitemap, canonical URLs, language alternates, and page-specific social metadata.
+- Correct internal page and image URLs for the project subpath and localize the Traditional Chinese home-page description.
+- Add a GitHub Actions workflow to audit, build, verify SEO output, and deploy after the repository Pages source is set to GitHub Actions.
 
 ## 0.0.2 — 2026-10-26
 

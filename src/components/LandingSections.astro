@@ -1,3 +1,4 @@
+<!-- OpenAI-Codex -->
 <!-- OpenAI-Codex_Responsible: Website -->
 ---
 interface Props {
@@ -13,7 +14,7 @@ const version = packageInfo.version;
 
 <div class="landing-sections">
 	<section class="landing-lead" aria-labelledby="landing-lead-title">
-		<p class="version-label">Version {version} · {english ? 'Initial website preview' : '網站初版預覽'}</p>
+		<p class="version-label">Version {version} · {english ? 'Website preview' : '網站預覽'}</p>
 		<p class="folder-label">{english ? 'A calmer mod workflow' : '模組管理，清楚一點'}</p>
 		<h2 id="landing-lead-title">{english ? 'See the important details before you act.' : '先看清楚，再進行操作。'}</h2>
 		<p>{english ? 'Keep the library, install review, language variants, and change summary close together. The web preview below uses sample records only.' : '把模組清單、安裝檢視、語言版本與變更摘要整理在一起。以下畫面都是範例資料。'}</p>
@@ -92,7 +93,7 @@ const version = packageInfo.version;
 			<p>{english ? 'The interactive demo is ready in your browser.' : '互動 Demo 可直接在瀏覽器中操作。'}</p>
 		</div>
 		<div class="landing-cta-actions">
-			<a class="sl-link-button primary" href={english ? '/en/demo/' : '/demo/'}>{english ? 'Open the demo' : '開啟互動 Demo'}</a>
+			<a class="sl-link-button primary" href={`${import.meta.env.BASE_URL}${english ? 'en/demo/' : 'demo/'}`}>{english ? 'Open the demo' : '開啟互動 Demo'}</a>
 			<a class="sl-link-button secondary" href="https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases">{english ? 'Desktop app releases' : '查看桌面版發布'}</a>
 			<nav class="landing-cta-community" aria-label={english ? 'Community and project links' : '社群與專案連結'}>
 				<a href="https://discord.gg/aaUQVJeCgC">Discord {english ? 'community' : '社群'}</a>

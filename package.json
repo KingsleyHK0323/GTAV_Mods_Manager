@@ -1,6 +1,6 @@
 {
   "name": "gtav-mods-manager-website",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,8 +12,10 @@
     "preview": "astro preview"
   },
   "dependencies": {
+    "@astrojs/sitemap": "3.7.4",
     "@astrojs/starlight": "0.42.7",
     "astro": "7.4.2"
   },
-  "_codex_signature": "OpenAI-Codex_Responsible: Website"
+  "_codex_signature": "OpenAI-Codex",
+  "_codex_responsibility": "OpenAI-Codex_Responsible: Website"
 }

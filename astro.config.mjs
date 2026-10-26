@@ -1,25 +1,38 @@
+// OpenAI-Codex
 // OpenAI-Codex_Responsible: Website
 import { defineConfig } from 'astro/config';
+import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 
-const socialPreview =
-	'https://raw.githubusercontent.com/SpaceSquare640/GTAV_Mods_Manager/GTAV_Mods_Manager_Website/public/assets/social-preview.jpg';
+const site = 'https://spacesquare640.github.io';
+const base = '/GTAV_Mods_Manager';
+const socialPreview = new URL(`${base}/assets/social-preview.jpg`, site).href;
 
 export default defineConfig({
+	site,
+	base,
+	trailingSlash: 'always',
 	output: 'static',
 	integrations: [
+		sitemap({
+			i18n: {
+				defaultLocale: 'root',
+				locales: { root: 'zh-TW', en: 'en' },
+			},
+		}),
 		starlight({
 			title: 'GTAV Mods Manager',
 			defaultLocale: 'root',
 			locales: {
 				root: { label: '繁體中文', lang: 'zh-TW' },
-				en: { label: 'English' },
+				en: { label: 'English', lang: 'en' },
 			},
 			logo: {
 				src: './src/assets/app-icon.jpg',
 				alt: 'GTAV Mods Manager',
 			},
 			favicon: '/assets/app-icon.jpg',
+			routeMiddleware: './src/routeData.ts',
 			social: [
 				{
 					icon: 'discord',
@@ -48,9 +61,7 @@ export default defineConfig({
 			],
 			customCss: ['./src/styles/site.css'],
 			head: [
-				{ tag: 'meta', attrs: { property: 'og:type', content: 'website' } },
 				{ tag: 'meta', attrs: { property: 'og:image', content: socialPreview } },
-				{ tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
 				{ tag: 'meta', attrs: { name: 'twitter:image', content: socialPreview } },
 			],
 		}),

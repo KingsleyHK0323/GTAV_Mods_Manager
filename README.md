@@ -1,7 +1,10 @@
+<!-- OpenAI-Codex -->
 <!-- OpenAI-Codex_Responsible: Website -->
 # GTAV Mods Manager Website
 
-Version `0.0.1` is the first Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
+Version `0.1.0` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
+
+> **Visit the website:** [Open the GTAV Mods Manager website](https://spacesquare640.github.io/GTAV_Mods_Manager/)
 
 Copyright © Kingsley.
 
@@ -11,15 +14,19 @@ Copyright © Kingsley.
 - A browser-only demo for filtering, selecting, and changing sample mod states. It does not access GTA V folders or persist demo changes.
 - Product documentation for getting started, mod installation, language changes, and installed mod management.
 - Light and dark themes, system theme behavior, keyboard-accessible controls, and increased-contrast styles.
-- GitHub Actions workflow that builds the site on a GitHub-hosted runner.
+- GitHub Actions workflow that builds, verifies bilingual SEO output, and deploys the site from the website branch on GitHub-hosted runners.
 
 ## Versioning
 
-The website version follows the `x.x.x` version assigned to each website commit and push. The current version is `0.0.2`.
+The website uses Semantic Versioning (`MAJOR.MINOR.PATCH`). `MAJOR` marks incompatible changes, `MINOR` adds functionality or content compatibly, and `PATCH` covers backward-compatible fixes. The current version is `0.1.0`.
 
 ## Build automation
 
-The workflow in `.github/workflows/site-build.yml` installs dependencies, audits the resolved tree for high and critical advisories, and builds on GitHub-hosted Actions runners for pushes, pull requests, and manual dispatch. This initial source tree has no dependency lockfile; the hosted job resolves a fresh dependency tree for each run. No local build or test result is claimed for this draft.
+The workflow in `.github/workflows/site-build.yml` installs dependencies, audits the resolved tree for high and critical advisories, builds the site, and checks the generated bilingual SEO metadata and sitemap on GitHub-hosted Actions runners. Pull requests targeting `GTAV_Mods_Manager_Website` run the build and checks. Pushes to that branch also upload and deploy the Pages artifact; manual runs deploy only when dispatched from that branch. Set the repository Pages source to **GitHub Actions** before deployment. This source tree has no dependency lockfile, so the hosted job resolves a fresh dependency tree for each run. Local build and test commands are not run as part of this release.
+
+## Search engines
+
+Each localized page has a canonical URL, language alternate links, and page-specific Open Graph and Twitter metadata. The sitemap integration publishes a localized sitemap index. Pages remain indexable by default; the project site is served under `/GTAV_Mods_Manager/`, so this repository does not publish a `robots.txt` file at the domain root.
 
 ## Visual assets
 
