@@ -30,6 +30,7 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - platform: windows-latest
@@ -60,6 +61,7 @@ jobs:
         run: npm ci
 
       - name: Build and publish Tauri installers
+        id: tauri_release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,6 +74,138 @@ jobs:
           releaseName: "GTAV Mods Manager ${{ github.ref_name }}"
           releaseBody: "See CHANGELOG / commit history for details. Installers are unsigned — Windows SmartScreen / macOS Gatekeeper may warn on first run."
           generateReleaseNotes: true
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: false
+
+      - name: Generate and attach installer SHA-256 checksums
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri_release.outputs.artifactPaths }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              platform=windows
+              installer_extensions='[".msi", ".exe"]'
+              ;;
+            Linux)
+              platform=linux
+              installer_extensions='[".deb", ".rpm"]'
+              ;;
+            *)
+              echo "Unsupported runner OS for installer checksums: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+
+          checksum_file="SHA256SUMS-${platform}.txt"
+          export CHECKSUM_FILE="$checksum_file"
+          export INSTALLER_EXTENSIONS="$installer_extensions"
+
+          node <<'NODE'
+          const { createReadStream, writeFileSync } = require("node:fs");
+          const { createHash } = require("node:crypto");
+          const { basename, extname } = require("node:path");
+
+          async function sha256(filePath) {
+            const hash = createHash("sha256");
+            for await (const chunk of createReadStream(filePath)) {
+              hash.update(chunk);
+            }
+            return hash.digest("hex");
+          }
+
+          (async () => {
+            const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
+            const installerExtensions = new Set(
+              JSON.parse(process.env.INSTALLER_EXTENSIONS),
+            );
+            const installers = artifactPaths
+              .filter((filePath) =>
+                installerExtensions.has(extname(filePath).toLowerCase()),
+              )
+              .sort((left, right) =>
+                basename(left) < basename(right)
+                  ? -1
+                  : basename(left) > basename(right)
+                    ? 1
+                    : 0,
+              );
+
+            if (installers.length === 0) {
+              throw new Error("No installer artifacts were reported by tauri-action.");
+            }
+
+            const lines = [];
+            for (const installer of installers) {
+              lines.push(`${await sha256(installer)}  ${basename(installer)}`);
+            }
+
+            writeFileSync(
+              process.env.CHECKSUM_FILE,
+              `${lines.join("\n")}\n`,
+              "utf8",
+            );
+            console.log(`Generated ${process.env.CHECKSUM_FILE} for ${installers.length} installer(s).`);
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+
+          existing_assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '.assets[].name')"
+          if printf '%s\n' "$existing_assets" | grep -Fxq "$checksum_file"; then
+            existing_dir="$(mktemp -d)"
+            gh release download "$RELEASE_TAG" --repo "$GH_REPOSITORY" --pattern "$checksum_file" --dir "$existing_dir"
+            if cmp -s "$checksum_file" "$existing_dir/$checksum_file"; then
+              echo "$checksum_file already exists with identical contents; skipping upload."
+            else
+              echo "$checksum_file already exists with different contents; refusing to replace the release asset." >&2
+              exit 1
+            fi
+          else
+            gh release upload "$RELEASE_TAG" "$checksum_file" --repo "$GH_REPOSITORY"
+          fi
+
+  publish-release:
+    needs: build-and-publish
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPOSITORY: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Verify release assets and publish draft
+        shell: bash
+        run: |
+          assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '.assets[].name')"
+
+          for checksum_file in SHA256SUMS-windows.txt SHA256SUMS-linux.txt; do
+            if ! printf '%s\n' "$assets" | grep -Fxq "$checksum_file"; then
+              echo "Required checksum asset is missing: $checksum_file" >&2
+              exit 1
+            fi
+          done
+
+          if ! printf '%s\n' "$assets" | grep -Eiq '\.(msi|exe)$'; then
+            echo "No Windows installer asset was found; leaving the release as a draft." >&2
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$assets" | grep -Eiq '\.(deb|rpm)$'; then
+            echo "No Linux installer asset was found; leaving the release as a draft." >&2
+            exit 1
+          fi
+
+          release_is_draft="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json isDraft --jq '.isDraft')"
+          if [[ "$release_is_draft" != "true" ]]; then
+            echo "Expected the release for $RELEASE_TAG to remain a draft; refusing to change its state." >&2
+            exit 1
+          fi
+
+          gh release edit "$RELEASE_TAG" --repo "$GH_REPOSITORY" --draft=false
