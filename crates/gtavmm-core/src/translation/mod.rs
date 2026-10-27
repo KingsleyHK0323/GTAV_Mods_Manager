@@ -205,7 +205,7 @@ fn ini_structure_signature(content: &str) -> Vec<IniStructureEntry> {
             continue;
         }
 
-        if let Some(separator_index) = line.find(|character| matches!(character, '=' | ':')) {
+        if let Some(separator_index) = line.find(['=', ':']) {
             let name = line[..separator_index].trim();
             if !name.is_empty() {
                 entries.push(IniStructureEntry::Key {

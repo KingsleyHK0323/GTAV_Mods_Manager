@@ -57,7 +57,7 @@ jobs:
         # not found", found while diagnosing the very first release workflow run).
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
 
       - name: Check formatting
         run: cargo fmt --all -- --check

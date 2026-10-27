@@ -1,11 +1,14 @@
 # Change Log
 
 <!-- OpenAI-Codex_Responsible: Source_Code -->
+<!-- Updated by OpenAI-Codex: added scheduled Dependabot direct-merge retries. -->
+<!-- Updated by OpenAI-Codex: corrected Tauri v2 Ubuntu dependencies for CI and Release. -->
 
 ## Unreleased
 
 ### Added
 
+- Added a GitHub Actions workflow that directly merges eligible same-repository Dependabot pull requests only after verifying the latest successful CI run and current head SHA. It checks after successful CI, processes successful check-suite events delivered by GitHub, and scans open pull requests every 30 minutes from the default branch to retry after approvals or other required checks. It disables pre-existing native Auto-merge requests, rejects pull requests that change workflow files using current and previous paths, and uses GitHub's standard merge API so repository protection and review rules still apply. Pull requests requiring a merge queue remain open.
 - Added weekly Dependabot version-update checks for Cargo, npm, and GitHub Actions; tagged installer releases now include GitHub-generated release notes.
 - Added bounded `.rar` mod archive extraction for unencrypted, single-volume RAR 1.5+ archives with UTF-8 or Unicode metadata names. RAR 1.3/1.4, legacy names that require an unspecified code page, symbolic links, redirected entries, unsafe paths, duplicate/colliding names, and archives beyond configured entry or output limits are rejected.
 - Added FiveM Client mod details and lifecycle controls for editing metadata, enabling, disabling, reinstalling, and uninstalling mods.
@@ -22,6 +25,8 @@
 
 ### Fixed
 
+- Updated the Ubuntu CI and Release package lists to use Tauri v2's Ayatana AppIndicator development package.
+- Replaced a manual INI separator character comparison with an array-based pattern to satisfy Clippy without changing key parsing behavior.
 - Matched the Tauri DLL inspection command return type to the fingerprinted snapshot consumed by the App.
 - Validated generated INI/XML translation drafts before writing; changed INI sections/keys, XML parse errors, and changed XML element/attribute/namespace structure are rejected without creating a draft.
 - Validated source XML and UTF-8 encoding declarations before contacting an AI provider.
