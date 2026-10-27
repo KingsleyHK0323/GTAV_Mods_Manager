@@ -40,8 +40,9 @@ npm run build
 - `crates/gtavmm-core` — all business logic. No UI/CLI dependencies. This is where
   most functional changes belong.
 - `crates/gtavmm-cli` — CLI wrapper over `gtavmm-core`.
-- `crates/gtavmm-app` — placeholder for the future Tauri + React UI (not yet
-  scaffolded — see its `README.md`).
+- `crates/gtavmm-app` — Tauri + React/Vite desktop app. Frontend source is in
+  `crates/gtavmm-app/src/`, and Tauri commands are in
+  `crates/gtavmm-app/src-tauri/src/`.
 
 Adding support for a new mode (Enhanced SP, LSPDFR, FiveM, etc.) should mean writing a
 new `ModeProvider` implementation (see `crates/gtavmm-core/src/providers/mod.rs`), not
@@ -64,3 +65,6 @@ of (not a replacement for) the PolyForm license's notice-preservation requiremen
 Open an issue on [this repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager/issues).
 There's no separate security-disclosure process yet — for anything sensitive, say so
 in the issue and we'll figure out a private channel.
+
+<!-- OpenAI-Codex -->
+<!-- OpenAI-Codex_Responsible: Source_Code -->

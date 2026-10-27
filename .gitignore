@@ -15,8 +15,11 @@ Thumbs.db
 *.sqlite3-journal
 /dev-data/
 
-# Future Tauri/Node (once gtavmm-app is scaffolded)
+# Tauri and Node dependency/build output
 node_modules/
 dist/
 crates/gtavmm-app/src-tauri/target/
 crates/gtavmm-app/.vite/
+
+# OpenAI-Codex
+# OpenAI-Codex_Responsible: Source_Code
