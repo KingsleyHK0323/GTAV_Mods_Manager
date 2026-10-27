@@ -62,7 +62,7 @@ jobs:
 
       - name: Build and publish Tauri installers
         id: tauri_release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
