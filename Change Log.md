@@ -27,6 +27,7 @@
 
 ### Fixed
 
+- Fixed the recycle-bin restore-root regression test fixture to create nested snapshot directories before writing the snapshot.
 - Addressed workspace Clippy findings in the Tauri command layer without changing user-visible command behavior.
 - Corrected the Enhanced LSPDFR provider note to use the public-preview announcement date (2025-12-26) instead of the stale 2026-04 reference.
 - Corrected the Enhanced LSPDFR UI guidance to reflect the public-preview announcement date and the official Preview label checked on 2026-10-27.

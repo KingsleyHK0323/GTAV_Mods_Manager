@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Recycle bin: snapshot-at-uninstall-time storage of deployed files (written by
 //! `uninstall`), no count limit, 15-day retention (`expires_at = deleted_at + 15
@@ -432,7 +433,7 @@ mod tests {
             .join("fxmanifest.lua");
         let relative = Path::new("resources/vehicles/fxmanifest.lua");
         let entry_dir = recycle_root.join("client-entry");
-        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(entry_dir.join(relative).parent().unwrap()).unwrap();
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&game_root).unwrap();
         std::fs::write(entry_dir.join(relative), b"client snapshot").unwrap();
