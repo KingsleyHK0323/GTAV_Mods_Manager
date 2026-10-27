@@ -372,7 +372,7 @@
   "enhancedLspdfr": {
     "title": "LSPDFR · Enhanced",
     "preview_badge": "Public Preview",
-    "subtitle": "RPH's Enhanced-edition support is new (Public Preview since 2026-04) — treat everything here as more likely to need a manual fix than the Legacy equivalent. This list is filtered to mods installed from this page.",
+    "subtitle": "RPH's Enhanced-edition support entered Public Preview on 2025-12-26 and was still labeled Preview on the official download page checked on 2026-10-27. Treat everything here as more likely to need a manual fix than the Legacy equivalent. This list is filtered to mods installed from this page.",
     "beta_support": "<strong>Beta-grade support:</strong> this app's Enhanced LSPDFR conventions (the <mono>Plugins\\</mono> folder, add-on-pack mirroring) are carried over from the Legacy provider on the assumption they still hold — they haven't been individually re-verified against a real Enhanced RPH install. Expect rougher edges than every other page in this app; check installs in-game before trusting them."
   },
   "fivemServer": {
@@ -559,5 +559,5 @@
     "cat_other": "Other plugins",
     "cat_framework": "Framework"
   },
-  "_signature": "OpenAI-Codex"
+  "_signature": "OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code"
 }

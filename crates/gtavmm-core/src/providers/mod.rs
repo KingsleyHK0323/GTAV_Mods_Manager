@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! `ModeProvider`: the abstraction that lets later modes (Enhanced SP, Legacy/Enhanced
 //! LSPDFR, FiveM) be added without rewriting `mod_analyzer`'s dispatch logic. Each
@@ -273,9 +274,10 @@ impl ModeProvider for LegacyLspdfrProvider {
 }
 
 /// Enhanced LSPDFR provider. **Beta-grade even relative to `EnhancedSpProvider`'s
-/// already-unverified add-on-pack path**: RPH/LSPDFR's Enhanced-edition support only
-/// entered Public Preview in 2026-04 (per the competitive-analysis notes), meaning the
-/// community conventions this provider assumes are for a moving target, not a settled
+/// already-unverified add-on-pack path**: RPH/LSPDFR's Enhanced-edition support entered
+/// Public Preview on 2025-12-26; the official download page was still labeled Preview
+/// when checked on 2026-10-27, meaning the community conventions this provider assumes
+/// are for a moving target, not a settled
 /// one. Reuses `EnhancedSpProvider`'s `mods\`/dlclist assumptions plus the same
 /// RPH `Plugins\` convention as `LegacyLspdfrProvider` — treat every target this
 /// resolves as more likely to need revision than any other provider in this module.
