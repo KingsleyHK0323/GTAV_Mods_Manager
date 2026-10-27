@@ -1,10 +1,13 @@
 ---
 title: 互動 Demo
-description: 使用範例資料體驗模組清單、篩選與狀態管理。
+description: 使用範例資料體驗模組清單、篩選、狀態管理與本次操作摘要。
 ---
 
 import DemoWorkspace from '../../components/DemoWorkspace.astro';
 
 {/* OpenAI-Codex */}
 {/* OpenAI-Codex_Responsible: Website */}
+你可以在「本次操作摘要」查看目前頁面的啟用、停用與新增範例記錄。清除記錄不會重設模組狀態；重設 Demo 會同時清除狀態與記錄。離開或重新載入頁面後，記錄不會保留。
+
 <DemoWorkspace locale="zh-TW" />
+

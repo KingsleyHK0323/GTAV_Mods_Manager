@@ -2,7 +2,7 @@
 <!-- OpenAI-Codex_Responsible: Website -->
 # GTAV Mods Manager Website
 
-Version `0.1.2` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
+Version `0.2.0` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
 
 > **Visit the website:** [Open the GTAV Mods Manager website](https://spacesquare640.github.io/GTAV_Mods_Manager/)
 
@@ -11,14 +11,14 @@ Copyright © Kingsley.
 ## What is included
 
 - Traditional Chinese and English pages with Starlight search and navigation.
-- A browser-only demo for filtering, selecting, and changing sample mod states. It does not access GTA V folders or persist demo changes.
+- A browser-only demo for filtering, selecting, and changing sample mod states, with a session activity summary. It does not access GTA V folders or persist demo changes or history.
 - Product documentation for getting started, mod installation, language changes, and installed mod management.
 - Light and dark themes, system theme behavior, keyboard-accessible controls, and increased-contrast styles.
 - GitHub Actions workflow that builds, verifies bilingual SEO output, and deploys the site from the website branch on GitHub-hosted runners.
 
 ## Versioning
 
-The website uses Semantic Versioning (`MAJOR.MINOR.PATCH`). `MAJOR` marks incompatible changes, `MINOR` adds functionality or content compatibly, and `PATCH` covers backward-compatible fixes. The current version is `0.1.2`.
+The website uses Semantic Versioning (`MAJOR.MINOR.PATCH`). `MAJOR` marks incompatible changes, `MINOR` adds functionality or content compatibly, and `PATCH` covers backward-compatible fixes. The current version is `0.2.0`.
 
 ## Build automation
 
@@ -45,3 +45,4 @@ These terms make this project source-available under noncommercial licenses.
 
 - [GTAV Mods Manager repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager)
 - [Changelog](./Change%20Log.md)
+

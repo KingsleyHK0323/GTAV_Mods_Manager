@@ -1,4 +1,7 @@
+// OpenAI-Codex
 // OpenAI-Codex_Responsible: Website
+import { createAddedEntry, createStatusChangeEntry, formatHistoryEntry } from './demo-history.js';
+
 const sampleMods = [
 	{ id: 'sample-01', name: 'Night Lighting Pack', category: 'graphics', language: 'multi', status: 'enabled' },
 	{ id: 'sample-02', name: 'Harbor Weather Set', category: 'environment', language: 'en', status: 'disabled' },
@@ -12,7 +15,8 @@ const copy = {
 		status: { enabled: 'Enabled', disabled: 'Disabled' },
 		actions: { enable: 'Enable', disable: 'Disable', options: 'Options' },
 		filter: { all: 'All items', enabled: 'Enabled', disabled: 'Disabled' },
-		empty: 'No sample items match this filter.',
+		empty: 'No sample items match your search or status filter.',
+		emptyAction: 'Clear search and filter',
 		count: { total: 'sample items', enabled: 'enabled', disabled: 'disabled' },
 		menuTitle: 'Actions for ',
 		detailsTitle: 'Details for ',
@@ -20,6 +24,7 @@ const copy = {
 		toggled: (mod) => `${mod.name} is now ${status(mod.status, 'en').toLowerCase()} in this demo.`,
 		added: 'Harbor Weather Set was added to this page’s sample list.',
 		reset: 'The sample list has been reset.',
+		history: { title: 'Session activity', empty: 'No actions yet.', clear: 'Clear history', cleared: 'The activity history was cleared.' },
 	},
 	'zh-TW': {
 		categories: { graphics: '畫面', environment: '環境', world: '世界' },
@@ -27,7 +32,8 @@ const copy = {
 		status: { enabled: '已啟用', disabled: '已停用' },
 		actions: { enable: '啟用', disable: '停用', options: '選項' },
 		filter: { all: '所有項目', enabled: '已啟用', disabled: '已停用' },
-		empty: '沒有符合篩選條件的範例項目。',
+		empty: '沒有符合搜尋或狀態篩選條件的範例項目。',
+		emptyAction: '清除搜尋與篩選',
 		count: { total: '個範例項目', enabled: '個已啟用', disabled: '個已停用' },
 		menuTitle: '項目操作：',
 		detailsTitle: '項目詳細資料：',
@@ -35,6 +41,7 @@ const copy = {
 		toggled: (mod) => `${mod.name} 在此 Demo 中已${status(mod.status, 'zh-TW')}。`,
 		added: 'Harbor Weather Set 已加入目前頁面的範例清單。',
 		reset: '範例清單已重設。',
+		history: { title: '本次操作摘要', empty: '目前尚無操作。', clear: '清除記錄', cleared: '操作記錄已清除。' },
 	},
 };
 
@@ -54,6 +61,7 @@ function initDemo(root) {
 	const locale = root.dataset.locale === 'en' ? 'en' : 'zh-TW';
 	const strings = copy[locale];
 	let mods = sampleMods.map((mod) => ({ ...mod }));
+	let historyEntries = [];
 	let selectedId = null;
 	let nextSampleId = 4;
 	let restoreFocusTo = null;
@@ -65,6 +73,9 @@ function initDemo(root) {
 	const installDialog = root.querySelector('[data-install-dialog]');
 	const detailsDialog = root.querySelector('[data-details-dialog]');
 	const announcement = root.querySelector('[data-demo-announcement]');
+	const historyList = root.querySelector('[data-demo-history-list]');
+	const historyEmpty = root.querySelector('[data-demo-history-empty]');
+	const historyClear = root.querySelector('[data-demo-history-clear]');
 	const selectedMod = () => mods.find((mod) => mod.id === selectedId);
 
 	function visibleMods() {
@@ -87,6 +98,20 @@ function initDemo(root) {
 		root.querySelector('[data-summary-disabled-label]').textContent = strings.count.disabled;
 	}
 
+	function renderHistory() {
+		const hasEntries = historyEntries.length > 0;
+		historyList.hidden = !hasEntries;
+		historyEmpty.hidden = hasEntries;
+		historyClear.disabled = !hasEntries;
+		historyList.replaceChildren();
+
+		for (const entry of historyEntries) {
+			const item = document.createElement('li');
+			item.textContent = formatHistoryEntry(entry, locale, strings.status);
+			historyList.append(item);
+		}
+	}
+
 	function makeCell(text) {
 		const cell = document.createElement('td');
 		cell.textContent = text;
@@ -99,8 +124,19 @@ function initDemo(root) {
 
 		if (visible.length === 0) {
 			const row = document.createElement('tr');
-			const cell = makeCell(strings.empty);
+			const cell = document.createElement('td');
 			cell.colSpan = 4;
+			const emptyState = document.createElement('div');
+			emptyState.className = 'demo-empty-state';
+			const message = document.createElement('span');
+			message.textContent = strings.empty;
+			const clearFilters = document.createElement('button');
+			clearFilters.type = 'button';
+			clearFilters.className = 'demo-button';
+			clearFilters.dataset.demoClearFilters = '';
+			clearFilters.textContent = strings.emptyAction;
+			emptyState.append(message, clearFilters);
+			cell.append(emptyState);
 			row.append(cell);
 			list.append(row);
 		} else {
@@ -150,6 +186,7 @@ function initDemo(root) {
 			option.textContent = strings.filter[option.value] ?? option.value;
 		}
 		updateSummary();
+		renderHistory();
 	}
 
 	function closeContextMenu(restoreFocus = true) {
@@ -177,7 +214,9 @@ function initDemo(root) {
 	function toggleMod(id, focusRow = false) {
 		const mod = mods.find((item) => item.id === id);
 		if (!mod) return;
+		const previousStatus = mod.status;
 		mod.status = mod.status === 'enabled' ? 'disabled' : 'enabled';
+		historyEntries.push(createStatusChangeEntry(mod, previousStatus));
 		announcement.textContent = strings.toggled(mod);
 		render();
 		if (focusRow) list.querySelector(`tr[data-mod-id="${CSS.escape(id)}"]`)?.focus();
@@ -193,6 +232,13 @@ function initDemo(root) {
 
 	list.addEventListener('click', (event) => {
 		const target = event.target instanceof HTMLElement ? event.target : null;
+		if (target?.closest('[data-demo-clear-filters]')) {
+			search.value = '';
+			filter.value = 'all';
+			render();
+			search.focus();
+			return;
+		}
 		const row = target?.closest('tr[data-mod-id]');
 		if (!row) return;
 		const id = row.dataset.modId;
@@ -263,19 +309,27 @@ function initDemo(root) {
 	root.querySelector('[data-demo-install]').addEventListener('click', () => installDialog.showModal());
 	root.querySelector('[data-install-cancel]').addEventListener('click', () => installDialog.close());
 	root.querySelector('[data-install-confirm]').addEventListener('click', () => {
-		mods.push({ id: `sample-${nextSampleId++}`, name: 'Harbor Weather Set', category: 'environment', language: 'multi', status: 'disabled' });
+		const mod = { id: `sample-${nextSampleId++}`, name: 'Harbor Weather Set', category: 'environment', language: 'multi', status: 'disabled' };
+		mods.push(mod);
+		historyEntries.push(createAddedEntry(mod));
 		installDialog.close();
 		announcement.textContent = strings.added;
 		render();
 	});
 	root.querySelector('[data-demo-reset]').addEventListener('click', () => {
 		mods = sampleMods.map((mod) => ({ ...mod }));
+		historyEntries = [];
 		selectedId = null;
 		nextSampleId = 4;
 		search.value = '';
 		filter.value = 'all';
 		announcement.textContent = strings.reset;
 		render();
+	});
+	root.querySelector('[data-demo-history-clear]').addEventListener('click', () => {
+		historyEntries = [];
+		renderHistory();
+		announcement.textContent = strings.history.cleared;
 	});
 	root.querySelector('[data-details-close]').addEventListener('click', () => detailsDialog.close());
 	detailsDialog.addEventListener('close', () => {
@@ -286,3 +340,4 @@ function initDemo(root) {
 }
 
 document.querySelectorAll('[data-demo-root]').forEach(initDemo);
+

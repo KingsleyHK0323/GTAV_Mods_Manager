@@ -34,6 +34,7 @@ const english = locale === 'en';
 		<button class="demo-button demo-button-primary" type="button" data-demo-install>{english ? 'Preview sample install' : '預覽範例安裝'}</button>
 		<button class="demo-button" type="button" data-demo-reset>{english ? 'Reset demo' : '重設 Demo'}</button>
 	</div>
+	<p class="demo-operation-note">{english ? 'Reset demo restores the sample list and clears activity. Clear history keeps the list unchanged. Changes disappear when you leave or reload this page.' : '重設 Demo 會還原範例清單並清除操作摘要；清除記錄不會改變清單。離開或重新載入頁面後，變更會消失。'}</p>
 
 	<p class="sr-only" id="demo-instructions" data-demo-instructions>{english ? 'Use the Options button, right-click a row, or press Shift plus F10 to open row actions.' : '使用「選項」按鈕、在項目上按右鍵，或按 Shift 加 F10 開啟項目操作。'}</p>
 	<div class="demo-summary">
@@ -57,6 +58,15 @@ const english = locale === 'en';
 			</tbody>
 		</table>
 	</div>
+
+	<section class="demo-history" aria-labelledby="demo-history-title">
+		<div class="demo-history-heading">
+			<h3 id="demo-history-title">{english ? 'Session activity' : '本次操作摘要'}</h3>
+			<button class="demo-button" type="button" data-demo-history-clear disabled>{english ? 'Clear history' : '清除記錄'}</button>
+		</div>
+		<p class="demo-history-empty" data-demo-history-empty>{english ? 'No actions yet.' : '目前尚無操作。'}</p>
+		<ol class="demo-history-list" data-demo-history-list hidden></ol>
+	</section>
 
 	<div class="demo-context-menu" role="menu" aria-label={english ? 'Sample mod actions' : '範例模組操作'} data-context-menu hidden>
 		<button class="demo-menu-item" type="button" role="menuitem" data-menu-toggle></button>
@@ -85,3 +95,4 @@ const english = locale === 'en';
 <script>
 	import '../scripts/demo.js';
 </script>
+

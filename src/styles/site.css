@@ -1,3 +1,4 @@
+/* OpenAI-Codex */
 /* OpenAI-Codex_Responsible: Website */
 :root {
 	font-family: system-ui, 'Segoe UI Variable', 'Segoe UI', sans-serif;
@@ -306,6 +307,14 @@ body {
 	margin-block: 1rem;
 }
 
+.demo-operation-note {
+	max-width: 65rem;
+	margin: -0.25rem 0 1rem;
+	color: var(--ink-muted);
+	font-size: 0.9rem;
+	line-height: 1.55;
+}
+
 .demo-field {
 	display: grid;
 	flex: 1 1 12rem;
@@ -367,6 +376,43 @@ body {
 	color: var(--ink-main);
 }
 
+.demo-history {
+	margin-block-start: 1.5rem;
+	border: 1px solid var(--line-soft);
+	border-inline-start: 3px solid var(--brand-orange);
+	border-radius: 0.75rem;
+	background: var(--surface-card);
+	padding: 1rem;
+	color: var(--ink-main);
+}
+
+.demo-history-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+}
+
+.demo-history h3 {
+	margin: 0;
+	font-size: 1rem;
+}
+
+.demo-history-empty {
+	margin: 0.75rem 0 0;
+	color: var(--ink-muted);
+}
+
+.demo-history-list {
+	margin: 0.75rem 0 0;
+	padding-inline-start: 1.4rem;
+}
+
+.demo-history-list li + li {
+	margin-block-start: 0.45rem;
+}
+
 .demo-table-wrap {
 	overflow-x: auto;
 	border: 1px solid var(--line-soft);
@@ -396,6 +442,13 @@ body {
 
 .demo-table tbody tr:last-child td {
 	border-bottom: 0;
+}
+
+.demo-empty-state {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.75rem;
 }
 
 .demo-table tbody tr[data-selected='true'] {
@@ -544,6 +597,7 @@ body {
 	.demo-button,
 	.demo-field input,
 	.demo-field select,
+	.demo-history,
 	.landing-card,
 	.workflow-step,
 	.mini-window {
@@ -559,7 +613,8 @@ body {
 	.demo-button,
 	.demo-field input,
 	.demo-field select,
-	.mod-status {
+	.mod-status,
+	.demo-history {
 		border: 1px solid ButtonText;
 		forced-color-adjust: auto;
 	}
@@ -575,3 +630,4 @@ body {
 		transition-duration: 0.01ms !important;
 	}
 }
+

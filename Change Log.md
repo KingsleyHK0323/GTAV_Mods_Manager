@@ -2,6 +2,13 @@
 <!-- OpenAI-Codex_Responsible: Website -->
 # Change Log
 
+## 0.2.0 — 2026-10-27
+
+- Add a bilingual in-memory activity summary to the interactive demo for status changes and sample additions.
+- Add separate history clearing and demo reset behavior, and document the session-only history.
+- Clarify session-only changes and reset behavior, and add a clear-search action when filters return no sample items.
+- Update the website version to `0.2.0`.
+
 ## 0.1.2 — 2026-10-27
 
 - Move the component signature comments into Astro frontmatter so the compiler can parse component props.
@@ -33,3 +40,4 @@
 - Pin Astro 7.4.2 and Starlight 0.42.7 for the website toolchain.
 - Add Discord community and GitHub project links to the site header and home page.
 - Use the project-provided JPG assets for the site icon and social preview.
+
