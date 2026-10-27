@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Command implementations, factored as plain functions so they're unit-testable
 //! without a running Tauri app — the `#[tauri::command]` wrappers below just marshal
@@ -196,10 +198,10 @@ fn mode_from_str(mode: &str) -> Result<gtavmm_core::providers::Mode, String> {
 }
 
 /// OpenAI-Codex: Normalize FiveM roots and reject missing folders before file operations.
-fn normalize_game_path_for_mode<'a>(
-    game_path: Option<&'a str>,
+fn normalize_game_path_for_mode(
+    game_path: Option<&str>,
     mode: gtavmm_core::providers::Mode,
-) -> Result<Option<&'a str>, String> {
+) -> Result<Option<&str>, String> {
     if mode != gtavmm_core::providers::Mode::FivemClient {
         return Ok(game_path);
     }
@@ -301,6 +303,7 @@ pub fn inspect_mod_impl(
 }
 
 /// OpenAI-Codex: Resolve the saved GTA path for the app's read-only install preview.
+#[cfg(test)]
 pub fn inspect_mod_for_settings_impl(
     conn: &Connection,
     game_path: Option<&str>,
@@ -1265,7 +1268,10 @@ pub fn list_recycle_bin(
     mode: Option<String>,
 ) -> Result<Vec<gtavmm_core::recycle_bin::RecycleBinEntry>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    list_recycle_bin_for_mode_impl(&conn, mode.as_deref())
+    match mode.as_deref() {
+        Some(mode) => list_recycle_bin_for_mode_impl(&conn, Some(mode)),
+        None => list_recycle_bin_impl(&conn),
+    }
 }
 
 pub fn restore_recycle_bin_entry_impl(
@@ -2965,7 +2971,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("unknown mode"), "unexpected message: {err}");
+        assert!(
+            err.contains("unknown page mode"),
+            "unexpected message: {err}"
+        );
         assert_eq!(
             std::fs::read(&deployed).unwrap(),
             before,
