@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Classifies a mod package (file/folder/archive) into a plan of `(source, target)`
 //! file mappings, per the format table in the MVP spec: `.asi`/`.dll` (native and
@@ -931,7 +932,7 @@ mod tests {
         assert!(plan
             .files
             .iter()
-            .any(|file| { file.target == game_root.join("plugins/LSPDFR/StoryCallouts.dll") }));
+            .any(|file| { file.target == game_root.join("plugins/lspdfr/StoryCallouts.dll") }));
         assert!(!plan
             .files
             .iter()
