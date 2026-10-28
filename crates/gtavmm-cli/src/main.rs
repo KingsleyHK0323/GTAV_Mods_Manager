@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Development/testing CLI for gtavmm-core, and the eventual power-user CLI mode.
-//! Per the project's "core first, UI last" decision, this is the primary way to
-//! exercise the engine until the Tauri/React app exists.
+//! Developer and power-user CLI for gtavmm-core. It shares the same core engine as
+//! the Tauri/React desktop app (`gtavmm-app`) and is the quickest way to exercise
+//! the engine without the UI.
+// Anthropic-Claude_Code_Responsible: Source_Code
 
 use std::path::PathBuf;
 

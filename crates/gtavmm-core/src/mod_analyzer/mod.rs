@@ -405,16 +405,162 @@ fn classify_add_on_pack(
     ))
 }
 
-fn extract_zip(input: &Path) -> CoreResult<tempfile::TempDir> {
-    let temp_dir = tempfile::tempdir()?;
+const MAX_ZIP_ENTRY_COUNT: usize = 10_000;
+const MAX_ZIP_MEMBER_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ZIP_TOTAL_OUTPUT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_SEVEN_ZIP_ENTRY_COUNT: usize = MAX_ZIP_ENTRY_COUNT;
+const MAX_SEVEN_ZIP_MEMBER_OUTPUT_BYTES: u64 = MAX_ZIP_MEMBER_OUTPUT_BYTES;
+const MAX_SEVEN_ZIP_TOTAL_OUTPUT_BYTES: u64 = MAX_ZIP_TOTAL_OUTPUT_BYTES;
+
+fn unsupported_archive_limit(format: &str, reason: impl std::fmt::Display) -> CoreError {
+    CoreError::UnsupportedFormat {
+        reason: format!("unsupported or unsafe {format} archive: {reason}"),
+    }
+}
+
+fn validate_archive_limits(
+    format: &str,
+    entry_count: usize,
+    entry_sizes: impl IntoIterator<Item = u64>,
+    max_entries: usize,
+    max_member_output_bytes: u64,
+    max_total_output_bytes: u64,
+) -> CoreResult<()> {
+    if entry_count > max_entries {
+        return Err(unsupported_archive_limit(
+            format,
+            format!("archive contains more than {max_entries} entries"),
+        ));
+    }
+
+    let mut total_output_bytes = 0_u64;
+    for size in entry_sizes {
+        if size > max_member_output_bytes {
+            return Err(unsupported_archive_limit(
+                format,
+                format!("an entry exceeds the {max_member_output_bytes}-byte per-entry limit"),
+            ));
+        }
+        total_output_bytes = total_output_bytes.checked_add(size).ok_or_else(|| {
+            unsupported_archive_limit(format, "total uncompressed size overflows")
+        })?;
+        if total_output_bytes > max_total_output_bytes {
+            return Err(unsupported_archive_limit(
+                format,
+                format!("archive exceeds the {max_total_output_bytes}-byte total limit"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn extract_zip_with_limits(
+    input: &Path,
+    max_entries: usize,
+    max_member_output_bytes: u64,
+    max_total_output_bytes: u64,
+) -> CoreResult<tempfile::TempDir> {
     let file = std::fs::File::open(input)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| CoreError::UnsupportedFormat {
         reason: format!("not a valid zip archive: {e}"),
     })?;
+
+    let entry_count = archive.len();
+    if entry_count > max_entries {
+        return Err(unsupported_archive_limit(
+            "ZIP",
+            format!("archive contains more than {max_entries} entries"),
+        ));
+    }
+    let mut entry_sizes = Vec::with_capacity(entry_count);
+    for index in 0..entry_count {
+        let entry = archive
+            .by_index(index)
+            .map_err(|e| unsupported_archive_limit("ZIP", format!("invalid entry: {e}")))?;
+        entry_sizes.push(entry.size());
+    }
+    validate_archive_limits(
+        "ZIP",
+        entry_count,
+        entry_sizes,
+        max_entries,
+        max_member_output_bytes,
+        max_total_output_bytes,
+    )?;
+
+    let temp_dir = tempfile::tempdir()?;
     archive
         .extract(temp_dir.path())
         .map_err(|e| CoreError::UnsupportedFormat {
             reason: format!("failed to extract zip archive: {e}"),
+        })?;
+    Ok(temp_dir)
+}
+
+fn safe_seven_zip_entry_path(
+    entry: &sevenz_rust::SevenZArchiveEntry,
+) -> Result<PathBuf, sevenz_rust::Error> {
+    let entry_name = entry.name();
+    let normalized_name = entry_name.replace('\\', "/");
+    let name_bytes = normalized_name.as_bytes();
+    let has_windows_drive_prefix = name_bytes.len() >= 2
+        && name_bytes[0].is_ascii_alphabetic()
+        && name_bytes[1] == b':';
+    let has_parent_component = normalized_name.split('/').any(|component| component == "..");
+
+    let unsafe_path_reason = if entry_name.is_empty() && !entry.is_directory() {
+        Some("empty")
+    } else if entry_name.contains('\0') {
+        Some("NUL-containing")
+    } else if normalized_name.starts_with('/') {
+        Some("absolute")
+    } else if has_windows_drive_prefix {
+        Some("drive-prefixed")
+    } else if has_parent_component {
+        Some("parent-directory")
+    } else {
+        None
+    };
+
+    if let Some(reason) = unsafe_path_reason {
+        return Err(sevenz_rust::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsafe {reason} path in 7z archive"),
+        )));
+    }
+
+    Ok(PathBuf::from(normalized_name))
+}
+
+fn extract_seven_zip_with_limits(
+    input: &Path,
+    max_entries: usize,
+    max_member_output_bytes: u64,
+    max_total_output_bytes: u64,
+) -> CoreResult<tempfile::TempDir> {
+    let mut archive = sevenz_rust::SevenZReader::open(input, sevenz_rust::Password::empty())
+        .map_err(|e| CoreError::UnsupportedFormat {
+            reason: format!("failed to read 7z archive: {e}"),
+        })?;
+    let archive_entries = &archive.archive().files;
+    validate_archive_limits(
+        "7z",
+        archive_entries.len(),
+        archive_entries.iter().map(|entry| entry.size()),
+        max_entries,
+        max_member_output_bytes,
+        max_total_output_bytes,
+    )?;
+
+    let temp_dir = tempfile::tempdir()?;
+    archive
+        .for_each_entries(|entry, reader| {
+            let relative_path = safe_seven_zip_entry_path(entry)?;
+            let output_path = temp_dir.path().join(relative_path);
+            sevenz_rust::default_entry_extract_fn(entry, reader, &output_path)
+        })
+        .map_err(|e| CoreError::UnsupportedFormat {
+            reason: format!("failed to extract 7z archive: {e}"),
         })?;
     Ok(temp_dir)
 }
@@ -618,7 +764,12 @@ fn classify_zip(
     input: &Path,
     provider: &dyn crate::providers::ModeProvider,
 ) -> CoreResult<ModPlan> {
-    let temp_dir = extract_zip(input)?;
+    let temp_dir = extract_zip_with_limits(
+        input,
+        MAX_ZIP_ENTRY_COUNT,
+        MAX_ZIP_MEMBER_OUTPUT_BYTES,
+        MAX_ZIP_TOTAL_OUTPUT_BYTES,
+    )?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
     // Only relabel a plain folder-replacer result as "Zip" — an AddOnPack or
@@ -628,32 +779,32 @@ fn classify_zip(
     if matches!(plan.format, ModFormat::FolderReplacer) {
         plan.format = ModFormat::Zip;
     }
-    // Deliberately leak the TempDir: its contents are the `source` paths in `plan`,
-    // which the install pipeline (milestone 4) will copy from before this directory
-    // would otherwise be cleaned up. Milestone 4 should own an explicit cleanup step
-    // once files are copied out, rather than relying on TempDir's Drop here.
-    std::mem::forget(temp_dir);
-    Ok(plan)
+    if plan.files.is_empty() {
+        return Ok(plan);
+    }
+    Ok(plan.with_staging_dir(temp_dir))
 }
 
 fn classify_seven_zip(
     input: &Path,
     provider: &dyn crate::providers::ModeProvider,
 ) -> CoreResult<ModPlan> {
-    let temp_dir = tempfile::tempdir()?;
-    sevenz_rust::decompress_file(input, temp_dir.path()).map_err(|e| {
-        CoreError::UnsupportedFormat {
-            reason: format!("failed to extract 7z archive: {e}"),
-        }
-    })?;
+    let temp_dir = extract_seven_zip_with_limits(
+        input,
+        MAX_SEVEN_ZIP_ENTRY_COUNT,
+        MAX_SEVEN_ZIP_MEMBER_OUTPUT_BYTES,
+        MAX_SEVEN_ZIP_TOTAL_OUTPUT_BYTES,
+    )?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
     // See classify_zip's note on why this is conditional, not unconditional.
     if matches!(plan.format, ModFormat::FolderReplacer) {
         plan.format = ModFormat::SevenZip;
     }
-    std::mem::forget(temp_dir); // see classify_zip's note
-    Ok(plan)
+    if plan.files.is_empty() {
+        return Ok(plan);
+    }
+    Ok(plan.with_staging_dir(temp_dir))
 }
 
 /// Finds the first `.oiv` file anywhere under `dir` (recursively), if any.
@@ -792,6 +943,181 @@ mod tests {
                 .unwrap();
         }
         std::fs::write(rar_path, builder.to_bytes().unwrap()).unwrap();
+    }
+
+    fn write_test_seven_zip(seven_zip_path: &Path, entries: &[(&str, &[u8])]) {
+        let source_dir = seven_zip_path.with_extension("input");
+        for (name, content) in entries {
+            let path = source_dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        sevenz_rust::compress_to_path(&source_dir, seven_zip_path).unwrap();
+    }
+
+    #[test]
+    fn zip_staging_is_removed_when_plan_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let zip_path = dir.path().join("replacer.zip");
+        write_test_zip(&zip_path, &[("update.rpf", b"payload")]);
+
+        let plan = classify(&zip_path, &provider(&game_root)).unwrap();
+        assert_eq!(plan.format, ModFormat::Zip);
+        let staging_dir = plan.files[0].source.parent().unwrap().to_path_buf();
+        assert!(staging_dir.exists());
+
+        drop(plan);
+
+        assert!(
+            !staging_dir.exists(),
+            "ZIP staging should be removed with its plan"
+        );
+    }
+
+    #[test]
+    fn seven_zip_staging_is_removed_when_plan_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let seven_zip_path = dir.path().join("replacer.7z");
+        write_test_seven_zip(
+            &seven_zip_path,
+            &[("update/x64/dlcpacks/thing.rpf", b"payload")],
+        );
+
+        let plan = classify(&seven_zip_path, &provider(&game_root)).unwrap();
+        assert_eq!(plan.format, ModFormat::SevenZip);
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(std::fs::read(&plan.files[0].source).unwrap(), b"payload");
+        let staged_file = plan.files[0].source.clone();
+
+        drop(plan);
+
+        assert!(
+            !staged_file.exists(),
+            "7z staging should be removed with its plan"
+        );
+    }
+
+    #[test]
+    fn zip_extraction_rejects_more_entries_than_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("too-many.zip");
+        write_test_zip(&zip_path, &[("one.asi", b"1"), ("two.asi", b"2")]);
+
+        let result = extract_zip_with_limits(&zip_path, 1, 16, 16);
+
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn zip_extraction_rejects_an_oversized_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("oversized-member.zip");
+        write_test_zip(&zip_path, &[("large.asi", b"payload")]);
+
+        let result = extract_zip_with_limits(&zip_path, 10, 6, 16);
+
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn zip_extraction_rejects_total_uncompressed_size_over_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("oversized-total.zip");
+        write_test_zip(&zip_path, &[("one.asi", b"123"), ("two.asi", b"456")]);
+
+        let result = extract_zip_with_limits(&zip_path, 10, 5, 5);
+
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn seven_zip_extraction_rejects_more_entries_than_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let seven_zip_path = dir.path().join("too-many.7z");
+        write_test_seven_zip(&seven_zip_path, &[("one.asi", b"1"), ("two.asi", b"2")]);
+
+        let result = extract_seven_zip_with_limits(&seven_zip_path, 1, 16, 16);
+
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn seven_zip_extraction_rejects_an_oversized_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let seven_zip_path = dir.path().join("oversized-member.7z");
+        write_test_seven_zip(&seven_zip_path, &[("large.asi", b"payload")]);
+
+        let result = extract_seven_zip_with_limits(&seven_zip_path, 10, 6, 16);
+
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn seven_zip_extraction_rejects_absolute_entry_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let seven_zip_path = dir.path().join("absolute-entry.7z");
+        let payload_path = dir.path().join("payload.bin");
+        let escaped_path = dir.path().join("escaped.txt");
+        std::fs::write(&payload_path, b"payload").unwrap();
+
+        let entry = sevenz_rust::SevenZArchiveEntry::from_path(
+            &payload_path,
+            escaped_path.to_string_lossy().into_owned(),
+        );
+        let mut writer = sevenz_rust::SevenZWriter::create(&seven_zip_path).unwrap();
+        writer
+            .push_archive_entry(entry, Some(std::fs::File::open(&payload_path).unwrap()))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let result = extract_seven_zip_with_limits(&seven_zip_path, 10, 1024, 1024);
+
+        assert!(
+            matches!(result, Err(CoreError::UnsupportedFormat { .. })),
+            "7z extraction must reject an absolute entry path"
+        );
+        assert!(!escaped_path.exists(), "entry must not be written outside staging");
+    }
+
+    #[test]
+    fn seven_zip_extraction_rejects_parent_directory_entry_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let seven_zip_path = dir.path().join("parent-entry.7z");
+        let payload_path = dir.path().join("payload.bin");
+        let escaped_path = dir.path().join("escaped.txt");
+        let fixture_dir_name = dir.path().file_name().unwrap().to_string_lossy();
+        let entry_name = format!("../{fixture_dir_name}/escaped.txt");
+        std::fs::write(&payload_path, b"payload").unwrap();
+
+        let entry = sevenz_rust::SevenZArchiveEntry::from_path(&payload_path, entry_name);
+        let mut writer = sevenz_rust::SevenZWriter::create(&seven_zip_path).unwrap();
+        writer
+            .push_archive_entry(entry, Some(std::fs::File::open(&payload_path).unwrap()))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let result = extract_seven_zip_with_limits(&seven_zip_path, 10, 1024, 1024);
+
+        assert!(
+            matches!(result, Err(CoreError::UnsupportedFormat { .. })),
+            "7z extraction must reject parent-directory entry paths"
+        );
+        assert!(!escaped_path.exists(), "entry must not be written outside staging");
+    }
+
+    #[test]
+    fn seven_zip_extraction_rejects_total_uncompressed_size_over_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let seven_zip_path = dir.path().join("oversized-total.7z");
+        write_test_seven_zip(&seven_zip_path, &[("one.asi", b"123"), ("two.asi", b"456")]);
+
+        let result = extract_seven_zip_with_limits(&seven_zip_path, 10, 5, 5);
+
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
     }
 
     #[test]

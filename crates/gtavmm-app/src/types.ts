@@ -1,4 +1,5 @@
 // OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 export type Mode = "legacy" | "enhanced" | "fivem";
 export type Sub = "mods" | "lspdfr" | "client" | "server" | "converter";
 
@@ -32,6 +33,19 @@ export interface InstalledMod {
   mode_inferred: boolean;
   category: string | null;
 }
+
+export interface ModSourceReleaseInfo {
+  tag_name: string;
+  name: string | null;
+  published_at: string | null;
+  release_url: string;
+}
+
+export type ModSourceCheckResult =
+  | { status: "unsupported_source" }
+  | { status: "no_public_release" }
+  | { status: "rate_limited"; release: { retry_after_seconds: number | null } }
+  | { status: "release"; release: ModSourceReleaseInfo };
 
 export type DetectGameResult =
   | { status: "found"; install_path: string; edition: string }

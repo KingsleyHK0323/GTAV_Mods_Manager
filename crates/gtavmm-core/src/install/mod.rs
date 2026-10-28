@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! The install pipeline state machine: Analyzing (done by the caller via
 //! `mod_analyzer::classify`) → ConflictCheck → Backing_Up → Writing → Verifying →
@@ -207,38 +208,59 @@ pub fn install(
     }
 
     // --- Success: commit DB rows in one transaction ---
-    let db_tx = conn.transaction()?;
-    db_tx.execute(
-        "INSERT INTO installed_mod (name, source_type, install_path, status, source_path) \
-         VALUES (?1, ?2, ?3, 'active', ?4)",
-        rusqlite::params![
-            name,
-            source_type,
-            game_root.to_string_lossy(),
-            source_path.to_string_lossy()
-        ],
-    )?;
-    let installed_mod_id = db_tx.last_insert_rowid();
-
-    for planned in &plan.files {
-        let hash = file_hashes.remove(&planned.target).unwrap_or_default();
-        let backup_path = tx_log_backup_path_for(&tx_log, &planned.target);
+    let db_result = (|| -> CoreResult<i64> {
+        let db_tx = conn.transaction()?;
         db_tx.execute(
-            "INSERT INTO installed_mod_file (installed_mod_id, target_path, backup_path, file_hash) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO installed_mod (name, source_type, install_path, status, source_path) \
+             VALUES (?1, ?2, ?3, 'active', ?4)",
             rusqlite::params![
-                installed_mod_id,
-                planned.target.to_string_lossy(),
-                backup_path.map(|p| p.to_string_lossy().into_owned()),
-                hash,
+                name,
+                source_type,
+                game_root.to_string_lossy(),
+                source_path.to_string_lossy()
             ],
         )?;
-    }
-    db_tx.execute(
-        "INSERT INTO install_event (installed_mod_id, event_type, success) VALUES (?1, 'install', 1)",
-        [installed_mod_id],
-    )?;
-    db_tx.commit()?;
+        let installed_mod_id = db_tx.last_insert_rowid();
+
+        for planned in &plan.files {
+            let hash = file_hashes.remove(&planned.target).unwrap_or_default();
+            let backup_path = tx_log_backup_path_for(&tx_log, &planned.target);
+            db_tx.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, backup_path, file_hash) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    installed_mod_id,
+                    planned.target.to_string_lossy(),
+                    backup_path.map(|p| p.to_string_lossy().into_owned()),
+                    hash,
+                ],
+            )?;
+        }
+        db_tx.execute(
+            "INSERT INTO install_event (installed_mod_id, event_type, success) VALUES (?1, 'install', 1)",
+            [installed_mod_id],
+        )?;
+        db_tx.commit()?;
+        Ok(installed_mod_id)
+    })();
+
+    let installed_mod_id = match db_result {
+        Ok(installed_mod_id) => installed_mod_id,
+        Err(err) => {
+            let rollback_result = tx_log.rollback();
+            let _ = record_failed_event(conn, None, &err);
+            if let Err(rollback_err) = rollback_result {
+                let mut stderr = std::io::stderr().lock();
+                let _ = std::io::Write::write_fmt(
+                    &mut stderr,
+                    format_args!(
+                        "install database operation failed ({err:?}); filesystem rollback also failed ({rollback_err:?})\n"
+                    ),
+                );
+            }
+            return Err(err);
+        }
+    };
 
     Ok(InstallOutcome::Success {
         installed_mod_id,
@@ -414,6 +436,77 @@ mod tests {
             !backup.exists(),
             "backup file should be moved back, not left in place"
         );
+    }
+
+    #[test]
+    fn database_write_failure_rolls_back_new_and_overwritten_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+
+        let existing_target = game_root.join("existing.asi");
+        std::fs::write(&existing_target, b"original").unwrap();
+        let existing_source = write_source(dir.path(), "replacement.asi", b"replacement");
+        let new_source = write_source(dir.path(), "new.asi", b"new payload");
+        let new_target = game_root.join("new.asi");
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![
+                PlannedFile {
+                    source: existing_source.clone(),
+                    target: existing_target.clone(),
+                },
+                PlannedFile {
+                    source: new_source,
+                    target: new_target.clone(),
+                },
+            ],
+        );
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER force_installed_mod_file_failure \
+             BEFORE INSERT ON installed_mod_file \
+             BEGIN SELECT RAISE(ABORT, 'forced'); END;",
+        )
+        .unwrap();
+
+        let err = install(
+            &mut conn,
+            "Rollback Test",
+            &plan,
+            &game_root,
+            &dir.path().join("backups"),
+            InstallOptions::default(),
+            &existing_source,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, CoreError::Database(_)));
+        assert!(!new_target.exists(), "new file should be removed");
+        assert_eq!(
+            std::fs::read(&existing_target).unwrap(),
+            b"original",
+            "overwritten file should be restored from its backup"
+        );
+        let installed_mod_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod", [], |row| row.get(0))
+            .unwrap();
+        let installed_mod_file_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod_file", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let failed_event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM install_event WHERE success = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(installed_mod_count, 0);
+        assert_eq!(installed_mod_file_count, 0);
+        assert_eq!(failed_event_count, 1);
     }
 
     #[test]

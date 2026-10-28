@@ -7,8 +7,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Restored newly written and overwritten files when an install database transaction fails.
+- Removed ZIP and 7z extraction staging directories when inspection plans are dropped, and rejected archives over the entry and declared output-size limits.
+- Rejected absolute, drive-prefixed, and parent-directory paths in 7z archive entries before extracting them.
+- Restricted the text editor to existing, non-protected INI/XML/JSON/META/CFG/TXT files with absolute paths and a 5 MiB size limit; symbolic links are rejected.
+
+## [1.0.0] - 2026-10-28 (prepared locally; not yet tagged or released)
+<!-- Anthropic-Claude_Code_Responsible: Source_Code -->
+
+
 ### Added
 
+- Added a manual GitHub latest-release lookup to mod details. It displays public release metadata only; it does not compare against an installed mod version or download/install a release.
 - Added a GitHub Actions workflow that directly merges eligible same-repository Dependabot pull requests only after verifying the latest successful CI run and current head SHA. It checks after successful CI, processes successful check-suite events delivered by GitHub, and scans open pull requests every 30 minutes from the default branch to retry after approvals or other required checks. It disables pre-existing native Auto-merge requests, rejects pull requests that change workflow files using current and previous paths, and uses GitHub's standard merge API so repository protection and review rules still apply. Pull requests requiring a merge queue remain open.
 - Added weekly Dependabot version-update checks for Cargo, npm, and GitHub Actions; tagged installer releases now include GitHub-generated release notes.
 - Added per-platform SHA-256 checksum files for the Windows and Linux installers to the same GitHub Release draft, which is automatically published after both platforms finish successfully.
@@ -27,6 +39,7 @@
 
 ### Fixed
 
+- Hardened tagged releases by validating stable tags against the Cargo, npm, and Tauri versions and separating read-only installer builds from release publication.
 - Fixed the recycle-bin restore-root regression test fixture to create nested snapshot directories before writing the snapshot.
 - Addressed workspace Clippy findings in the Tauri command layer without changing user-visible command behavior.
 - Corrected the Enhanced LSPDFR provider note to use the public-preview announcement date (2025-12-26) instead of the stale 2026-04 reference.

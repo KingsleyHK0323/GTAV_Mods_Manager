@@ -1,4 +1,5 @@
 # OpenAI-Codex
+# OpenAI-Codex_Responsible: Source_Code
 [workspace]
 resolver = "2"
 members = [
@@ -8,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "1.0.0"
 edition = "2021"
 license = "PolyForm-Noncommercial-1.0.0"
 authors = ["SpaceSquare"]

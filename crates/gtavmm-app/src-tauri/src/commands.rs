@@ -8,6 +8,7 @@
 
 use rusqlite::Connection;
 use serde::Serialize;
+use std::io::{Read, Write};
 
 use gtavmm_core::db::models::{InstalledMod, ModStatus};
 
@@ -1432,14 +1433,101 @@ pub fn export_mods_to_xlsx(
 // design's own disclaimer) and Hash Calculator (gtavmm_core::hash_calculator).
 // ---------------------------------------------------------------------------
 
+const MAX_TEXT_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const EDITABLE_TEXT_EXTENSIONS: &[&str] = &["ini", "xml", "json", "meta", "cfg", "txt"];
+
+fn validate_editable_path(path: &str, must_exist: bool) -> Result<std::path::PathBuf, String> {
+    if path.is_empty() {
+        return Err("A file path is required.".to_string());
+    }
+
+    let path = std::path::Path::new(path);
+    if !path.is_absolute() {
+        return Err("Only absolute file paths can be edited.".to_string());
+    }
+
+    if gtavmm_core::protected_files::is_protected(path) {
+        return Err("Protected files cannot be edited.".to_string());
+    }
+
+    let extension = path.extension().and_then(std::ffi::OsStr::to_str);
+    if !extension.is_some_and(|extension| {
+        EDITABLE_TEXT_EXTENSIONS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
+    }) {
+        return Err("The file extension is not supported by the text editor.".to_string());
+    }
+
+    for ancestor in path.ancestors().skip(1) {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("Symbolic links in file paths cannot be edited.".to_string());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !must_exist => {}
+            Err(error) => return Err(format!("Unable to inspect the file path: {error}")),
+        }
+    }
+
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err("Symbolic links cannot be edited.".to_string());
+            }
+            if !metadata.is_file() {
+                return Err("The path must point to an existing regular file.".to_string());
+            }
+            if metadata.len() > MAX_TEXT_FILE_BYTES {
+                return Err("The file exceeds the 5 MiB editing limit.".to_string());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !must_exist => {
+            return Ok(path.to_path_buf());
+        }
+        Err(error) => return Err(format!("Unable to inspect the file path: {error}")),
+    }
+
+    Ok(path.to_path_buf())
+}
+
+fn read_text_file_impl(path: &str) -> Result<String, String> {
+    let path = validate_editable_path(path, true)?;
+    let file =
+        std::fs::File::open(&path).map_err(|error| format!("Unable to open the file: {error}"))?;
+    let mut limited_file = file.take(MAX_TEXT_FILE_BYTES + 1);
+    let mut bytes = Vec::new();
+    limited_file
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Unable to read the file: {error}"))?;
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err("The file exceeds the 5 MiB editing limit.".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "The file is not valid UTF-8 text.".to_string())
+}
+
+fn write_text_file_impl(path: &str, content: &str) -> Result<(), String> {
+    let path = validate_editable_path(path, true)?;
+    if content.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err("The file exceeds the 5 MiB editing limit.".to_string());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|error| format!("Unable to open the file for writing: {error}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("Unable to write the file: {error}"))
+}
+
 #[tauri::command]
 pub fn read_text_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    read_text_file_impl(&path)
 }
 
 #[tauri::command]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    write_text_file_impl(&path, &content)
 }
 
 pub fn compute_file_hashes_impl(
@@ -1482,6 +1570,26 @@ pub fn check_for_update_impl() -> Result<gtavmm_core::update_check::UpdateCheckR
 #[tauri::command]
 pub fn check_for_update() -> Result<gtavmm_core::update_check::UpdateCheckResult, String> {
     check_for_update_impl()
+}
+
+// ---------------------------------------------------------------------------
+// Mod source release check (gtavmm_core::mod_source_check) — manual metadata
+// lookup only; it never downloads or installs a release.
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
+// ---------------------------------------------------------------------------
+
+pub fn check_mod_source_release_impl(
+    source_url: &str,
+) -> Result<gtavmm_core::mod_source_check::ModSourceCheckResult, String> {
+    gtavmm_core::mod_source_check::check_source(source_url).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn check_mod_source_release(
+    source_url: String,
+) -> Result<gtavmm_core::mod_source_check::ModSourceCheckResult, String> {
+    check_mod_source_release_impl(&source_url)
 }
 
 // ---------------------------------------------------------------------------
@@ -1917,6 +2025,158 @@ pub fn validate_game_path(path: String) -> Result<DetectGameResult, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn create_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
+
+    fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+    }
+
+    #[test]
+    fn validate_editable_path_rejects_empty_relative_unsupported_and_protected_paths() {
+        assert!(validate_editable_path("", true).is_err());
+        assert!(validate_editable_path("relative.ini", true).is_err());
+        assert!(validate_editable_path("C:\\mods\\tool.exe", true).is_err());
+        assert!(validate_editable_path("C:\\mods\\README", true).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let protected = dir.path().join("GTA5.exe");
+        std::fs::write(&protected, b"protected").unwrap();
+        let error = validate_editable_path(protected.to_str().unwrap(), true).unwrap_err();
+        assert!(error.to_ascii_lowercase().contains("protected"));
+    }
+
+    #[test]
+    fn validate_editable_path_accepts_allowlisted_extensions_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        for extension in ["ini", "XML", "json", "META", "cfg", "TXT"] {
+            let path = dir.path().join(format!("settings.{extension}"));
+            std::fs::write(&path, b"ok").unwrap();
+            assert!(validate_editable_path(path.to_str().unwrap(), true).is_ok());
+        }
+    }
+
+    #[test]
+    fn validate_editable_path_rejects_symlinked_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("target-dir");
+        let linked_dir = dir.path().join("linked-dir");
+        std::fs::create_dir(&target_dir).unwrap();
+        let target_file = target_dir.join("settings.ini");
+        std::fs::write(&target_file, "original").unwrap();
+
+        if let Err(error) = create_dir_symlink(&target_dir, &linked_dir) {
+            if cfg!(windows) && error.raw_os_error() == Some(1314) {
+                eprintln!("SKIPPED parent-symlink assertions: this Windows account cannot create directory symlinks (error 1314).");
+                return;
+            }
+            panic!("failed to create test directory symlink: {error}");
+        }
+
+        let linked_file = linked_dir.join("settings.ini");
+        assert!(validate_editable_path(linked_file.to_str().unwrap(), true).is_err());
+        assert!(read_text_file_impl(linked_file.to_str().unwrap()).is_err());
+        assert!(write_text_file_impl(linked_file.to_str().unwrap(), "changed").is_err());
+        assert_eq!(std::fs::read_to_string(target_file).unwrap(), "original");
+    }
+
+    #[test]
+    fn read_text_file_impl_rejects_invalid_paths_and_files_over_five_mib() {
+        assert!(read_text_file_impl("").is_err());
+        assert!(read_text_file_impl("relative.ini").is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("unsafe.exe");
+        std::fs::write(&executable, b"not editable").unwrap();
+        assert!(read_text_file_impl(executable.to_str().unwrap()).is_err());
+
+        let protected = dir.path().join("GTA5.exe");
+        std::fs::write(&protected, b"protected").unwrap();
+        assert!(read_text_file_impl(protected.to_str().unwrap())
+            .unwrap_err()
+            .to_ascii_lowercase()
+            .contains("protected"));
+
+        let oversized = dir.path().join("large.txt");
+        std::fs::write(&oversized, vec![b'x'; 5 * 1024 * 1024 + 1]).unwrap();
+        assert!(read_text_file_impl(oversized.to_str().unwrap()).is_err());
+
+        let text = dir.path().join("notes.TXT");
+        std::fs::write(&text, "editable text").unwrap();
+        assert_eq!(
+            read_text_file_impl(text.to_str().unwrap()).unwrap(),
+            "editable text"
+        );
+    }
+
+    #[test]
+    fn write_text_file_impl_only_updates_safe_existing_files_within_the_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let editable = dir.path().join("settings.InI");
+        std::fs::write(&editable, "before").unwrap();
+        write_text_file_impl(editable.to_str().unwrap(), "after").unwrap();
+        assert_eq!(std::fs::read_to_string(&editable).unwrap(), "after");
+
+        let missing = dir.path().join("new.ini");
+        assert!(write_text_file_impl(missing.to_str().unwrap(), "new").is_err());
+        assert!(!missing.exists());
+
+        let executable = dir.path().join("unsafe.exe");
+        std::fs::write(&executable, "keep").unwrap();
+        assert!(write_text_file_impl(executable.to_str().unwrap(), "replace").is_err());
+        assert_eq!(std::fs::read_to_string(executable).unwrap(), "keep");
+
+        let oversized = dir.path().join("large.txt");
+        std::fs::write(&oversized, "small").unwrap();
+        assert!(write_text_file_impl(
+            oversized.to_str().unwrap(),
+            &"x".repeat(5 * 1024 * 1024 + 1)
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(oversized).unwrap(), "small");
+
+        let target = dir.path().join("target.ini");
+        let link = dir.path().join("link.ini");
+        std::fs::write(&target, "target").unwrap();
+        if let Err(error) = create_file_symlink(&target, &link) {
+            if cfg!(windows) && error.raw_os_error() == Some(1314) {
+                eprintln!("SKIPPED symlink assertions: this Windows account cannot create file symlinks (error 1314).");
+                return;
+            }
+            panic!("failed to create test file symlink: {error}");
+        }
+        assert!(validate_editable_path(link.to_str().unwrap(), true).is_err());
+        assert!(read_text_file_impl(link.to_str().unwrap()).is_err());
+        assert!(write_text_file_impl(link.to_str().unwrap(), "changed").is_err());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "target");
+    }
+
+    #[test]
+    fn unsupported_mod_source_release_lookup_does_not_query_github() {
+        assert_eq!(
+            check_mod_source_release_impl("https://mods.example/item/1"),
+            Ok(gtavmm_core::mod_source_check::ModSourceCheckResult::UnsupportedSource)
+        );
+    }
 
     fn write_manifest(dir: &std::path::Path, name: &str, body: &str) {
         let resource_dir = dir.join(name);

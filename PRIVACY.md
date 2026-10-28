@@ -31,6 +31,14 @@ version and links. It does not download or install an update and does not send y
 game path or mod list. Like any internet request, GitHub receives connection
 metadata such as your IP address.
 
+The mod-source release lookup runs only when you request it from a mod's details
+drawer and the source link is an HTTPS GitHub repository URL. The app sends an
+unauthenticated request to `api.github.com` containing the repository owner and name
+and a fixed application User-Agent. Unsupported sources do not make a request. GitHub
+receives connection metadata such as your IP address. The lookup does not send the
+mod name, notes, install path, local files, or credentials, and it displays release
+metadata without downloading or installing anything.
+
 ## Optional AI features
 
 AI is optional and disabled by default. You must enable it and invoke a feature for
@@ -67,7 +75,8 @@ submit crash reports.
 
 ## Planned features
 
-Mod-source integration, such as checking mod websites for update information, is not
+Manual latest-release metadata lookup for public GitHub mod sources is implemented.
+Other mod-site integrations and comparison with a mod's installed version are not
 implemented. If a future feature changes these data flows, this policy will be
 updated before that feature is described as available.
 

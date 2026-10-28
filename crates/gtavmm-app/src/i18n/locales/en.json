@@ -1,5 +1,6 @@
 {
   "_codex_signature": "OpenAI-Codex",
+  "_codex_responsible": "OpenAI-Codex_Responsible: Source_Code",
   "brand": {
     "name": "GTAV Mods Manager"
   },
@@ -425,6 +426,17 @@
     "install_root": "Install root",
     "notes": "Notes",
     "saving": "Saving…",
+    "source_release_check": "Check latest GitHub release",
+    "source_release_checking": "Checking GitHub…",
+    "source_release_help": "Manual lookup for public GitHub repositories only. It shows release details; it does not confirm this mod can be updated or download anything.",
+    "source_release_error": "Could not check release information: {{error}}",
+    "source_release_unsupported": "Release lookup supports HTTPS links to GitHub repositories only.",
+    "source_release_none": "No public latest release was found. The repository may be private or unavailable.",
+    "source_release_rate_limited": "GitHub rate limited this lookup. Try again later.",
+    "source_release_rate_limited_wait": "GitHub rate limited this lookup. Try again in about {{seconds}} seconds.",
+    "source_release_latest": "Latest public release",
+    "source_release_published": "Published {{date}}",
+    "source_release_view": "View release on GitHub",
     "working": "Working…",
     "disable": "Disable",
     "enable": "Enable",

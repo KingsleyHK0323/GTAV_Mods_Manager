@@ -1,3 +1,5 @@
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 import { useTranslation } from "react-i18next";
 import { Icon } from "./IconSprite";
 import type { Mode, Sub } from "../types";
@@ -55,7 +57,7 @@ export function Sidebar({
         <div className="brand-text">
           <span className="brand-name">{t("brand.name")}</span>
           <span className="brand-version">
-            v0.2.1 <span className="mono">· win-x64</span>
+            v1.0.0 <span className="mono">· win-x64</span>
           </span>
         </div>
       </div>

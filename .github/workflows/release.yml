@@ -1,14 +1,10 @@
 name: Release
 
 # OpenAI-Codex_Responsible: Source_Code
-# OpenAI-Codex: Reuse the CI validation workflow before publishing installers.
-# Builds real Tauri installers (Windows .msi/.exe, Linux .deb/.rpm) for
-# gtavmm-app and publishes them as a GitHub Release, gated by the full test suite.
-# Matches the project's "installer only, no portable/CLI-only release" policy (see the
-# planning vault) — this replaces the earlier interim CLI-binary-only workflow that was
-# a stand-in until gtavmm-app existed. Not code-signed (no certificate configured yet)
-# — installers will show an "unknown publisher" warning on Windows/macOS until that's
-# set up separately.
+# OpenAI-Codex: Validate stable tags, reuse CI, build installers with read-only permissions,
+# and publish only after both platform artifacts and checksums are ready.
+# Builds Tauri installers (Windows .msi/.exe, Linux .deb/.rpm) for gtavmm-app.
+# Installers are unsigned; Windows may show a SmartScreen warning on first run.
 
 on:
   push:
@@ -19,28 +15,164 @@ permissions:
   contents: read
 
 jobs:
+  validate-release:
+    name: Validate stable release tag and versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate tag and application versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const tag = process.env.RELEASE_TAG || "";
+          const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag);
+          if (!match) {
+            throw new Error(`Release tag must be a stable vMAJOR.MINOR.PATCH version: ${tag}`);
+          }
+
+          const packageVersion = JSON.parse(
+            fs.readFileSync("crates/gtavmm-app/package.json", "utf8"),
+          ).version;
+          const tauriVersion = JSON.parse(
+            fs.readFileSync("crates/gtavmm-app/src-tauri/tauri.conf.json", "utf8"),
+          ).version;
+
+          const cargoLines = fs.readFileSync("Cargo.toml", "utf8").split(/\r?\n/);
+          let inWorkspacePackage = false;
+          let cargoVersion;
+          for (const line of cargoLines) {
+            const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+            if (section) {
+              inWorkspacePackage = section[1] === "workspace.package";
+            }
+            if (inWorkspacePackage) {
+              const version = /^\s*version\s*=\s*"([^"]+)"/.exec(line);
+              if (version) {
+                cargoVersion = version[1];
+                break;
+              }
+            }
+          }
+
+          const expectedVersion = tag.slice(1);
+          const versions = {
+            "Cargo workspace": cargoVersion,
+            "npm package": packageVersion,
+            "Tauri configuration": tauriVersion,
+          };
+
+          for (const [source, version] of Object.entries(versions)) {
+            if (version !== expectedVersion) {
+              throw new Error(
+                `${source} version ${version ?? "missing"} does not match release tag ${tag}`,
+              );
+            }
+          }
+
+          console.log(`Validated stable release ${tag} against all application versions.`);
+          NODE
+
   test-gate:
+    needs: validate-release
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  build-and-publish:
+  build-windows:
     needs: test-gate
+    runs-on: windows-latest
     permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - platform: windows-latest
-          - platform: ubuntu-latest
-    runs-on: ${{ matrix.platform }}
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Install system dependencies (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/gtavmm-app/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/gtavmm-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/gtavmm-app
+        run: npm ci
+
+      - name: Build Windows Tauri installers
+        id: tauri_build
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: crates/gtavmm-app
+
+      - name: Collect Windows installer files
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri_build.outputs.artifactPaths }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
+          const installers = artifactPaths
+            .filter((file) => [".msi", ".exe"].includes(path.extname(file).toLowerCase()))
+            .sort();
+
+          if (installers.length === 0) {
+            throw new Error("Tauri did not report any Windows installer artifacts.");
+          }
+
+          const names = new Set();
+          const outputDirectory = path.join(process.env.RUNNER_TEMP, "release-assets");
+          fs.mkdirSync(outputDirectory, { recursive: true });
+
+          for (const file of installers) {
+            const name = path.basename(file);
+            const key = name.toLowerCase();
+            if (names.has(key)) {
+              throw new Error(`Duplicate Windows installer filename: ${name}`);
+            }
+            names.add(key);
+            fs.copyFileSync(file, path.join(outputDirectory, name));
+          }
+          NODE
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-windows
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  build-linux:
+    needs: test-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
@@ -60,152 +192,195 @@ jobs:
         working-directory: crates/gtavmm-app
         run: npm ci
 
-      - name: Build and publish Tauri installers
-        id: tauri_release
+      - name: Build Linux Tauri installers
+        id: tauri_build
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/gtavmm-app
-          # Installers only, per the project's release policy — AppImage is a portable
-          # executable, not a traditional installer, so it's excluded on Linux.
-          args: ${{ matrix.platform == 'ubuntu-latest' && '--bundles deb,rpm' || '' }}
-          tagName: ${{ github.ref_name }}
-          releaseName: "GTAV Mods Manager ${{ github.ref_name }}"
-          releaseBody: "See CHANGELOG / commit history for details. Installers are unsigned — Windows SmartScreen / macOS Gatekeeper may warn on first run."
-          generateReleaseNotes: true
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: false
+          # Exclude AppImage because the release policy is installer-only.
+          args: --bundles deb,rpm
 
-      - name: Generate and attach installer SHA-256 checksums
+      - name: Collect Linux installer files
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.tauri_release.outputs.artifactPaths }}
+          ARTIFACT_PATHS: ${{ steps.tauri_build.outputs.artifactPaths }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
+          const installers = artifactPaths
+            .filter((file) => [".deb", ".rpm"].includes(path.extname(file).toLowerCase()))
+            .sort();
+
+          if (installers.length === 0) {
+            throw new Error("Tauri did not report any Linux installer artifacts.");
+          }
+
+          const names = new Set();
+          const outputDirectory = path.join(process.env.RUNNER_TEMP, "release-assets");
+          fs.mkdirSync(outputDirectory, { recursive: true });
+
+          for (const file of installers) {
+            const name = path.basename(file);
+            if (names.has(name)) {
+              throw new Error(`Duplicate Linux installer filename: ${name}`);
+            }
+            names.add(name);
+            fs.copyFileSync(file, path.join(outputDirectory, name));
+          }
+          NODE
+
+      - name: Upload Linux installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-linux
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish-release:
+    needs:
+      - build-windows
+      - build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Attach verified installers and publish the release
+        shell: bash
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          case "$RUNNER_OS" in
-            Windows)
-              platform=windows
-              installer_extensions='[".msi", ".exe"]'
-              ;;
-            Linux)
-              platform=linux
-              installer_extensions='[".deb", ".rpm"]'
-              ;;
-            *)
-              echo "Unsupported runner OS for installer checksums: $RUNNER_OS" >&2
-              exit 1
-              ;;
-          esac
+          set -euo pipefail
 
-          checksum_file="SHA256SUMS-${platform}.txt"
-          export CHECKSUM_FILE="$checksum_file"
-          export INSTALLER_EXTENSIONS="$installer_extensions"
+          assets_directory="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets_directory/installers-windows" "$assets_directory/installers-linux"
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GH_REPOSITORY" \
+            --name installers-windows \
+            --dir "$assets_directory/installers-windows"
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GH_REPOSITORY" \
+            --name installers-linux \
+            --dir "$assets_directory/installers-linux"
 
-          node <<'NODE'
-          const { createReadStream, writeFileSync } = require("node:fs");
-          const { createHash } = require("node:crypto");
-          const { basename, extname } = require("node:path");
+          mapfile -d '' windows_installers < <(
+            find "$assets_directory/installers-windows" -type f \
+              \( -iname '*.msi' -o -iname '*.exe' \) -print0 | sort -z
+          )
+          mapfile -d '' linux_installers < <(
+            find "$assets_directory/installers-linux" -type f \
+              \( -iname '*.deb' -o -iname '*.rpm' \) -print0 | sort -z
+          )
 
-          async function sha256(filePath) {
-            const hash = createHash("sha256");
-            for await (const chunk of createReadStream(filePath)) {
-              hash.update(chunk);
-            }
-            return hash.digest("hex");
+          if (( ${#windows_installers[@]} == 0 )); then
+            echo "No Windows installer artifact was found." >&2
+            exit 1
+          fi
+          if (( ${#linux_installers[@]} == 0 )); then
+            echo "No Linux installer artifact was found." >&2
+            exit 1
+          fi
+
+          write_checksums() {
+            local checksum_file="$1"
+            shift
+            : > "$checksum_file"
+            for installer in "$@"; do
+              local digest
+              digest="$(sha256sum -- "$installer" | cut -d ' ' -f1)"
+              printf '%s  %s\n' "$digest" "$(basename -- "$installer")" >> "$checksum_file"
+            done
           }
 
-          (async () => {
-            const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
-            const installerExtensions = new Set(
-              JSON.parse(process.env.INSTALLER_EXTENSIONS),
-            );
-            const installers = artifactPaths
-              .filter((filePath) =>
-                installerExtensions.has(extname(filePath).toLowerCase()),
-              )
-              .sort((left, right) =>
-                basename(left) < basename(right)
-                  ? -1
-                  : basename(left) > basename(right)
-                    ? 1
-                    : 0,
-              );
+          windows_checksums="$assets_directory/SHA256SUMS-windows.txt"
+          linux_checksums="$assets_directory/SHA256SUMS-linux.txt"
+          write_checksums "$windows_checksums" "${windows_installers[@]}"
+          write_checksums "$linux_checksums" "${linux_installers[@]}"
 
-            if (installers.length === 0) {
-              throw new Error("No installer artifacts were reported by tauri-action.");
-            }
+          release_assets=(
+            "${windows_installers[@]}"
+            "${linux_installers[@]}"
+            "$windows_checksums"
+            "$linux_checksums"
+          )
 
-            const lines = [];
-            for (const installer of installers) {
-              lines.push(`${await sha256(installer)}  ${basename(installer)}`);
-            }
+          asset_names=()
+          for asset in "${release_assets[@]}"; do
+            asset_names+=("$(basename -- "$asset")")
+          done
+          duplicate_names="$(printf '%s\n' "${asset_names[@]}" | sort | uniq -d)"
+          if [[ -n "$duplicate_names" ]]; then
+            echo "Installer asset filenames are not unique:" >&2
+            printf '%s\n' "$duplicate_names" >&2
+            exit 1
+          fi
 
-            writeFileSync(
-              process.env.CHECKSUM_FILE,
-              `${lines.join("\n")}\n`,
-              "utf8",
-            );
-            console.log(`Generated ${process.env.CHECKSUM_FILE} for ${installers.length} installer(s).`);
-          })().catch((error) => {
-            console.error(error);
-            process.exitCode = 1;
-          });
-          NODE
-
-          existing_assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '.assets[].name')"
-          if printf '%s\n' "$existing_assets" | grep -Fxq "$checksum_file"; then
-            existing_dir="$(mktemp -d)"
-            gh release download "$RELEASE_TAG" --repo "$GH_REPOSITORY" --pattern "$checksum_file" --dir "$existing_dir"
-            if cmp -s "$checksum_file" "$existing_dir/$checksum_file"; then
-              echo "$checksum_file already exists with identical contents; skipping upload."
-            else
-              echo "$checksum_file already exists with different contents; refusing to replace the release asset." >&2
+          if draft_state="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [[ "$draft_state" != "true" ]]; then
+              echo "Release $RELEASE_TAG already exists and is not a draft; refusing to alter it." >&2
               exit 1
             fi
           else
-            gh release upload "$RELEASE_TAG" "$checksum_file" --repo "$GH_REPOSITORY"
+            gh release create "$RELEASE_TAG" \
+              --repo "$GH_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "GTAV Mods Manager $RELEASE_TAG" \
+              --generate-notes \
+              --notes "Windows installers are unsigned and may show a SmartScreen warning on first run."
           fi
 
-  publish-release:
-    needs: build-and-publish
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_REPOSITORY: ${{ github.repository }}
-      RELEASE_TAG: ${{ github.ref_name }}
-    steps:
-      - name: Verify release assets and publish draft
-        shell: bash
-        run: |
-          assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '.assets[].name')"
+          existing_assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '.assets[].name')"
+          pending_assets=()
+          for asset in "${release_assets[@]}"; do
+            asset_name="$(basename -- "$asset")"
+            if printf '%s\n' "$existing_assets" | grep -Fqx -- "$asset_name"; then
+              existing_directory="$(mktemp -d "$RUNNER_TEMP/existing-release-asset.XXXXXX")"
+              gh release download "$RELEASE_TAG" \
+                --repo "$GH_REPOSITORY" \
+                --pattern "$asset_name" \
+                --dir "$existing_directory"
+              if ! cmp -s "$asset" "$existing_directory/$asset_name"; then
+                echo "Release asset $asset_name already exists with different contents." >&2
+                exit 1
+              fi
+              echo "Existing release asset is identical: $asset_name"
+            else
+              pending_assets+=("$asset")
+            fi
+          done
 
-          for checksum_file in SHA256SUMS-windows.txt SHA256SUMS-linux.txt; do
-            if ! printf '%s\n' "$assets" | grep -Fxq "$checksum_file"; then
-              echo "Required checksum asset is missing: $checksum_file" >&2
+          if (( ${#pending_assets[@]} > 0 )); then
+            gh release upload "$RELEASE_TAG" "${pending_assets[@]}" --repo "$GH_REPOSITORY"
+          fi
+
+          published_assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json assets --jq '.assets[].name')"
+          for asset_name in "${asset_names[@]}"; do
+            if ! printf '%s\n' "$published_assets" | grep -Fqx -- "$asset_name"; then
+              echo "Required release asset is missing: $asset_name" >&2
               exit 1
             fi
           done
 
-          if ! printf '%s\n' "$assets" | grep -Eiq '\.(msi|exe)$'; then
-            echo "No Windows installer asset was found; leaving the release as a draft." >&2
-            exit 1
-          fi
-
-          if ! printf '%s\n' "$assets" | grep -Eiq '\.(deb|rpm)$'; then
-            echo "No Linux installer asset was found; leaving the release as a draft." >&2
-            exit 1
-          fi
-
           release_is_draft="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json isDraft --jq '.isDraft')"
           if [[ "$release_is_draft" != "true" ]]; then
-            echo "Expected the release for $RELEASE_TAG to remain a draft; refusing to change its state." >&2
+            echo "Expected $RELEASE_TAG to remain a draft until every installer is verified." >&2
             exit 1
           fi
 
           gh release edit "$RELEASE_TAG" --repo "$GH_REPOSITORY" --draft=false
+
+          release_is_draft="$(gh release view "$RELEASE_TAG" --repo "$GH_REPOSITORY" --json isDraft --jq '.isDraft')"
+          if [[ "$release_is_draft" != "false" ]]; then
+            echo "GitHub did not report $RELEASE_TAG as published." >&2
+            exit 1
+          fi
+
+          echo "Published $RELEASE_TAG with Windows and Linux installers and checksum files."

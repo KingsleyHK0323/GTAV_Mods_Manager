@@ -24,6 +24,9 @@ pub mod malware_scan;
 pub mod mod_analyzer;
 pub mod mod_details;
 pub mod mod_search;
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
+pub mod mod_source_check;
 pub mod profile;
 pub mod prompt_template;
 pub mod protected_files;

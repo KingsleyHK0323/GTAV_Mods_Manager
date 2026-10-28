@@ -1,7 +1,9 @@
 {
   "name": "gtavmm-app",
   "private": true,
-  "version": "0.2.1",
+  "version": "1.0.0",
+  "_codex_signature": "OpenAI-Codex",
+  "_codex_responsible": "OpenAI-Codex_Responsible: Source_Code",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "scripts": {

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFile } from "../lib/pickers";
-import type { InstalledMod, PageMode } from "../types";
+import type { InstalledMod, ModSourceCheckResult, PageMode } from "../types";
+
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 /** Every page a mod can be moved to, in sidebar order. */
 const PAGE_MODES: PageMode[] = [
@@ -55,12 +58,20 @@ export function ModDetailDrawer({
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourceChecking, setSourceChecking] = useState(false);
+  const [sourceCheckResult, setSourceCheckResult] = useState<ModSourceCheckResult | null>(null);
+  const [sourceCheckError, setSourceCheckError] = useState<string | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const sourceCheckGeneration = useRef(0);
 
   // Re-seed the fields whenever a different mod is opened, otherwise the
   // previous mod's notes would linger in the inputs.
   useEffect(() => {
+    sourceCheckGeneration.current += 1;
+    setSourceChecking(false);
+    setSourceCheckResult(null);
+    setSourceCheckError(null);
     if (!mod) return;
     setNotes(mod.notes ?? "");
     setLink(mod.link ?? "");
@@ -110,8 +121,35 @@ export function ModDetailDrawer({
   const isActive = mod.status === "Active";
   const isDisabled = mod.status === "Disabled";
   const isGone = mod.status === "Uninstalled";
-  const anyBusy = busy !== null;
+  const anyBusy = busy !== null || sourceChecking;
   const missingFivemPath = mode === "fivem-client" && !gamePath?.trim();
+  const sourceRelease = sourceCheckResult?.status === "release" ? sourceCheckResult.release : null;
+  const parsedReleaseDate = sourceRelease?.published_at ? new Date(sourceRelease.published_at) : null;
+  const sourceReleaseDate = parsedReleaseDate
+    ? Number.isNaN(parsedReleaseDate.getTime())
+      ? sourceRelease?.published_at
+      : parsedReleaseDate.toLocaleDateString()
+    : null;
+
+  async function checkSourceRelease() {
+    const sourceUrl = link.trim();
+    if (!sourceUrl || anyBusy) return;
+
+    const requestGeneration = ++sourceCheckGeneration.current;
+    setSourceChecking(true);
+    setSourceCheckResult(null);
+    setSourceCheckError(null);
+    try {
+      const result = await invoke<ModSourceCheckResult>("check_mod_source_release", { sourceUrl });
+      if (requestGeneration === sourceCheckGeneration.current) setSourceCheckResult(result);
+    } catch (requestError) {
+      if (requestGeneration === sourceCheckGeneration.current) {
+        setSourceCheckError(String(requestError));
+      }
+    } finally {
+      if (requestGeneration === sourceCheckGeneration.current) setSourceChecking(false);
+    }
+  }
 
   return (
     <div className="drawer-backdrop" data-open="true" onClick={(e) => {
@@ -215,10 +253,82 @@ export function ModDetailDrawer({
             <input
               type="text"
               value={link}
-              onChange={(e) => setLink(e.target.value)}
+              disabled={sourceChecking}
+              onChange={(e) => {
+                sourceCheckGeneration.current += 1;
+                setSourceChecking(false);
+                setSourceCheckResult(null);
+                setSourceCheckError(null);
+                setLink(e.target.value);
+              }}
               placeholder={t("legacySp.link_placeholder")}
               style={{ width: "100%" }}
             />
+            <button
+              className="btn-ghost"
+              type="button"
+              style={{ marginTop: "var(--space-2)" }}
+              disabled={anyBusy || !link.trim()}
+              aria-busy={sourceChecking}
+              onClick={() => void checkSourceRelease()}
+            >
+              {t("drawer.source_release_check")}
+            </button>
+            {sourceChecking && (
+              <p className="page-sub" role="status" style={{ margin: "6px 0 0" }}>
+                {t("drawer.source_release_checking")}
+              </p>
+            )}
+            <p className="page-sub" style={{ margin: "6px 0 0" }}>
+              {t("drawer.source_release_help")}
+            </p>
+            {sourceCheckError && (
+              <p className="error" role="alert">
+                {t("drawer.source_release_error", { error: sourceCheckError })}
+              </p>
+            )}
+            <div>
+              {sourceCheckResult?.status === "unsupported_source" && (
+                <p className="page-sub" role="status">
+                  {t("drawer.source_release_unsupported")}
+                </p>
+              )}
+              {sourceCheckResult?.status === "no_public_release" && (
+                <p className="page-sub" role="status">
+                  {t("drawer.source_release_none")}
+                </p>
+              )}
+              {sourceCheckResult?.status === "rate_limited" && (
+                <p className="page-sub" role="status">
+                  {sourceCheckResult.release.retry_after_seconds === null
+                    ? t("drawer.source_release_rate_limited")
+                    : t("drawer.source_release_rate_limited_wait", {
+                        seconds: sourceCheckResult.release.retry_after_seconds,
+                      })}
+                </p>
+              )}
+              {sourceRelease && (
+                <div role="status" style={{ marginTop: "var(--space-2)" }}>
+                  <div className="eyebrow">{t("drawer.source_release_latest")}</div>
+                  <p style={{ margin: "4px 0" }}>
+                    <strong>{sourceRelease.name?.trim() || sourceRelease.tag_name}</strong>
+                    {sourceRelease.name?.trim() && sourceRelease.name.trim() !== sourceRelease.tag_name && (
+                      <span className="mono" style={{ marginLeft: "var(--space-2)" }}>
+                        {sourceRelease.tag_name}
+                      </span>
+                    )}
+                  </p>
+                  {sourceReleaseDate && (
+                    <p className="page-sub" style={{ margin: "4px 0" }}>
+                      {t("drawer.source_release_published", { date: sourceReleaseDate })}
+                    </p>
+                  )}
+                  <a href={sourceRelease.release_url} target="_blank" rel="noopener noreferrer">
+                    {t("drawer.source_release_view")}
+                  </a>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="drawer-section">

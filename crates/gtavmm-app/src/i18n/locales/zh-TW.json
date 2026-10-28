@@ -1,5 +1,6 @@
 {
   "_codex_signature": "OpenAI-Codex",
+  "_codex_responsible": "OpenAI-Codex_Responsible: Source_Code",
   "brand": {
     "name": "GTAV Mods Manager"
   },
@@ -425,6 +426,17 @@
     "install_root": "安裝位置",
     "notes": "備註",
     "saving": "儲存中…",
+    "source_release_check": "查詢最新 GitHub 發行版本",
+    "source_release_checking": "正在查詢 GitHub…",
+    "source_release_help": "僅手動查詢公開 GitHub 儲存庫。此處只顯示發行資訊，不判定已安裝模組可否更新，也不會下載檔案。",
+    "source_release_error": "無法查詢發行資訊：{{error}}",
+    "source_release_unsupported": "目前只支援 HTTPS GitHub 儲存庫連結。",
+    "source_release_none": "找不到可公開查詢的最新發行版本。儲存庫可能為私人或無法存取。",
+    "source_release_rate_limited": "GitHub 限制了查詢頻率，請稍後再試。",
+    "source_release_rate_limited_wait": "GitHub 限制了查詢頻率，約 {{seconds}} 秒後再試。",
+    "source_release_latest": "最新公開發行版本",
+    "source_release_published": "發佈日期：{{date}}",
+    "source_release_view": "在 GitHub 檢視發行版本",
     "working": "處理中…",
     "disable": "停用",
     "enable": "啟用",

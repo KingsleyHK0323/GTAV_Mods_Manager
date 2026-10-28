@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Tauri command layer: thin IPC wrappers over `gtavmm-core`, mirroring the CLI's own
 //! role — no business logic lives here, only argument marshalling and error-to-string
@@ -110,6 +111,7 @@ pub fn run() {
             commands::compute_file_hashes,
             commands::scan_mod_path,
             commands::check_for_update,
+            commands::check_mod_source_release,
             commands::search_mods,
         ])
         .run(tauri::generate_context!())
