@@ -1,5 +1,6 @@
 <!-- OpenAI-Codex -->
 <!-- OpenAI-Codex_Responsible: Website -->
+<!-- Anthropic-Claude_Code_Responsible: Website -->
 # GTAV Mods Manager Website
 
 Version `0.2.0` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
@@ -12,7 +13,7 @@ Copyright © Kingsley.
 
 - Traditional Chinese and English pages with Starlight search and navigation.
 - A browser-only demo for filtering, selecting, and changing sample mod states, with a session activity summary. It does not access GTA V folders or persist demo changes or history.
-- Product documentation for getting started, mod installation, language changes, and installed mod management.
+- Bilingual product documentation for getting started, mod installation, mod translation, installed mod management, downloads, privacy, supported modes, safety, and licenses.
 - Light and dark themes, system theme behavior, keyboard-accessible controls, and increased-contrast styles.
 - GitHub Actions workflow that builds, verifies bilingual SEO output, and deploys the site from the website branch on GitHub-hosted runners.
 
@@ -45,4 +46,3 @@ These terms make this project source-available under noncommercial licenses.
 
 - [GTAV Mods Manager repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager)
 - [Changelog](./Change%20Log.md)
-

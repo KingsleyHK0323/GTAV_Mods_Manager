@@ -1,5 +1,6 @@
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Website
+// Anthropic-Claude_Code_Responsible: Website
 import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
@@ -53,8 +54,13 @@ export default defineConfig({
 						{ slug: 'demo', label: '互動 Demo', translations: { en: 'Interactive Demo' } },
 						{ slug: 'quick-start', label: '快速開始', translations: { en: 'Quick Start' } },
 						{ slug: 'installing-mods', label: '安裝模組', translations: { en: 'Installing Mods' } },
-						{ slug: 'language-conversion', label: '語言轉換', translations: { en: 'Language Changes' } },
+						{ slug: 'language-conversion', label: '模組翻譯', translations: { en: 'Mod Translation' } },
 						{ slug: 'managing-mods', label: '管理已安裝模組', translations: { en: 'Managing Installed Mods' } },
+						{ slug: 'download', label: '下載與驗證', translations: { en: 'Download and Verify' } },
+						{ slug: 'supported-modes', label: '支援模式與限制', translations: { en: 'Supported Modes and Limits' } },
+						{ slug: 'safety', label: '安全機制', translations: { en: 'Safety Measures' } },
+						{ slug: 'privacy', label: '隱私與資料流向', translations: { en: 'Privacy and Data Flows' } },
+						{ slug: 'licenses', label: '授權與聲明', translations: { en: 'Licenses and Notices' } },
 						{ slug: 'faq', label: '常見問題', translations: { en: 'FAQ' } },
 					],
 				},

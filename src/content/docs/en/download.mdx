@@ -1,0 +1,36 @@
+---
+title: Download and Verify
+description: Download desktop installers from GitHub Releases and check their SHA-256 checksums.
+---
+
+{/* OpenAI-Codex */}
+{/* OpenAI-Codex_Responsible: Website */}
+
+Download desktop installers only from [GitHub Releases](https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases). Use the versions and files listed on the Releases page.
+
+## Installers and checksum files
+
+- **Windows:** installers are `.msi` or `.exe` files. The checksum file is `SHA256SUMS-windows.txt`.
+- **Linux:** installers are `.deb` or `.rpm` files. The checksum file is `SHA256SUMS-linux.txt`.
+
+Each platform has one SHA-256 checksum file listing the checksums for its installers. Download the installer and the checksum file for the same platform.
+
+## Verify the files
+
+In PowerShell, calculate the SHA-256 value for a Windows installer:
+
+```powershell
+Get-FileHash -LiteralPath 'path-to-installer.msi' -Algorithm SHA256
+```
+
+Compare the output `Hash` value with the entry for the same filename in `SHA256SUMS-windows.txt`. Replace the example path with the path to your downloaded installer.
+
+On Linux, put the installer and its checksum file in the same folder, then run:
+
+```bash
+sha256sum -c SHA256SUMS-linux.txt
+```
+
+## Windows install notice
+
+The installers are currently unsigned. Windows SmartScreen may show a warning on first run. Confirm the download came from GitHub Releases and check the platform's SHA-256 value before opening the installer.

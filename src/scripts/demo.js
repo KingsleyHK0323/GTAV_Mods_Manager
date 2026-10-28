@@ -1,5 +1,6 @@
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Website
+// Anthropic-Claude_Code_Responsible: Website
 import { createAddedEntry, createStatusChangeEntry, formatHistoryEntry } from './demo-history.js';
 
 const sampleMods = [
@@ -11,7 +12,7 @@ const sampleMods = [
 const copy = {
 	'en': {
 		categories: { graphics: 'Graphics', environment: 'Environment', world: 'World' },
-		languages: { multi: 'Multiple', en: 'English', 'zh-TW': 'Traditional Chinese' },
+		languages: { multi: 'Multiple languages', en: 'English', 'zh-TW': 'Traditional Chinese' },
 		status: { enabled: 'Enabled', disabled: 'Disabled' },
 		actions: { enable: 'Enable', disable: 'Disable', options: 'Options' },
 		filter: { all: 'All items', enabled: 'Enabled', disabled: 'Disabled' },
@@ -340,4 +341,3 @@ function initDemo(root) {
 }
 
 document.querySelectorAll('[data-demo-root]').forEach(initDemo);
-

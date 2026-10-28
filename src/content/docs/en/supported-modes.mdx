@@ -1,0 +1,29 @@
+---
+title: Supported Modes and Limits
+description: Review the desktop app's mod modes, supported package formats, and known limits.
+---
+
+{/* OpenAI-Codex */}
+{/* OpenAI-Codex_Responsible: Website */}
+
+Available modes and actions depend on the GTA V edition and mod type. Confirm the correct game or client folder before choosing a mode.
+
+## Mod modes
+
+- **Legacy SP:** App previews and installs require a configured game folder and reject mode or edition mismatches. Batch enable and disable are available.
+- **LSPDFR:** App previews and installs also require a configured game folder and reject mode or edition mismatches. Legacy LSPDFR supports batch enable and disable.
+- **FiveM Client:** View and edit mod details, enable, disable, reinstall, and uninstall mods. Uninstall requires an explicitly selected, existing client folder.
+- **Enhanced:** Navigation is locked and marked Coming Soon.
+- **FiveM Server:** Temporarily unavailable; its page remains disabled.
+
+## Supported mod packages
+
+The desktop app can analyze `.asi`, `.dll`, Menyoo `.xml`, folder replacers, `.zip`, and `.7z` packages.
+
+`.rar` uses bounded, read-only extraction. It accepts unencrypted, single-volume RAR 1.5+ archives with UTF-8 or Unicode metadata names. Limits apply to entries and extracted output; unsafe paths, duplicate entries, or archives beyond those limits are rejected.
+
+The desktop app does not install `.oiv` packages. Use OpenIV for them.
+
+## DLL translation limits
+
+DLL translation handles IL-only .NET assemblies. It rejects mixed-mode assemblies and assemblies with an Authenticode signature, and writes a new file without overwriting the original. Translation output has not yet been loaded and verified in a real game through SHVDN or RPH.

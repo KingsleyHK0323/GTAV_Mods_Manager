@@ -1,0 +1,29 @@
+---
+title: 安全機制
+description: 了解安裝備份、失敗回復、檔案保護與衝突處理。
+---
+
+{/* OpenAI-Codex */}
+{/* OpenAI-Codex_Responsible: Website */}
+
+安裝流程會先檢查衝突，再備份需要覆寫的既有檔案，接著寫入並驗證。安裝失敗時，程式會依記錄的相反順序回復檔案操作；資料庫紀錄只在安裝成功時提交。
+
+## 受保護的檔案
+
+程式會保護下列遊戲啟動檔、Rockstar 檔案與反作弊檔案，檔名比對不區分大小寫：
+
+- **遊戲啟動檔：** `GTA5.exe`、`GTA5_Enhanced.exe`、`GTAV.exe`、`PlayGTAV.exe`、`GTAVLauncher.exe`、`Launcher.exe`
+- **Rockstar 檔案：** `GTAVLanguageSelect.exe`、`RockstarService.exe`、`RockstarSteamHelper.exe`
+- **反作弊檔案：** `BattlEye.exe`、`Beclient.dll`、`Beclient_x64.dll`、`GTA5_Enhanced_BE.exe`、`BEService_x64.exe`
+
+核心也將 `.exe` 副檔名列為受保護項目，因此安裝流程會拒絕寫入這類可執行檔。
+
+## 衝突處理
+
+- 目標是受保護檔案時，安裝會被拒絕，不提供覆寫選項。
+- 與其他已啟用模組的檔案衝突時，必須由使用者明確允許覆寫。
+- 與單一已啟用模組有大量路徑重疊時，程式會提出可能是更新的建議。這只是建議，不能保證該模組就是同一個模組。
+
+## 回收桶
+
+回收桶項目保留 15 天，逾期項目會在桌面版啟動時清理。

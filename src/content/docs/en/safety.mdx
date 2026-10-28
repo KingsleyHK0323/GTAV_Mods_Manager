@@ -1,0 +1,29 @@
+---
+title: Safety Measures
+description: Learn how installs back up files, roll back failures, protect files, and handle conflicts.
+---
+
+{/* OpenAI-Codex */}
+{/* OpenAI-Codex_Responsible: Website */}
+
+The install pipeline checks for conflicts, backs up existing files that will be overwritten, then writes and verifies the planned files. If an install fails, the app reverses the recorded file actions. Database records are committed only after a successful install.
+
+## Protected files
+
+The app protects these game launchers, Rockstar files, and anti-cheat files. Filename matching is case-insensitive:
+
+- **Game launchers:** `GTA5.exe`, `GTA5_Enhanced.exe`, `GTAV.exe`, `PlayGTAV.exe`, `GTAVLauncher.exe`, `Launcher.exe`
+- **Rockstar files:** `GTAVLanguageSelect.exe`, `RockstarService.exe`, `RockstarSteamHelper.exe`
+- **Anti-cheat files:** `BattlEye.exe`, `Beclient.dll`, `Beclient_x64.dll`, `GTA5_Enhanced_BE.exe`, `BEService_x64.exe`
+
+The core also treats the `.exe` extension as protected, so the install pipeline rejects writes to executable files.
+
+## Conflict handling
+
+- An install targeting a protected file is rejected without an override option.
+- A conflict with a file owned by another active mod requires the user to explicitly allow the overwrite.
+- Large path overlap with one active mod is suggested as a possible update. This is a suggestion, not a guarantee that both packages are the same mod.
+
+## Recycle bin
+
+Recycle-bin entries are retained for 15 days. Expired entries are swept when the desktop app starts.

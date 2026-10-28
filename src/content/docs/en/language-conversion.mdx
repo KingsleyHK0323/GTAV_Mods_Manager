@@ -1,20 +1,28 @@
 ---
-title: Language Changes
-description: Organize the language variants provided by a mod and review the selected version.
+title: Mod Translation
+description: Generate translation drafts for mod config files and .NET DLLs, with optional AI help.
 ---
 
 {/* OpenAI-Codex */}
 {/* OpenAI-Codex_Responsible: Website */}
-Some mods provide files in multiple languages. The desktop app’s language change feature can handle supported mod language variants.
+{/* Anthropic-Claude_Code_Responsible: Website */}
+The desktop app can generate translations for mods. The original file is always kept.
 
-## Check before changing language
+## What is supported
 
-- Review the language list and version details from the mod author.
-- Confirm that the language files match the mod version you use.
-- Keep a recoverable backup and review the target item shown by the desktop app.
+- **INI / XML config files:** a translation draft is saved as a new file next to the original. The structure is validated before writing; if the AI changes sections, keys, or XML structure, the draft is rejected.
+- **.NET DLL embedded strings:** IL-only, unsigned assemblies only. The result is written to a new file and the original DLL is not overwritten. DLL translation has not been fully verified in-game, so test it yourself.
 
-## Manage language variants
+## AI and privacy
 
-Use the language change flow available in your desktop app version, then select the mod and target language as prompted. Check the library state afterward and verify the result in game.
+- AI is optional and off by default. You enable it and choose the provider.
+- With a cloud provider, the selected file's text (for a DLL, the extracted strings) is sent directly to that provider. Fees may apply under its terms, and personal information is not removed. With local Ollama, requests go only to the service on your computer.
+- API keys are stored in the operating system's credential store.
 
-The language rows in the web demo are sample data. They do not read, download, or convert real files.
+## Before you use a result
+
+- Review the generated translation; AI output is not guaranteed to be correct.
+- Keep the original file and a backup you can restore.
+- Check the result in game.
+
+The web demo has no translation feature and does not read, download, or convert real files.

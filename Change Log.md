@@ -1,6 +1,16 @@
 <!-- OpenAI-Codex -->
 <!-- OpenAI-Codex_Responsible: Website -->
+<!-- Anthropic-Claude_Code_Responsible: Website -->
 # Change Log
+
+## Unreleased
+
+- Add paired Traditional Chinese and English documentation for downloads, privacy, supported modes, safety, and licensing.
+- Clarify that the core rejects executable file targets during installation.
+- Replace the "language variants" wording with the app's actual feature, optional AI-assisted mod translation (INI/XML drafts and .NET DLL strings), on the home pages, landing sections, FAQ, and quick start. The former Language Changes guide is now "Mod Translation"; its route slug is unchanged.
+- Label the landing-page version as the website version and localize it; use "Disabled" instead of "Paused" in the English sample list.
+- Fix the English demo details sentence for multi-language samples.
+- Update the sidebar label and README wording to match.
 
 ## 0.2.0 — 2026-10-27
 
@@ -40,4 +50,3 @@
 - Pin Astro 7.4.2 and Starlight 0.42.7 for the website toolchain.
 - Add Discord community and GitHub project links to the site header and home page.
 - Use the project-provided JPG assets for the site icon and social preview.
-

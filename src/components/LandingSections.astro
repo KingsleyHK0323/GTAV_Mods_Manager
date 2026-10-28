@@ -1,6 +1,7 @@
 ---
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Website
+// Anthropic-Claude_Code_Responsible: Website
 interface Props {
 	locale: 'zh-TW' | 'en';
 }
@@ -14,10 +15,10 @@ const version = packageInfo.version;
 
 <div class="landing-sections">
 	<section class="landing-lead" aria-labelledby="landing-lead-title">
-		<p class="version-label">Version {version} · {english ? 'Website preview' : '網站預覽'}</p>
+		<p class="version-label">{english ? 'Website version' : '網站版本'} {version} · {english ? 'Preview' : '網站預覽'}</p>
 		<p class="folder-label">{english ? 'A calmer mod workflow' : '模組管理，清楚一點'}</p>
 		<h2 id="landing-lead-title">{english ? 'See the important details before you act.' : '先看清楚，再進行操作。'}</h2>
-		<p>{english ? 'Keep the library, install review, language variants, and change summary close together. The web preview below uses sample records only.' : '把模組清單、安裝檢視、語言版本與變更摘要整理在一起。以下畫面都是範例資料。'}</p>
+		<p>{english ? 'Keep the library, install review, translation drafts, and change summary close together. The web preview below uses sample records only.' : '把模組清單、安裝檢視、翻譯草稿與變更摘要整理在一起。以下畫面都是範例資料。'}</p>
 	</section>
 
 	<p class="landing-note">{english ? 'The live demo is isolated from your PC. It does not scan, read, or write GTA V files.' : '線上 Demo 與你的電腦隔離，不會掃描、讀取或寫入 GTA V 檔案。'}</p>
@@ -31,7 +32,7 @@ const version = packageInfo.version;
 					<div class="mini-window-head"><span>{english ? 'My library' : '我的模組庫'}</span><span>03</span></div>
 					<div class="mini-list">
 						<div class="mini-row"><span>Night Lighting Pack</span><span class="mini-status" data-state="ready">{english ? 'Enabled' : '已啟用'}</span></div>
-						<div class="mini-row"><span>Harbor Weather Set</span><span class="mini-status" data-state="paused">{english ? 'Paused' : '已停用'}</span></div>
+						<div class="mini-row"><span>Harbor Weather Set</span><span class="mini-status" data-state="paused">{english ? 'Disabled' : '已停用'}</span></div>
 						<div class="mini-row"><span>Coastal Detail Kit</span><span class="mini-status" data-state="ready">{english ? 'Enabled' : '已啟用'}</span></div>
 					</div>
 				</div>
@@ -53,16 +54,16 @@ const version = packageInfo.version;
 			</article>
 
 			<article class="landing-card">
-				<span class="folder-label">{english ? 'Language sets' : '語言版本'}</span>
-				<h3>{english ? 'Keep language variants together.' : '把不同語言版本放在一起。'}</h3>
-				<div class="mini-window" aria-label={english ? 'Sample language variants' : '範例語言版本'}>
-					<div class="mini-window-head"><span>Radio Pack</span><span>2</span></div>
+				<span class="folder-label">{english ? 'Translation drafts' : '翻譯草稿'}</span>
+				<h3>{english ? 'Translate without touching the original.' : '翻譯不動到原檔。'}</h3>
+				<div class="mini-window" aria-label={english ? 'Sample translation drafts' : '範例翻譯草稿'}>
+					<div class="mini-window-head"><span>{english ? 'Translation' : '翻譯'}</span><span>2</span></div>
 					<div class="mini-languages">
-						<div class="mini-language-row"><span>{english ? 'English' : '英文'}</span><span class="mini-chip">EN</span></div>
-						<div class="mini-language-row"><span>{english ? 'Traditional Chinese' : '繁體中文'}</span><span class="mini-chip">ZH-TW</span></div>
+						<div class="mini-language-row"><span>Settings.ini</span><span class="mini-chip">{english ? 'Original kept' : '原檔保留'}</span></div>
+						<div class="mini-language-row"><span>Settings.zh-TW.ini</span><span class="mini-chip">{english ? 'Draft' : '草稿'}</span></div>
 					</div>
 				</div>
-				<p>{english ? 'Group translations with the mod they belong to, so you can find the right variant later.' : '讓翻譯與所屬模組一起管理，日後更容易找到正確版本。'}</p>
+				<p>{english ? 'Drafts are saved as new files next to the original. AI is optional and off by default.' : '草稿另存為原檔旁的新檔；AI 為選用，預設關閉。'}</p>
 			</article>
 
 			<article class="landing-card">
@@ -82,7 +83,7 @@ const version = packageInfo.version;
 	</section>
 
 	<section class="workflow-grid" aria-label={english ? 'Three-step workflow' : '三步操作流程'}>
-		<article class="workflow-step"><span class="step-number">01</span><h3>{english ? 'Choose' : '選擇'}</h3><p>{english ? 'Find a mod or language variant in your library.' : '在模組庫中找到模組或語言版本。'}</p></article>
+		<article class="workflow-step"><span class="step-number">01</span><h3>{english ? 'Choose' : '選擇'}</h3><p>{english ? 'Find a mod in your library.' : '在模組庫中找到模組。'}</p></article>
 		<article class="workflow-step"><span class="step-number">02</span><h3>{english ? 'Review' : '檢視'}</h3><p>{english ? 'Read the summary and check which action you are taking.' : '閱讀摘要，確認將執行的動作。'}</p></article>
 		<article class="workflow-step"><span class="step-number">03</span><h3>{english ? 'Manage' : '管理'}</h3><p>{english ? 'Return later to find the item and its current state.' : '之後仍可回來查看項目與目前狀態。'}</p></article>
 	</section>

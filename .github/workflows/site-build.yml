@@ -46,7 +46,7 @@ jobs:
           import { readFile, readdir } from 'node:fs/promises';
 
           const base = 'https://spacesquare640.github.io/GTAV_Mods_Manager';
-          const routes = ['', 'demo', 'quick-start', 'installing-mods', 'language-conversion', 'managing-mods', 'faq'];
+          const routes = ['', 'demo', 'quick-start', 'installing-mods', 'language-conversion', 'managing-mods', 'download', 'supported-modes', 'safety', 'privacy', 'licenses', 'faq'];
           const cases = routes.flatMap((slug) => {
             const path = slug ? `/${slug}/` : '/';
             const englishPath = `/en${path}`;
