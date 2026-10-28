@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 use std::path::PathBuf;
 
@@ -21,6 +23,23 @@ pub enum CoreError {
 
     #[error("database error")]
     Database(#[from] rusqlite::Error),
+
+    #[error("install database operation failed ({database_error:?}); filesystem rollback also failed ({rollback_error:?})")]
+    InstallDatabaseRollbackFailed {
+        #[source]
+        database_error: Box<dyn std::error::Error + Send + Sync>,
+        rollback_error: Box<CoreError>,
+    },
+
+    #[error("filesystem rollback failed: {failures:?}")]
+    InstallRollbackFailures { failures: Vec<String> },
+
+    #[error("install operation failed ({install_error:?}); filesystem rollback also failed ({rollback_error:?})")]
+    InstallRollbackFailed {
+        #[source]
+        install_error: Box<dyn std::error::Error + Send + Sync>,
+        rollback_error: Box<CoreError>,
+    },
 
     #[error("io error")]
     Io(#[from] std::io::Error),

@@ -10,6 +10,8 @@
 ### Fixed
 
 - Restored newly written and overwritten files when an install database transaction fails.
+- Report filesystem rollback failures alongside the original install database error.
+- Continue remaining rollback actions after failures, report each failure, and preserve existing DLC entries and files when their backups are missing.
 - Removed ZIP and 7z extraction staging directories when inspection plans are dropped, and rejected archives over the entry and declared output-size limits.
 - Rejected absolute, drive-prefixed, and parent-directory paths in 7z archive entries before extracting them.
 - Restricted the text editor to existing, non-protected INI/XML/JSON/META/CFG/TXT files with absolute paths and a 5 MiB size limit; symbolic links are rejected.

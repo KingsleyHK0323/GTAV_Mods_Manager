@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Add-on content packs (add-on vehicles, add-on maps, and anything else shipped as a
 //! standalone `dlc.rpf`) — distinct from *replace*-type mods, which just overwrite an
@@ -75,10 +77,21 @@ pub fn has_entry(path: &Path, name: &str) -> CoreResult<bool> {
 /// Requires `dlclist.xml` to already exist at `path` — see this module's doc comment
 /// for why we don't fabricate a base file.
 pub fn add_entry(path: &Path, name: &str) -> CoreResult<()> {
-    let contents = std::fs::read_to_string(path).map_err(|_| dlclist_missing_error(path))?;
+    add_entry_with_status(path, name).map(|_| ())
+}
+
+/// Returns whether this call added the entry, so rollback preserves older entries.
+pub(crate) fn add_entry_with_status(path: &Path, name: &str) -> CoreResult<bool> {
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            dlclist_missing_error(path)
+        } else {
+            err.into()
+        }
+    })?;
 
     if contents.contains(&entry_line(name)) {
-        return Ok(()); // already registered, nothing to do
+        return Ok(false); // already registered, nothing to do
     }
 
     let closing_tag = "</Paths>";
@@ -94,22 +107,40 @@ pub fn add_entry(path: &Path, name: &str) -> CoreResult<()> {
     updated.push_str(&contents[insert_at..]);
 
     std::fs::write(path, updated)?;
-    Ok(())
+    Ok(true)
 }
 
-/// Removes `<Item>dlcpacks:\<name>\</Item>` (whichever line contains it), used on
-/// uninstall. No-op if the entry (or the file) isn't present.
+/// Removes matching `<Item>dlcpacks:\<name>\</Item>` entries without removing
+/// neighboring content. No-op if the entry (or the file) isn't present.
 pub fn remove_entry(path: &Path, name: &str) -> CoreResult<()> {
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return Ok(()); // nothing to remove from a file that doesn't exist
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
     };
 
     let needle = entry_line(name);
-    let updated: String = contents
-        .lines()
-        .filter(|line| !line.contains(&needle))
-        .map(|line| format!("{line}\n"))
-        .collect();
+    let mut updated = String::with_capacity(contents.len());
+    let mut remaining = contents.as_str();
+    let open_tag = "<Item>";
+    let close_tag = "</Item>";
+    while let Some(start) = remaining.find(open_tag) {
+        let after_open = &remaining[start + open_tag.len()..];
+        let Some(end) = after_open.find(close_tag) else {
+            break;
+        };
+        let item_end = start + open_tag.len() + end + close_tag.len();
+        if after_open[..end].trim() == needle.as_str() {
+            updated.push_str(&remaining[..start]);
+        } else {
+            updated.push_str(&remaining[..item_end]);
+        }
+        remaining = &remaining[item_end..];
+    }
+    updated.push_str(remaining);
+    if updated == contents {
+        return Ok(());
+    }
 
     std::fs::write(path, updated)?;
     Ok(())
@@ -215,5 +246,67 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does_not_exist.xml");
         remove_entry(&path, "mymod").unwrap();
+    }
+
+    #[test]
+    fn rollback_regression_remove_entry_reports_invalid_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dlclist.xml");
+        std::fs::write(&path, [0xff]).unwrap();
+
+        assert!(matches!(
+            remove_entry(&path, "mymod"),
+            Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
+
+    #[test]
+    fn rollback_regression_add_entry_reports_invalid_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dlclist.xml");
+        std::fs::write(&path, [0xff]).unwrap();
+
+        assert!(matches!(
+            add_entry(&path, "mymod"),
+            Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_regression_add_preserves_file_when_replacement_is_blocked() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dlclist.xml");
+        let original = base_dlclist();
+        std::fs::write(&path, original).unwrap();
+        let _locked_file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(&path)
+            .unwrap();
+
+        assert!(add_entry(&path, "mymod").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_regression_remove_preserves_file_when_replacement_is_blocked() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dlclist.xml");
+        let original = base_dlclist();
+        std::fs::write(&path, original).unwrap();
+        let _locked_file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(&path)
+            .unwrap();
+
+        assert!(remove_entry(&path, "mpchristmas2017").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 }

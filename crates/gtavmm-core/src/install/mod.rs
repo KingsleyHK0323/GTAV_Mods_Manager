@@ -52,31 +52,93 @@ impl InstallTransaction {
     /// Undoes every recorded action in reverse order. Consumes `self` — a rolled-back
     /// transaction cannot be reused.
     pub fn rollback(self) -> CoreResult<()> {
-        for action in self.actions.into_iter().rev() {
-            match action {
+        let mut failures = Vec::new();
+        let mut failed_targets = std::collections::HashSet::new();
+        let actions: Vec<_> = self
+            .actions
+            .into_iter()
+            .map(|action| {
+                let target = match &action {
+                    InstallAction::FileWritten { target }
+                    | InstallAction::FileOverwritten { target, .. } => target,
+                    InstallAction::DlclistEntryAdded { dlclist_path, .. } => dlclist_path,
+                };
+                (rollback_target_key(target), action)
+            })
+            .collect();
+        for (target_key, action) in actions.into_iter().rev() {
+            if failed_targets.contains(&target_key) {
+                failures.push(format!(
+                    "skipped earlier rollback action for {} after a failure",
+                    target_key.display()
+                ));
+                continue;
+            }
+            let (description, result) = match action {
                 InstallAction::FileWritten { target } => {
-                    if target.exists() {
-                        std::fs::remove_file(&target)?;
-                    }
+                    let description = format!("remove {}", target.display());
+                    let result = (|| -> CoreResult<()> {
+                        if target.try_exists()? {
+                            std::fs::remove_file(&target)?;
+                        }
+                        Ok(())
+                    })();
+                    (description, result)
                 }
                 InstallAction::FileOverwritten { target, backup } => {
-                    if target.exists() {
-                        std::fs::remove_file(&target)?;
-                    }
-                    crate::util::move_file(&backup, &target)?;
+                    let description =
+                        format!("restore {} from {}", target.display(), backup.display());
+                    let result = (|| -> CoreResult<()> {
+                        let backup_file = std::fs::File::open(&backup)?;
+                        if !backup_file.metadata()?.is_file() {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "backup is not a regular file",
+                            )
+                            .into());
+                        }
+                        drop(backup_file);
+                        if target.try_exists()? {
+                            std::fs::remove_file(&target)?;
+                        }
+                        crate::util::move_file(&backup, &target)
+                    })();
+                    (description, result)
                 }
                 InstallAction::DlclistEntryAdded {
                     dlclist_path,
                     pack_name,
                 } => {
-                    // Best-effort: if this fails there's already a bigger problem
-                    // (the file being gone entirely), and failing rollback loudly
-                    // here would mask the original install error.
-                    let _ = dlc::remove_entry(&dlclist_path, &pack_name);
+                    let description = format!(
+                        "remove DLC entry {pack_name} from {}",
+                        dlclist_path.display()
+                    );
+                    let result = dlc::remove_entry(&dlclist_path, &pack_name);
+                    (description, result)
                 }
+            };
+            if let Err(err) = result {
+                failed_targets.insert(target_key);
+                failures.push(format!("{description}: {err:?}"));
             }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CoreError::InstallRollbackFailures { failures })
+        }
+    }
+}
+
+fn rollback_target_key(path: &Path) -> PathBuf {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(windows)]
+    {
+        PathBuf::from(resolved.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        resolved
     }
 }
 
@@ -168,24 +230,23 @@ pub fn install(
     let mut file_hashes = match result {
         Ok(hashes) => hashes,
         Err(err) => {
-            tx_log.rollback()?;
-            record_failed_event(conn, None, &err)?;
-            return Err(err);
+            return Err(rollback_failed_install(conn, tx_log, err));
         }
     };
 
     // --- Add-on pack registration (part of Writing, still rollback-guarded) ---
     if let ModFormat::AddOnPack { pack_name } = &plan.format {
         let dlclist_path = dlc::dlclist_path(game_root);
-        if let Err(err) = dlc::add_entry(&dlclist_path, pack_name) {
-            tx_log.rollback()?;
-            record_failed_event(conn, None, &err)?;
-            return Err(err);
+        match dlc::add_entry_with_status(&dlclist_path, pack_name) {
+            Ok(true) => tx_log.record(InstallAction::DlclistEntryAdded {
+                dlclist_path,
+                pack_name: pack_name.clone(),
+            }),
+            Ok(false) => {}
+            Err(err) => {
+                return Err(rollback_failed_install(conn, tx_log, err));
+            }
         }
-        tx_log.record(InstallAction::DlclistEntryAdded {
-            dlclist_path,
-            pack_name: pack_name.clone(),
-        });
     }
 
     // --- Verifying ---
@@ -194,7 +255,6 @@ pub fn install(
     // skip it)
     for planned in &plan.files {
         if !planned.target.exists() {
-            tx_log.rollback()?;
             let err = CoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
@@ -202,8 +262,7 @@ pub fn install(
                     planned.target.display()
                 ),
             ));
-            record_failed_event(conn, None, &err)?;
-            return Err(err);
+            return Err(rollback_failed_install(conn, tx_log, err));
         }
     }
 
@@ -257,6 +316,10 @@ pub fn install(
                         "install database operation failed ({err:?}); filesystem rollback also failed ({rollback_err:?})\n"
                     ),
                 );
+                return Err(CoreError::InstallDatabaseRollbackFailed {
+                    database_error: Box::new(err),
+                    rollback_error: Box::new(rollback_err),
+                });
             }
             return Err(err);
         }
@@ -377,6 +440,22 @@ fn perform_writes(
     Ok(hashes)
 }
 
+fn rollback_failed_install(
+    conn: &Connection,
+    tx_log: InstallTransaction,
+    err: CoreError,
+) -> CoreError {
+    let rollback_result = tx_log.rollback();
+    let _ = record_failed_event(conn, None, &err);
+    match rollback_result {
+        Ok(()) => err,
+        Err(rollback_error) => CoreError::InstallRollbackFailed {
+            install_error: Box::new(err),
+            rollback_error: Box::new(rollback_error),
+        },
+    }
+}
+
 fn record_failed_event(
     conn: &Connection,
     installed_mod_id: Option<i64>,
@@ -399,6 +478,326 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn rollback_regression_continues_after_multiple_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let removable = write_source(dir.path(), "removable.asi", b"new");
+        let blocked = dir.path().join("blocked-directory");
+        std::fs::create_dir(&blocked).unwrap();
+        let missing_backup = dir.path().join("missing-backup.asi");
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::FileWritten {
+            target: removable.clone(),
+        });
+        tx.record(InstallAction::FileOverwritten {
+            target: dir.path().join("missing-target.asi"),
+            backup: missing_backup,
+        });
+        tx.record(InstallAction::FileWritten {
+            target: blocked.clone(),
+        });
+
+        let err = tx.rollback().unwrap_err();
+        assert!(!removable.exists(), "later rollback actions must still run");
+        let details = format!("{err:?}");
+        assert!(details.contains("blocked-directory"), "{details}");
+        assert!(details.contains("missing-backup.asi"), "{details}");
+    }
+
+    #[test]
+    fn rollback_regression_preserves_target_when_backup_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "existing.asi", b"current");
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::FileOverwritten {
+            target: target.clone(),
+            backup: dir.path().join("missing-backup.asi"),
+        });
+
+        assert!(tx.rollback().is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"current");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_regression_restoring_backup_preserves_a_target_on_failure() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "existing.asi", b"current");
+        let backup = write_source(dir.path(), "backup.asi", b"original");
+        let locked_file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x4)
+            .open(&target)
+            .unwrap();
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::FileOverwritten {
+            target: target.clone(),
+            backup: backup.clone(),
+        });
+
+        let result = tx.rollback();
+        drop(locked_file);
+        if result.is_err() {
+            assert_eq!(std::fs::read(&target).unwrap(), b"current");
+            assert_eq!(std::fs::read(&backup).unwrap(), b"original");
+        } else {
+            assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_regression_locked_backup_does_not_destroy_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "existing.asi", b"current");
+        let backup = write_source(dir.path(), "backup.asi", b"original");
+        let locked_backup = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&backup)
+            .unwrap();
+        locked_backup.try_lock().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let unlocker = std::thread::spawn(move || {
+            let signaled = release_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_ok();
+            locked_backup.unlock().unwrap();
+            signaled
+        });
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::FileOverwritten {
+            target: target.clone(),
+            backup: backup.clone(),
+        });
+
+        let result = tx.rollback();
+        let _ = release_tx.send(());
+        assert!(unlocker.join().unwrap(), "backup lock fixture timed out");
+        assert!(result.is_err(), "locked backup must fail to copy");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"original");
+        assert_eq!(std::fs::read(&target).unwrap(), b"current");
+    }
+
+    #[test]
+    fn rollback_regression_skips_earlier_actions_for_failed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "duplicate.asi", b"current");
+        let unrelated = write_source(dir.path(), "unrelated.asi", b"new");
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::FileWritten {
+            target: unrelated.clone(),
+        });
+        tx.record(InstallAction::FileWritten {
+            target: target.clone(),
+        });
+        tx.record(InstallAction::FileOverwritten {
+            target: target.clone(),
+            backup: dir.path().join("missing-backup.asi"),
+        });
+
+        let err = tx.rollback().unwrap_err();
+        assert_eq!(std::fs::read(&target).unwrap(), b"current");
+        assert!(
+            !unrelated.exists(),
+            "unrelated rollback actions must continue"
+        );
+        assert!(format!("{err:?}").contains("duplicate.asi"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rollback_regression_recognizes_case_aliases_for_failed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "duplicate.asi", b"current");
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::FileWritten {
+            target: target.clone(),
+        });
+        tx.record(InstallAction::FileOverwritten {
+            target: dir.path().join("DUPLICATE.ASI"),
+            backup: dir.path().join("missing-backup.asi"),
+        });
+
+        assert!(tx.rollback().is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"current");
+    }
+
+    #[test]
+    fn rollback_regression_reports_dlclist_read_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let dlclist_path = dir.path().join("dlclist.xml");
+        std::fs::write(&dlclist_path, [0xff]).unwrap();
+        let mut tx = InstallTransaction::default();
+        tx.record(InstallAction::DlclistEntryAdded {
+            dlclist_path,
+            pack_name: "MyAddonCar".to_string(),
+        });
+
+        assert!(
+            tx.rollback().is_err(),
+            "dlclist read failures must be reported"
+        );
+    }
+
+    #[test]
+    fn rollback_regression_preserves_preexisting_dlclist_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        let dlclist_path = dlc::dlclist_path(&game_root);
+        std::fs::create_dir_all(dlclist_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &dlclist_path,
+            "<Paths>\n<Item>dlcpacks:\\MyAddonCar\\</Item>\n</Paths>\n",
+        )
+        .unwrap();
+        let source = write_source(dir.path(), "dlc.rpf", b"payload");
+        let target = game_root.join("mods/update/x64/dlcpacks/MyAddonCar/dlc.rpf");
+        let plan = ModPlan::new(
+            ModFormat::AddOnPack {
+                pack_name: "MyAddonCar".to_string(),
+            },
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER force_installed_mod_file_failure \
+             BEFORE INSERT ON installed_mod_file \
+             BEGIN SELECT RAISE(ABORT, 'forced'); END;",
+        )
+        .unwrap();
+
+        assert!(install(
+            &mut conn,
+            "My Addon Car",
+            &plan,
+            &game_root,
+            &dir.path().join("backups"),
+            InstallOptions::default(),
+            &source,
+        )
+        .is_err());
+        assert!(!target.exists(), "new mod file must be rolled back");
+        assert!(dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+    }
+
+    #[test]
+    fn rollback_regression_preserves_other_entries_in_single_line_dlclist() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        let dlclist_path = dlc::dlclist_path(&game_root);
+        std::fs::create_dir_all(dlclist_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &dlclist_path,
+            "<Paths><Item>dlcpacks:\\Existing\\</Item></Paths>",
+        )
+        .unwrap();
+        let source = write_source(dir.path(), "dlc.rpf", b"payload");
+        let plan = ModPlan::new(
+            ModFormat::AddOnPack {
+                pack_name: "MyAddonCar".to_string(),
+            },
+            vec![PlannedFile {
+                source: source.clone(),
+                target: game_root.join("mods/update/x64/dlcpacks/MyAddonCar/dlc.rpf"),
+            }],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER force_installed_mod_file_failure \
+             BEFORE INSERT ON installed_mod_file \
+             BEGIN SELECT RAISE(ABORT, 'forced'); END;",
+        )
+        .unwrap();
+
+        assert!(install(
+            &mut conn,
+            "My Addon Car",
+            &plan,
+            &game_root,
+            &dir.path().join("backups"),
+            InstallOptions::default(),
+            &source,
+        )
+        .is_err());
+        let contents = std::fs::read_to_string(&dlclist_path).unwrap();
+        assert!(contents.contains("<Paths>"));
+        assert!(contents.contains("</Paths>"));
+        assert!(dlc::has_entry(&dlclist_path, "Existing").unwrap());
+        assert!(!dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rollback_regression_preserves_original_write_error() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let target = write_source(&game_root, "existing.asi", b"original");
+        let source = write_source(dir.path(), "replacement.asi", b"replacement");
+        let _locked_target = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(&target)
+            .unwrap();
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![
+                PlannedFile {
+                    source: source.clone(),
+                    target,
+                },
+                PlannedFile {
+                    source: dir.path().join("missing-source.asi"),
+                    target: game_root.join("new.asi"),
+                },
+            ],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let err = install(
+            &mut conn,
+            "Write Failure Test",
+            &plan,
+            &game_root,
+            &dir.path().join("backups"),
+            InstallOptions::default(),
+            &source,
+        )
+        .unwrap_err();
+
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+        let mut original_error_found = false;
+        while let Some(error) = cause {
+            if let Some(CoreError::Io(io_error)) = error.downcast_ref::<CoreError>() {
+                if io_error.kind() == std::io::ErrorKind::NotFound {
+                    original_error_found = true;
+                    break;
+                }
+            }
+            cause = error.source();
+        }
+        assert!(
+            original_error_found,
+            "original write error must remain accessible: {err:?}"
+        );
+        assert!(err.to_string().contains("rollback"));
+        let failed_event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM install_event WHERE success = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed_event_count, 1);
     }
 
     #[test]
@@ -507,6 +906,96 @@ mod tests {
         assert_eq!(installed_mod_count, 0);
         assert_eq!(installed_mod_file_count, 0);
         assert_eq!(failed_event_count, 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_failure_reports_a_failed_filesystem_rollback() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let target = game_root.join("existing.asi");
+        let backup_root = dir.path().join("backups");
+        std::fs::write(&target, b"original").unwrap();
+        let source = write_source(dir.path(), "replacement.asi", b"replacement");
+
+        // Allow reads and writes, but prevent deletion while the install runs.
+        let _locked_target = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(&target)
+            .unwrap();
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER force_installed_mod_file_failure \
+             BEFORE INSERT ON installed_mod_file \
+             BEGIN SELECT RAISE(ABORT, 'forced database failure'); END;",
+        )
+        .unwrap();
+        let err = install(
+            &mut conn,
+            "Rollback Failure Test",
+            &plan,
+            &game_root,
+            &backup_root,
+            InstallOptions::default(),
+            &source,
+        )
+        .unwrap_err();
+
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+        let mut original_database_error_found = false;
+        while let Some(error) = cause {
+            if let Some(CoreError::Database(database_error)) = error.downcast_ref::<CoreError>() {
+                assert!(database_error
+                    .to_string()
+                    .contains("forced database failure"));
+                original_database_error_found = true;
+                break;
+            }
+            cause = error.source();
+        }
+        assert!(
+            original_database_error_found,
+            "the original database error must remain accessible: {err:?}"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+        assert_eq!(
+            std::fs::read(backup_root.join("0.bak")).unwrap(),
+            b"original"
+        );
+        let installed_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(installed_count, 0);
+        let failed_event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM install_event WHERE success = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed_event_count, 1);
+
+        let message = err.to_string();
+        assert!(
+            message.contains("filesystem rollback") && message.contains("forced database failure"),
+            "the caller must receive both errors: {message}"
+        );
+        assert!(
+            message.contains("code: 32"),
+            "the caller must receive the Windows rollback error details: {message}"
+        );
     }
 
     #[test]
