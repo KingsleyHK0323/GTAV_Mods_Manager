@@ -382,7 +382,16 @@ fn run(cli: Cli) -> Result<()> {
     let db_path = db::default_db_path()
         .ok_or_else(|| anyhow::anyhow!("could not resolve an app-data directory on this OS"))?;
     let mut conn = db::open(&db_path)?;
-    gtavmm_core::recycle_bin::sweep_expired(&conn)?;
+    // OpenAI-Codex: Cleanup roots come from CLI storage, never from a DB snapshot.
+    let cleanup_recycle_root = db_path.parent().unwrap().join("recycle_bin");
+    let cleanup_backup_root = db_path.parent().unwrap().join("backups");
+    let cleanup_staging_root = db_path.parent().unwrap().join("staging");
+    gtavmm_core::recycle_bin::sweep_expired_with_root(
+        &conn,
+        &cleanup_recycle_root,
+        &cleanup_backup_root,
+        &cleanup_staging_root,
+    )?;
 
     match cli.command {
         Command::DetectGame => {
@@ -627,7 +636,14 @@ fn run(cli: Cli) -> Result<()> {
             RecycleBinAction::Restore { id } => {
                 let (game_root, _) = require_game_root(&cli.game_path)?;
                 let backup_root = db_path.parent().unwrap().join("backups");
-                gtavmm_core::recycle_bin::restore(&mut conn, id, &game_root, &backup_root)?;
+                gtavmm_core::recycle_bin::restore_with_recycle_root(
+                    &mut conn,
+                    id,
+                    Some(&game_root),
+                    &backup_root,
+                    &cleanup_recycle_root,
+                    &cleanup_staging_root,
+                )?;
                 println!("Restored recycle bin entry #{id}.");
             }
         },

@@ -1305,11 +1305,16 @@ pub fn restore_recycle_bin_entry_impl(
         )
     };
     let backup_root = default_backup_root()?;
-    let result = gtavmm_core::recycle_bin::restore_with_optional_game_root(
+    // OpenAI-Codex: Supply storage roots independently of the snapshot record.
+    let recycle_root = default_recycle_bin_root()?;
+    let staging_root = default_staging_root()?;
+    let result = gtavmm_core::recycle_bin::restore_with_recycle_root(
         conn,
         entry_id,
         fallback_game_root.as_deref(),
         &backup_root,
+        &recycle_root,
+        &staging_root,
     )
     .map_err(|e| e.to_string());
     if let Err(reason) = &result {
@@ -1331,7 +1336,13 @@ pub fn restore_recycle_bin_entry(
 }
 
 pub fn sweep_expired_recycle_bin_impl(conn: &Connection) -> Result<usize, String> {
-    gtavmm_core::recycle_bin::sweep_expired(conn).map_err(|e| e.to_string())
+    gtavmm_core::recycle_bin::sweep_expired_with_root(
+        conn,
+        &default_recycle_bin_root()?,
+        &default_backup_root()?,
+        &default_staging_root()?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

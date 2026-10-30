@@ -4,9 +4,9 @@
 
 //! Recycle bin: snapshot-at-uninstall-time storage of deployed files (written by
 //! `uninstall`), no count limit, 15-day retention (`expires_at = deleted_at + 15
-//! days`), swept on app/CLI startup — there is no background daemon (per the
-//! project's "no always-on service" decision), so sweeping only happens when
-//! something actually calls [`sweep_expired`].
+//! days`). Root-aware sweeping runs at CLI command startup or when the App's
+//! tools effect requests it; there is no background daemon. Legacy APIs retain
+//! filesystem snapshots because they lack an explicit trusted cleanup root.
 //!
 //! Restore replays files back through the guarded write path (still subject to
 //! `protected_files`), and — since `uninstall` already consumed each file's original
@@ -166,6 +166,132 @@ fn restore_path_key(path: &Path) -> PathBuf {
     }
 }
 
+// OpenAI-Codex: Unknown Windows reparse points are not ordinary directories.
+fn is_cleanup_link(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn cleanup_error() -> CoreError {
+    CoreError::UnsupportedFormat {
+        reason: "snapshot cleanup scope is unverifiable; recovery data was retained".to_string(),
+    }
+}
+
+fn cleanup_paths_overlap(first: &Path, second: &Path) -> bool {
+    first.starts_with(second) || second.starts_with(first)
+}
+
+fn validate_cleanup_ancestors(path: &Path) -> CoreResult<()> {
+    for ancestor in path.ancestors() {
+        let metadata = std::fs::symlink_metadata(ancestor)?;
+        if is_cleanup_link(&metadata) || !metadata.file_type().is_dir() {
+            return Err(cleanup_error());
+        }
+    }
+    Ok(())
+}
+
+// This is conservative preflight, not a handle-based race-free deletion primitive.
+fn validate_cleanup_scope(
+    conn: &Connection,
+    ignored_entry: Option<i64>,
+    snapshot: &Path,
+    recycle_root: &Path,
+    protected_roots: &[&Path],
+) -> CoreResult<()> {
+    if recycle_root.file_name().is_none()
+        || snapshot.parent().map(restore_path_key) != Some(restore_path_key(recycle_root))
+    {
+        return Err(cleanup_error());
+    }
+    let root_key = restore_path_key(&resolved_restore_path(recycle_root)?);
+    let snapshot_key = restore_path_key(&resolved_restore_path(snapshot)?);
+    if root_key.file_name().is_none() || snapshot_key.parent() != Some(root_key.as_path()) {
+        return Err(cleanup_error());
+    }
+    validate_cleanup_ancestors(snapshot)?;
+    validate_cleanup_ancestors(recycle_root)?;
+    for protected in protected_roots {
+        let key = restore_path_key(&resolved_restore_path(protected)?);
+        if cleanup_paths_overlap(&root_key, &key) {
+            return Err(cleanup_error());
+        }
+    }
+    // Protect every workspace, including disabled/pending modes, and every target.
+    let mut stmt = conn.prepare("SELECT install_path FROM installed_mod WHERE install_path <> '' UNION SELECT target_path FROM installed_mod_file")?;
+    let stored_paths = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    for path in stored_paths {
+        let key = restore_path_key(&resolved_restore_path(Path::new(&path))?);
+        if cleanup_paths_overlap(&root_key, &key) {
+            return Err(cleanup_error());
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, mod_package_snapshot_path, snapshot_metadata FROM recycle_bin_entry",
+    )?;
+    let entries = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    for (other_id, path, metadata) in entries {
+        if let Some(metadata) = metadata {
+            let metadata: SnapshotMetadata =
+                serde_json::from_str(&metadata).map_err(|_| cleanup_error())?;
+            let key = restore_path_key(&resolved_restore_path(Path::new(&metadata.target_root))?);
+            if cleanup_paths_overlap(&root_key, &key) {
+                return Err(cleanup_error());
+            }
+        }
+        if Some(other_id) != ignored_entry {
+            let key = restore_path_key(&resolved_restore_path(Path::new(&path))?);
+            if cleanup_paths_overlap(&snapshot_key, &key) {
+                return Err(cleanup_error());
+            }
+        }
+    }
+    let mut directories = vec![snapshot.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for child in std::fs::read_dir(directory)? {
+            let child = child?.path();
+            let metadata = std::fs::symlink_metadata(&child)?;
+            if is_cleanup_link(&metadata) {
+                return Err(cleanup_error());
+            }
+            let key = restore_path_key(&resolved_restore_path(&child)?);
+            if !key.starts_with(&snapshot_key) {
+                return Err(cleanup_error());
+            }
+            if metadata.file_type().is_dir() {
+                directories.push(child);
+            } else if !metadata.file_type().is_file() {
+                return Err(cleanup_error());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Restores a recycle-bin entry: copies its snapshotted files back to their original
 /// target paths, reinstates the owning mod as `active`, and removes the entry (its
 /// job is done — the 15-day window doesn't apply to something already restored).
@@ -185,6 +311,34 @@ pub fn restore_with_optional_game_root(
     entry_id: i64,
     game_root: Option<&Path>,
     backup_root: &Path,
+) -> CoreResult<()> {
+    restore_impl(conn, entry_id, game_root, backup_root, None)
+}
+
+/// OpenAI-Codex: Cleanup requires independently supplied app-owned storage roots.
+pub fn restore_with_recycle_root(
+    conn: &mut Connection,
+    entry_id: i64,
+    game_root: Option<&Path>,
+    backup_root: &Path,
+    recycle_root: &Path,
+    staging_root: &Path,
+) -> CoreResult<()> {
+    restore_impl(
+        conn,
+        entry_id,
+        game_root,
+        backup_root,
+        Some((recycle_root, staging_root)),
+    )
+}
+
+fn restore_impl(
+    conn: &mut Connection,
+    entry_id: i64,
+    game_root: Option<&Path>,
+    backup_root: &Path,
+    cleanup_roots: Option<(&Path, &Path)>,
 ) -> CoreResult<()> {
     let entry = load_entry(conn, entry_id)?;
     let mod_id = entry
@@ -227,6 +381,15 @@ pub fn restore_with_optional_game_root(
     };
 
     crate::providers::ensure_game_root_available(&snapshot_game_root)?;
+    if let Some((recycle_root, staging_root)) = cleanup_roots {
+        validate_cleanup_scope(
+            conn,
+            Some(entry_id),
+            &snapshot_root,
+            recycle_root,
+            &[&snapshot_game_root, backup_root, staging_root],
+        )?;
+    }
 
     let invalid_layout = || CoreError::UnsupportedFormat {
         reason: format!("recycle bin entry {entry_id} has unsafe or overlapping restore storage"),
@@ -446,18 +609,36 @@ pub fn restore_with_optional_game_root(
     db_tx.execute("DELETE FROM recycle_bin_entry WHERE id = ?1", [entry_id])?;
     db_tx.commit()?;
 
-    if snapshot_root.exists() {
-        let _ = std::fs::remove_dir_all(&snapshot_root); // best-effort cleanup
+    if let Some((recycle_root, staging_root)) = cleanup_roots {
+        let cleanup = validate_cleanup_scope(
+            conn,
+            None,
+            &snapshot_root,
+            recycle_root,
+            &[&snapshot_game_root, backup_root, staging_root],
+        )
+        .and_then(|()| std::fs::remove_dir_all(&snapshot_root).map_err(Into::into));
+        if let Err(error) = cleanup {
+            // The restore committed. Cleanup failure must not report it as failed.
+            let _ = crate::app_log::warn(&format!("restore succeeded; snapshot cleanup incomplete, recovery remnants may remain at {}: {error}", snapshot_root.display()));
+        }
     }
 
     Ok(())
 }
 
-/// Deletes any `recycle_bin_entry` rows (and their snapshot storage) past
-/// `expires_at`. Called once at app/CLI startup and on demand — there is no
-/// background scheduler.
-/// OpenAI-Codex: Pending or unverifiable workspaces retain their snapshots.
-pub fn sweep_expired(conn: &Connection) -> CoreResult<usize> {
+/// OpenAI-Codex: Legacy callers cannot authorize filesystem or entry deletion.
+pub fn sweep_expired(_conn: &Connection) -> CoreResult<usize> {
+    Ok(0)
+}
+
+/// Cleans expired app-owned snapshots only when their owner and scope are known.
+pub fn sweep_expired_with_root(
+    conn: &Connection,
+    recycle_root: &Path,
+    backup_root: &Path,
+    staging_root: &Path,
+) -> CoreResult<usize> {
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut stmt = conn.prepare(
@@ -471,17 +652,34 @@ pub fn sweep_expired(conn: &Connection) -> CoreResult<usize> {
     let mut removed = 0;
     for (id, snapshot_path, mod_id) in &expired {
         // OpenAI-Codex: Keep snapshots whose workspace cannot currently be used.
-        if let Some(mod_id) = mod_id {
-            if crate::providers::ensure_installed_mod_available(conn, *mod_id).is_err() {
-                continue;
-            }
+        let Some(mod_id) = mod_id else {
+            continue;
+        };
+        if crate::providers::ensure_installed_mod_available(conn, *mod_id).is_err() {
+            continue;
+        }
+        let status: String = conn.query_row(
+            "SELECT status FROM installed_mod WHERE id = ?1",
+            [mod_id],
+            |row| row.get(0),
+        )?;
+        if status != "uninstalled" {
+            continue;
         }
         let path = PathBuf::from(snapshot_path);
-        if path.exists() {
-            std::fs::remove_dir_all(&path)?;
+        if validate_cleanup_scope(
+            conn,
+            Some(*id),
+            &path,
+            recycle_root,
+            &[backup_root, staging_root],
+        )
+        .is_err()
+        {
+            continue;
         }
-        conn.execute("DELETE FROM recycle_bin_entry WHERE id = ?1", [id])?;
-        removed += 1;
+        std::fs::remove_dir_all(&path)?;
+        removed += conn.execute("DELETE FROM recycle_bin_entry WHERE id = ?1", [id])?;
     }
 
     Ok(removed)
@@ -490,6 +688,294 @@ pub fn sweep_expired(conn: &Connection) -> CoreResult<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Missing cleanup context must preserve recovery storage.
+    #[test]
+    fn legacy_sweep_preserves_expired_entries_without_a_trusted_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let conn = crate::db::open_in_memory().unwrap();
+        let (_, entry) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &root,
+            &dir.path().join("recycle"),
+            "mod.asi",
+            -1,
+        );
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        assert_eq!(sweep_expired(&conn).unwrap(), 0);
+        assert!(snapshot.join("mod.asi").is_file());
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trusted_sweep_counts_only_entries_actually_removed_from_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let recycle = dir.path().join("recycle");
+        let conn = crate::db::open_in_memory().unwrap();
+        let (_, entry) =
+            setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "mod.asi", -1);
+        conn.execute_batch("CREATE TRIGGER keep_expired_row BEFORE DELETE ON recycle_bin_entry BEGIN SELECT RAISE(IGNORE); END;").unwrap();
+        assert_eq!(
+            sweep_expired_with_root(
+                &conn,
+                &recycle,
+                &dir.path().join("backups"),
+                &dir.path().join("staging")
+            )
+            .unwrap(),
+            0
+        );
+        assert!(load_entry(&conn, entry).is_ok());
+    }
+
+    #[test]
+    fn trusted_restore_cleans_only_its_own_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let recycle = dir.path().join("recycle");
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (_, entry) =
+            setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "mod.asi", 15);
+        let (_, sibling) =
+            setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "other.asi", 15);
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        let sibling_path = PathBuf::from(
+            load_entry(&conn, sibling)
+                .unwrap()
+                .mod_package_snapshot_path,
+        );
+        restore_with_recycle_root(
+            &mut conn,
+            entry,
+            Some(&root),
+            &dir.path().join("backups"),
+            &recycle,
+            &dir.path().join("staging"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("mod.asi")).unwrap(),
+            b"snapshotted content"
+        );
+        assert!(!snapshot.exists());
+        assert_eq!(
+            std::fs::read(sibling_path.join("other.asi")).unwrap(),
+            b"snapshotted content"
+        );
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restore_stays_successful_when_post_commit_cleanup_is_no_longer_safe() {
+        // OpenAI-Codex: A newly inserted reference can even reuse the deleted ID.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let recycle = dir.path().join("recycle");
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (id, entry) =
+            setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "mod.asi", 15);
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        conn.execute_batch("CREATE TRIGGER retain_shared_snapshot AFTER DELETE ON recycle_bin_entry BEGIN INSERT INTO recycle_bin_entry (id, original_installed_mod_id, mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at) VALUES (OLD.id, OLD.original_installed_mod_id, OLD.mod_package_snapshot_path, OLD.snapshot_metadata, OLD.deleted_at, OLD.expires_at); END;").unwrap();
+        restore_with_recycle_root(
+            &mut conn,
+            entry,
+            Some(&root),
+            &dir.path().join("backups"),
+            &recycle,
+            &dir.path().join("staging"),
+        )
+        .unwrap();
+        assert!(snapshot.join("mod.asi").is_file());
+        assert_eq!(
+            std::fs::read(root.join("mod.asi")).unwrap(),
+            b"snapshotted content"
+        );
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trusted_sweep_preserves_unverifiable_entries() {
+        for invalid in [
+            "same-root",
+            "ancestor-root",
+            "outside-root",
+            "disk-root",
+            "relative-root",
+            "backup-overlap",
+            "staging-overlap",
+            "game-overlap",
+            "workspace-overlap",
+            "target-overlap",
+            "missing-owner",
+            "pending-owner",
+            "active-owner",
+            "disabled-owner",
+            "missing-snapshot",
+            "shared-snapshot",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let recycle = dir.path().join("recycle");
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let (_, entry) =
+                setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "mod.asi", -1);
+            let snapshot =
+                PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+            let mut trusted = recycle.clone();
+            let mut backup = dir.path().join("backups");
+            let mut staging = dir.path().join("staging");
+            match invalid {
+                "same-root" => trusted = snapshot.clone(),
+                "ancestor-root" => trusted = dir.path().to_path_buf(),
+                "outside-root" => {
+                    trusted = dir.path().join("other-recycle");
+                    std::fs::create_dir(&trusted).unwrap();
+                }
+                "disk-root" => trusted = recycle.ancestors().last().unwrap().to_path_buf(),
+                "relative-root" => trusted = PathBuf::from("recycle"),
+                "backup-overlap" => backup = snapshot.clone(),
+                "staging-overlap" => staging = snapshot.clone(),
+                "game-overlap" => {
+                    let metadata = encode_snapshot_metadata(&snapshot, vec![]).unwrap();
+                    conn.execute(
+                        "UPDATE recycle_bin_entry SET snapshot_metadata = ?1 WHERE id = ?2",
+                        rusqlite::params![metadata, entry],
+                    )
+                    .unwrap();
+                }
+                "workspace-overlap" => {
+                    conn.execute(
+                        "UPDATE installed_mod SET install_path = ?1",
+                        [snapshot.to_string_lossy().as_ref()],
+                    )
+                    .unwrap();
+                }
+                "target-overlap" => {
+                    conn.execute(
+                        "UPDATE installed_mod_file SET target_path = ?1",
+                        [snapshot.join("mod.asi").to_string_lossy().as_ref()],
+                    )
+                    .unwrap();
+                }
+                "missing-owner" => {
+                    conn.execute("UPDATE recycle_bin_entry SET original_installed_mod_id = NULL WHERE id = ?1", [entry]).unwrap();
+                }
+                "pending-owner" => {
+                    conn.execute("UPDATE installed_mod SET mode = 'fivem-client'", [])
+                        .unwrap();
+                }
+                "active-owner" => {
+                    conn.execute("UPDATE installed_mod SET status = 'active'", [])
+                        .unwrap();
+                }
+                "disabled-owner" => {
+                    conn.execute("UPDATE installed_mod SET status = 'disabled'", [])
+                        .unwrap();
+                }
+                "missing-snapshot" => {
+                    std::fs::rename(&snapshot, snapshot.with_extension("saved")).unwrap();
+                }
+                "shared-snapshot" => {
+                    conn.execute("INSERT INTO recycle_bin_entry (original_installed_mod_id, mod_package_snapshot_path, deleted_at, expires_at) SELECT original_installed_mod_id, mod_package_snapshot_path, deleted_at, expires_at FROM recycle_bin_entry WHERE id = ?1", [entry]).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                restore_with_recycle_root(
+                    &mut conn,
+                    entry,
+                    Some(&root),
+                    &backup,
+                    &trusted,
+                    &staging
+                )
+                .is_err(),
+                "{invalid}"
+            );
+            assert!(!root.join("mod.asi").exists());
+            assert_eq!(
+                sweep_expired_with_root(&conn, &trusted, &backup, &staging).unwrap(),
+                0,
+                "{invalid}"
+            );
+            assert!(load_entry(&conn, entry).is_ok(), "{invalid}");
+            let kept = if invalid == "missing-snapshot" {
+                snapshot.with_extension("saved")
+            } else {
+                snapshot
+            };
+            assert_eq!(
+                std::fs::read(kept.join("mod.asi")).unwrap(),
+                b"snapshotted content"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trusted_sweep_preserves_trees_with_links() {
+        for invalid in ["root", "entry", "child", "parent"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let recycle = dir.path().join("recycle");
+            let conn = crate::db::open_in_memory().unwrap();
+            let (_, entry) =
+                setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "mod.asi", -1);
+            let snapshot =
+                PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+            let outside = dir.path().join("outside");
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(outside.join("keep"), b"outside data").unwrap();
+            let mut trusted = recycle.clone();
+            match invalid {
+                "root" => {
+                    trusted = dir.path().join("root-link");
+                    std::os::unix::fs::symlink(&recycle, &trusted).unwrap();
+                }
+                "entry" => {
+                    std::fs::rename(&snapshot, snapshot.with_extension("saved")).unwrap();
+                    std::os::unix::fs::symlink(&outside, &snapshot).unwrap();
+                }
+                "child" => std::os::unix::fs::symlink(&outside, snapshot.join("linked")).unwrap(),
+                _ => {
+                    let alias = dir.path().join("parent-link");
+                    std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
+                    trusted = alias.join("recycle");
+                }
+            }
+            assert_eq!(
+                sweep_expired_with_root(
+                    &conn,
+                    &trusted,
+                    &dir.path().join("backups"),
+                    &dir.path().join("staging")
+                )
+                .unwrap(),
+                0
+            );
+            assert!(load_entry(&conn, entry).is_ok());
+            assert_eq!(
+                std::fs::read(outside.join("keep")).unwrap(),
+                b"outside data"
+            );
+        }
+    }
 
     // OpenAI-Codex: Unsafe plans must fail without touching targets or the entry.
     #[test]
@@ -1024,7 +1510,14 @@ mod tests {
             15,
         );
 
+        let snapshot = PathBuf::from(
+            load_entry(&conn, entry_id)
+                .unwrap()
+                .mod_package_snapshot_path,
+        );
         restore(&mut conn, entry_id, &game_root, &backup_root).unwrap();
+        // OpenAI-Codex: Legacy APIs restore but cannot authorize recursive cleanup.
+        assert!(snapshot.join("mod.asi").is_file());
 
         assert_eq!(
             std::fs::read(game_root.join("mod.asi")).unwrap(),
@@ -1230,7 +1723,13 @@ mod tests {
             15, // not expired
         );
 
-        let removed = sweep_expired(&conn).unwrap();
+        let removed = sweep_expired_with_root(
+            &conn,
+            &recycle_root,
+            &dir.path().join("backups"),
+            &dir.path().join("staging"),
+        )
+        .unwrap();
 
         assert_eq!(removed, 1);
         let remaining_id: i64 = conn
