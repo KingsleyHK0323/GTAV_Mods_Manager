@@ -578,6 +578,7 @@ fn restore_impl(
         backups.insert(*file_id, new_backup_path);
     }
 
+    let mut metadata_updates = Vec::with_capacity(restore_files.len());
     for (file_id, target, snapshot_file) in restore_files {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
@@ -587,17 +588,23 @@ fn restore_impl(
         std::fs::copy(&snapshot_file, &target)?;
         let hash = hash_file(&target)?;
 
-        conn.execute(
+        metadata_updates.push((
+            file_id,
+            new_backup_path.map(|path| path.to_string_lossy().into_owned()),
+            hash,
+        ));
+    }
+
+    // OpenAI-Codex: Commit all restore metadata together, after file copies.
+    // SQL failure preserves old DB metadata, not the pre-restore target bytes.
+    let db_tx = conn.transaction()?;
+    for (file_id, new_backup_path, hash) in metadata_updates {
+        db_tx.execute(
             "UPDATE installed_mod_file SET backup_path = ?1, file_hash = ?2 WHERE id = ?3",
-            rusqlite::params![
-                new_backup_path.map(|p| p.to_string_lossy().into_owned()),
-                hash,
-                file_id,
-            ],
+            rusqlite::params![new_backup_path, hash, file_id,],
         )?;
     }
 
-    let db_tx = conn.transaction()?;
     db_tx.execute(
         "UPDATE installed_mod SET status = 'active' WHERE id = ?1",
         [mod_id],
@@ -688,6 +695,91 @@ pub fn sweep_expired_with_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: SQL failure must roll back the complete metadata update set.
+    // Files have already been copied; filesystem rollback is a separate boundary.
+    #[test]
+    fn restore_sql_failure_preserves_all_metadata_and_recovery_storage() {
+        for failure in ["file-row", "status", "event", "entry"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let recycle = dir.path().join("recycle");
+            let backups = dir.path().join("backups");
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let (id, entry) =
+                setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "first.asi", 15);
+            conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, root.join("second.asi").to_string_lossy()]).unwrap();
+            let snapshot =
+                PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+            std::fs::write(snapshot.join("second.asi"), b"second snapshot").unwrap();
+            std::fs::write(root.join("first.asi"), b"first current").unwrap();
+            std::fs::write(root.join("second.asi"), b"second current").unwrap();
+            let trigger = match failure {
+                "file-row" => "CREATE TRIGGER reject_restore BEFORE UPDATE ON installed_mod_file WHEN OLD.id = (SELECT MAX(id) FROM installed_mod_file) BEGIN SELECT RAISE(ABORT, 'injected second file update failure'); END;",
+                "status" => "CREATE TRIGGER reject_restore BEFORE UPDATE OF status ON installed_mod WHEN NEW.status = 'active' BEGIN SELECT RAISE(ABORT, 'injected status failure'); END;",
+                "event" => "CREATE TRIGGER reject_restore BEFORE INSERT ON install_event WHEN NEW.event_type = 'restore' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;",
+                _ => "CREATE TRIGGER reject_restore BEFORE DELETE ON recycle_bin_entry BEGIN SELECT RAISE(ABORT, 'injected entry failure'); END;",
+            };
+            conn.execute_batch(trigger).unwrap();
+            assert!(
+                restore_with_recycle_root(
+                    &mut conn,
+                    entry,
+                    Some(&root),
+                    &backups,
+                    &recycle,
+                    &dir.path().join("staging")
+                )
+                .is_err(),
+                "{failure}"
+            );
+            let untouched: i64 = conn.query_row("SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1 AND file_hash = 'hash' AND backup_path IS NULL", [id], |row| row.get(0)).unwrap();
+            assert_eq!(untouched, 2, "{failure}");
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "uninstalled");
+            let events: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM install_event WHERE event_type = 'restore'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(events, 0);
+            assert!(load_entry(&conn, entry).is_ok());
+            assert_eq!(
+                std::fs::read(snapshot.join("first.asi")).unwrap(),
+                b"snapshotted content"
+            );
+            assert_eq!(
+                std::fs::read(snapshot.join("second.asi")).unwrap(),
+                b"second snapshot"
+            );
+            let mut saved = std::fs::read_dir(&backups)
+                .unwrap()
+                .map(|item| std::fs::read(item.unwrap().path()).unwrap())
+                .collect::<Vec<_>>();
+            saved.sort();
+            assert_eq!(
+                saved,
+                vec![b"first current".to_vec(), b"second current".to_vec()]
+            );
+            assert_eq!(
+                std::fs::read(root.join("first.asi")).unwrap(),
+                b"snapshotted content"
+            );
+            assert_eq!(
+                std::fs::read(root.join("second.asi")).unwrap(),
+                b"second snapshot"
+            );
+        }
+    }
 
     // OpenAI-Codex: Missing cleanup context must preserve recovery storage.
     #[test]
@@ -1531,6 +1623,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "active");
+
+        let (recorded_hash, recorded_backup): (String, Option<String>) = conn
+            .query_row(
+                "SELECT file_hash, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [mod_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            recorded_hash,
+            hash_file(&game_root.join("mod.asi")).unwrap()
+        );
+        assert!(recorded_backup.is_none());
+        let events: i64 = conn.query_row("SELECT COUNT(*) FROM install_event WHERE installed_mod_id = ?1 AND event_type = 'restore'", [mod_id], |row| row.get(0)).unwrap();
+        assert_eq!(events, 1);
 
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM recycle_bin_entry", [], |r| r.get(0))

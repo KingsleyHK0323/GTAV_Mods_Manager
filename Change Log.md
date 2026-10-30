@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Commit all recycle-bin restore file metadata, mod status, event, and entry removal in one database transaction. SQL failure preserves the previous metadata and recovery storage, while target files may already contain restored payloads; filesystem rollback remains separate.
 - Compile the three legacy App uninstall/reinstall test wrappers only for unit tests, preventing production `dead_code` warnings from blocking Clippy while preserving the staging-aware commands and existing tests.
 - Require independently supplied recycle, backup, and staging roots for filesystem snapshot cleanup. Reject unverifiable direct-child scope, linked/reparse trees, protected workspace/storage overlaps, and shared snapshot references. Route App and CLI callers through root-aware restore and expiry APIs; legacy restore retains snapshot files and legacy sweeping retains all entries. Revalidate after restore commit and log cleanup failure without reporting the completed restore as failed; concurrent replacement and full rollback remain unresolved.
 - Preflight recycle-bin restore paths, source readability, target ancestry, duplicate targets, and overlapping storage before writes. Exclusively create independent backup candidates and complete all required backups before changing targets; retain partial backups on failure. Hard-link identity, race-free cleanup, and complete recovery remain pending.
