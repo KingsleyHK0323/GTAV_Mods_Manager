@@ -1689,6 +1689,8 @@ pub fn enable_mod(state: tauri::State<crate::AppState>, mod_id: i64) -> Result<(
     enable_mod_impl(&conn, mod_id, &staging_root)
 }
 
+// OpenAI-Codex: Legacy wrappers remain available to unit tests only.
+#[cfg(test)]
 pub fn uninstall_mod_impl(
     conn: &mut Connection,
     mod_id: i64,
@@ -1708,6 +1710,7 @@ pub fn uninstall_mod_impl(
 }
 
 /// OpenAI-Codex: Resolve page-aware roots so FiveM Client paths bypass GTA V detection.
+#[cfg(test)]
 pub fn uninstall_mod_for_page_impl(
     conn: &mut Connection,
     mod_id: i64,
@@ -1784,6 +1787,7 @@ pub fn uninstall_mod(
 /// boundary: if the install half fails, the mod is left uninstalled and
 /// recoverable from the recycle bin rather than silently restored. A real
 /// interruption surfaces as a real failure.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn reinstall_mod_impl(
     conn: &mut Connection,
