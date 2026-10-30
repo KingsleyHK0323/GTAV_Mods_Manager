@@ -449,6 +449,61 @@ pub fn reinstall(
     recycle_bin_root: &Path,
     options: InstallOptions,
 ) -> CoreResult<InstallOutcome> {
+    reinstall_impl(
+        conn,
+        mod_id,
+        new_source_path,
+        version_label,
+        provider,
+        game_root,
+        backup_root,
+        recycle_bin_root,
+        options,
+        None,
+    )
+}
+
+/// OpenAI-Codex: Preserves disabled payloads in the app-owned recycle bin.
+#[allow(clippy::too_many_arguments)]
+pub fn reinstall_with_staging(
+    conn: &mut Connection,
+    mod_id: i64,
+    new_source_path: &Path,
+    version_label: &str,
+    provider: &dyn crate::providers::ModeProvider,
+    game_root: &Path,
+    backup_root: &Path,
+    recycle_bin_root: &Path,
+    options: InstallOptions,
+    staging_root: &Path,
+) -> CoreResult<InstallOutcome> {
+    reinstall_impl(
+        conn,
+        mod_id,
+        new_source_path,
+        version_label,
+        provider,
+        game_root,
+        backup_root,
+        recycle_bin_root,
+        options,
+        Some(staging_root),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reinstall_impl(
+    conn: &mut Connection,
+    mod_id: i64,
+    new_source_path: &Path,
+    version_label: &str,
+    provider: &dyn crate::providers::ModeProvider,
+    game_root: &Path,
+    backup_root: &Path,
+    recycle_bin_root: &Path,
+    options: InstallOptions,
+    staging_root: Option<&Path>,
+) -> CoreResult<InstallOutcome> {
     // OpenAI-Codex: Check both workspaces before uninstalling the previous version.
     crate::providers::ensure_installed_mod_available(conn, mod_id)?;
     crate::providers::ensure_game_root_available(game_root)?;
@@ -468,6 +523,19 @@ pub fn reinstall(
             }
         })?;
 
+    if status == "disabled" {
+        let staging_root = staging_root.ok_or_else(|| CoreError::UnsupportedFormat {
+            reason: "disabled reinstall requires an explicit staging root".to_string(),
+        })?;
+        crate::state::disabled_payloads(conn, mod_id, staging_root)?;
+        let source = std::fs::canonicalize(new_source_path)?;
+        if source.starts_with(std::fs::canonicalize(staging_root)?) {
+            return Err(CoreError::UnsupportedFormat {
+                reason: "choose an original package outside managed staging for reinstall"
+                    .to_string(),
+            });
+        }
+    }
     // OpenAI-Codex: Validate the new package and unrelated conflicts before removal.
     // Keep this plan alive: archive source paths belong to its staging directory.
     let plan = crate::mod_analyzer::classify(new_source_path, provider)?;
@@ -543,7 +611,7 @@ pub fn reinstall(
         for (target, backup) in old_targets {
             // OpenAI-Codex: Uninstall touches every old target, including files
             // absent from the update, so validate all recorded backups first.
-            if let Some(backup) = backup {
+            if let Some(backup) = backup.filter(|_| status != "disabled") {
                 if !std::fs::symlink_metadata(&backup)?.file_type().is_file() {
                     return Err(CoreError::UnsupportedFormat {
                         reason: format!("backup is not a regular file: {backup}"),
@@ -570,7 +638,17 @@ pub fn reinstall(
                 });
             }
         }
-        crate::uninstall::uninstall(conn, mod_id, game_root, recycle_bin_root)?;
+        if let Some(staging_root) = staging_root {
+            crate::uninstall::uninstall_with_staging(
+                conn,
+                mod_id,
+                game_root,
+                recycle_bin_root,
+                staging_root,
+            )?;
+        } else {
+            crate::uninstall::uninstall(conn, mod_id, game_root, recycle_bin_root)?;
+        }
     }
 
     let new_name = format!("{old_name} ({version_label})");
@@ -667,6 +745,102 @@ fn record_failed_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Disabled reinstall preserves recoverable staging on refusal.
+    #[test]
+    fn disabled_reinstall_requires_context_and_preserves_staging_on_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let provider = crate::providers::LegacySpProvider::new(root.clone());
+        let source = write_source(dir.path(), "mod.asi", b"old payload");
+        let plan = crate::mod_analyzer::classify(&source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let backups = dir.path().join("backups");
+        let recycle = dir.path().join("recycle");
+        let staging = dir.path().join("staging");
+        let outcome = install(
+            &mut conn,
+            "Old",
+            &plan,
+            &root,
+            &backups,
+            InstallOptions::default(),
+            &source,
+        )
+        .unwrap();
+        let InstallOutcome::Success {
+            installed_mod_id: id,
+            ..
+        } = outcome
+        else {
+            panic!("expected install success")
+        };
+        crate::state::disable(&conn, id, &staging).unwrap();
+        std::fs::write(root.join("mod.asi"), b"current original").unwrap();
+        assert!(reinstall(
+            &mut conn,
+            id,
+            &source,
+            "v2",
+            &provider,
+            &root,
+            &backups,
+            &recycle,
+            InstallOptions::default()
+        )
+        .is_err());
+        let refusal = reinstall_with_staging(
+            &mut conn,
+            id,
+            &source,
+            "v2",
+            &provider,
+            &root,
+            &backups,
+            &recycle,
+            InstallOptions::default(),
+            &staging,
+        )
+        .unwrap();
+        assert!(matches!(refusal, InstallOutcome::RequiresOverride(_)));
+        assert_eq!(
+            std::fs::read(root.join("mod.asi")).unwrap(),
+            b"current original"
+        );
+        assert_eq!(
+            std::fs::read(staging.join(id.to_string()).join("0")).unwrap(),
+            b"old payload"
+        );
+        assert!(!recycle.exists());
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "disabled");
+        let result = reinstall_with_staging(
+            &mut conn,
+            id,
+            &source,
+            "v2",
+            &provider,
+            &root,
+            &backups,
+            &recycle,
+            InstallOptions {
+                override_foreign_conflicts: true,
+                ..Default::default()
+            },
+            &staging,
+        )
+        .unwrap();
+        assert!(matches!(result, InstallOutcome::Success { .. }));
+        assert_eq!(std::fs::read(root.join("mod.asi")).unwrap(), b"old payload");
+        assert_eq!(crate::recycle_bin::list(&conn).unwrap().len(), 1);
+    }
     use crate::mod_analyzer::PlannedFile;
 
     #[test]

@@ -143,6 +143,17 @@ pub fn restore_with_optional_game_root(
         })?;
     // OpenAI-Codex: Old snapshots must not reactivate a pending workspace.
     crate::providers::ensure_installed_mod_available(conn, mod_id)?;
+    // OpenAI-Codex: An older entry must not replay over an active/disabled mod.
+    let status: String = conn.query_row(
+        "SELECT status FROM installed_mod WHERE id = ?1",
+        [mod_id],
+        |row| row.get(0),
+    )?;
+    if status != "uninstalled" {
+        return Err(CoreError::UnsupportedFormat {
+            reason: format!("mod {mod_id} is not uninstalled (status: {status}); cannot restore its recycle-bin entry"),
+        });
+    }
     let snapshot_root = PathBuf::from(&entry.mod_package_snapshot_path);
     let metadata: Option<SnapshotMetadata> = entry
         .snapshot_metadata
@@ -229,6 +240,24 @@ pub fn restore_with_optional_game_root(
         }
         protected_files::check_write(&target)?;
         restore_files.push((*file_id, target, snapshot_file));
+    }
+
+    // OpenAI-Codex: Check the complete write set before directories, backups, or
+    // file-row changes. Untracked originals retain the existing backup behavior.
+    let targets: Vec<PathBuf> = restore_files
+        .iter()
+        .map(|(_, target, _)| target.clone())
+        .collect();
+    let report = crate::conflict::analyze(conn, &targets)?;
+    for conflict in report.foreign_conflicts {
+        if let Some(owner_mod_id) = conflict.owner_mod_id {
+            if owner_mod_id != mod_id {
+                return Err(CoreError::ForeignConflict {
+                    path: conflict.path,
+                    owner_mod_id,
+                });
+            }
+        }
     }
 
     for (file_id, target, snapshot_file) in restore_files {
@@ -318,6 +347,149 @@ pub fn sweep_expired(conn: &Connection) -> CoreResult<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: A conflict anywhere must stop the entire restore before writes.
+    fn assert_active_owner_blocks_restore(conflicting_name: &str, owner_spelling: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let recycle = dir.path().join("recycle");
+        let backups = dir.path().join("backups");
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (old, entry) =
+            setup_uninstalled_mod_with_recycle_entry(&conn, &root, &recycle, "first.asi", 15);
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        std::fs::write(snapshot.join("second.asi"), b"second snapshot").unwrap();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![old, root.join("second.asi").to_string_lossy()]).unwrap();
+        std::fs::write(root.join("first.asi"), b"first current").unwrap();
+        std::fs::write(root.join("second.asi"), b"second current").unwrap();
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('New owner', 'asi', '', 'active')", []).unwrap();
+        let owner = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'owner hash')", rusqlite::params![owner, root.join(owner_spelling).to_string_lossy()]).unwrap();
+        let error = restore(&mut conn, entry, &root, &backups).unwrap_err();
+        assert!(
+            matches!(error, CoreError::ForeignConflict { owner_mod_id, ref path } if owner_mod_id == owner && path.file_name().unwrap().eq_ignore_ascii_case(conflicting_name))
+        );
+        assert_eq!(
+            std::fs::read(root.join("first.asi")).unwrap(),
+            b"first current"
+        );
+        assert_eq!(
+            std::fs::read(root.join("second.asi")).unwrap(),
+            b"second current"
+        );
+        assert_eq!(
+            std::fs::read(snapshot.join("first.asi")).unwrap(),
+            b"snapshotted content"
+        );
+        assert_eq!(
+            std::fs::read(snapshot.join("second.asi")).unwrap(),
+            b"second snapshot"
+        );
+        assert!(!backups.exists());
+        assert_eq!(list(&conn).unwrap().len(), 1);
+        let states: (String, String) = conn.query_row("SELECT (SELECT status FROM installed_mod WHERE id = ?1), (SELECT status FROM installed_mod WHERE id = ?2)", rusqlite::params![old, owner], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(states, ("uninstalled".to_string(), "active".to_string()));
+        let untouched: i64 = conn.query_row("SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1 AND backup_path IS NULL AND file_hash = 'hash'", [old], |row| row.get(0)).unwrap();
+        assert_eq!(untouched, 2);
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM install_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events, 0);
+    }
+
+    #[test]
+    fn another_active_owner_blocks_the_entire_restore() {
+        for target in ["first.asi", "second.asi"] {
+            assert_active_owner_blocks_restore(target, target);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn active_owner_case_alias_blocks_restore() {
+        assert_active_owner_blocks_restore("second.asi", "SECOND.ASI");
+    }
+
+    #[test]
+    fn restore_rejects_a_mod_that_is_no_longer_uninstalled() {
+        for status in ["active", "disabled"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+                &conn,
+                &root,
+                &dir.path().join("recycle"),
+                "mod.asi",
+                15,
+            );
+            conn.execute(
+                "UPDATE installed_mod SET status = ?1 WHERE id = ?2",
+                rusqlite::params![status, id],
+            )
+            .unwrap();
+            std::fs::write(root.join("mod.asi"), b"current content").unwrap();
+            let backups = dir.path().join("backups");
+            assert!(matches!(
+                restore(&mut conn, entry, &root, &backups),
+                Err(CoreError::UnsupportedFormat { .. })
+            ));
+            assert_eq!(
+                std::fs::read(root.join("mod.asi")).unwrap(),
+                b"current content"
+            );
+            assert!(!backups.exists());
+            assert_eq!(list(&conn).unwrap().len(), 1);
+            let snapshot =
+                PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+            assert_eq!(
+                std::fs::read(snapshot.join("mod.asi")).unwrap(),
+                b"snapshotted content"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_uninstall_snapshot_cannot_overwrite_a_new_active_owner() {
+        // OpenAI-Codex: Exercise the actual staging-aware snapshot producer.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("mod.asi");
+        std::fs::write(&target, b"old mod payload").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('Old', 'asi', '', 'active')", []).unwrap();
+        let old = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'old hash')", rusqlite::params![old, target.to_string_lossy()]).unwrap();
+        let staging = dir.path().join("staging");
+        let recycle = dir.path().join("recycle");
+        crate::state::disable(&conn, old, &staging).unwrap();
+        crate::uninstall::uninstall_with_staging(&mut conn, old, &root, &recycle, &staging)
+            .unwrap();
+        let entry = list(&conn).unwrap().remove(0);
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('New', 'asi', '', 'active')", []).unwrap();
+        let owner = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'new hash')", rusqlite::params![owner, target.to_string_lossy()]).unwrap();
+        std::fs::write(&target, b"new owner payload").unwrap();
+        let backups = dir.path().join("backups");
+        assert!(
+            matches!(restore(&mut conn, entry.id, &root, &backups), Err(CoreError::ForeignConflict { owner_mod_id, .. }) if owner_mod_id == owner)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"new owner payload");
+        assert!(!backups.exists());
+        assert_eq!(list(&conn).unwrap().len(), 1);
+        let snapshot = PathBuf::from(
+            load_entry(&conn, entry.id)
+                .unwrap()
+                .mod_package_snapshot_path,
+        );
+        assert_eq!(
+            std::fs::read(snapshot.join("mod.asi")).unwrap(),
+            b"old mod payload"
+        );
+    }
 
     #[test]
     fn pending_mode_snapshots_survive_expiry_cleanup_and_cannot_be_restored() {

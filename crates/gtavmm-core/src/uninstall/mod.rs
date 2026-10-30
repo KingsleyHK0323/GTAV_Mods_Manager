@@ -30,7 +30,7 @@ struct ModFileRow {
 
 fn load_mod_files(conn: &Connection, mod_id: i64) -> CoreResult<Vec<ModFileRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
+        "SELECT id, target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map([mod_id], |row| {
         Ok(ModFileRow {
@@ -84,10 +84,44 @@ pub fn uninstall(
     game_root: &Path,
     recycle_bin_root: &Path,
 ) -> CoreResult<()> {
+    uninstall_impl(conn, installed_mod_id, game_root, recycle_bin_root, None)
+}
+
+/// OpenAI-Codex: Uses explicit managed storage for disabled payload snapshots.
+pub fn uninstall_with_staging(
+    conn: &mut Connection,
+    installed_mod_id: i64,
+    game_root: &Path,
+    recycle_bin_root: &Path,
+    staging_root: &Path,
+) -> CoreResult<()> {
+    uninstall_impl(
+        conn,
+        installed_mod_id,
+        game_root,
+        recycle_bin_root,
+        Some(staging_root),
+    )
+}
+
+fn uninstall_impl(
+    conn: &mut Connection,
+    installed_mod_id: i64,
+    game_root: &Path,
+    recycle_bin_root: &Path,
+    staging_root: Option<&Path>,
+) -> CoreResult<()> {
     // OpenAI-Codex: Reject pending workspaces before snapshots or file changes.
     crate::providers::ensure_installed_mod_available(conn, installed_mod_id)?;
     crate::providers::ensure_game_root_available(game_root)?;
-    match mod_status(conn, installed_mod_id)? {
+    let status = mod_status(conn, installed_mod_id)?;
+    let disabled = status.as_deref() == Some("disabled");
+    if disabled && staging_root.is_none() {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "disabled uninstall requires an explicit staging root".to_string(),
+        });
+    }
+    match status {
         None => {
             return Err(CoreError::UnsupportedFormat {
                 reason: format!("no installed mod with id {installed_mod_id}"),
@@ -147,6 +181,53 @@ pub fn uninstall(
             }
         }
         snapshot_relatives.push(relative.to_path_buf());
+    }
+
+    if disabled {
+        // OpenAI-Codex: Never touch current game targets, backups, or shared DLC
+        // metadata for a disabled mod. Keep staging as recovery data after copying.
+        let payloads = crate::state::disabled_payloads(
+            conn,
+            installed_mod_id,
+            staging_root.expect("validated staging context"),
+        )?;
+        if payloads.len() != files.len()
+            || payloads
+                .iter()
+                .zip(&files)
+                .any(|((id, _), file)| *id != file.id)
+        {
+            return Err(CoreError::UnsupportedFormat {
+                reason: "disabled staging file mapping does not match installed records"
+                    .to_string(),
+            });
+        }
+        let entry_dir = recycle_bin_root.join(format!(
+            "{installed_mod_id}-{}",
+            chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
+        ));
+        std::fs::create_dir_all(&entry_dir)?;
+        for ((_, source), relative) in payloads.iter().zip(&snapshot_relatives) {
+            let destination = entry_dir.join(relative);
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(source, destination)?;
+        }
+        let metadata = crate::recycle_bin::encode_snapshot_metadata(
+            game_root,
+            files.iter().map(|file| file.id).collect(),
+        )?;
+        let now = chrono::Utc::now();
+        let transaction = conn.transaction()?;
+        transaction.execute("INSERT INTO recycle_bin_entry (original_installed_mod_id, mod_package_snapshot_path, snapshot_metadata, deleted_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![installed_mod_id, entry_dir.to_string_lossy(), metadata, now.to_rfc3339(), (now + chrono::Duration::days(RETENTION_DAYS)).to_rfc3339()])?;
+        transaction.execute(
+            "UPDATE installed_mod SET status = 'uninstalled' WHERE id = ?1",
+            [installed_mod_id],
+        )?;
+        transaction.execute("INSERT INTO install_event (installed_mod_id, event_type, success) VALUES (?1, 'uninstall', 1)", [installed_mod_id])?;
+        transaction.commit()?;
+        return Ok(());
     }
 
     // OpenAI-Codex: No overwrite-chain ordering is recorded, so refuse ambiguous
@@ -291,6 +372,235 @@ pub fn uninstall(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Disabled snapshots must contain staged payloads, not originals.
+    #[test]
+    fn disabled_uninstall_roundtrip_preserves_game_and_backup() {
+        for original in [None, Some(b"original".as_slice())] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let target = root.join("mod.asi");
+            let backup = dir.path().join("original.bak");
+            if let Some(bytes) = original {
+                std::fs::write(&backup, bytes).unwrap();
+            }
+            std::fs::write(&target, b"first mod payload").unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let id =
+                setup_installed_mod(&conn, &root, "mod.asi", original.map(|_| backup.as_path()));
+            let staging = dir.path().join("staging");
+            let recycle = dir.path().join("recycle");
+            crate::state::disable(&conn, id, &staging).unwrap();
+            // OpenAI-Codex: Reuse a retained manifest after enable and user edits.
+            crate::state::enable(&conn, id, &staging).unwrap();
+            std::fs::write(&target, b"edited mod payload").unwrap();
+            crate::state::disable(&conn, id, &staging).unwrap();
+            assert!(uninstall(&mut conn, id, &root, &recycle).is_err());
+            assert!(!recycle.exists());
+            uninstall_with_staging(&mut conn, id, &root, &recycle, &staging).unwrap();
+            assert_eq!(std::fs::read(&target).ok().as_deref(), original);
+            if let Some(bytes) = original {
+                assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+            }
+            assert_eq!(
+                std::fs::read(staging.join(id.to_string()).join("0")).unwrap(),
+                b"edited mod payload"
+            );
+            let entry = crate::recycle_bin::list(&conn).unwrap().remove(0);
+            crate::recycle_bin::restore(
+                &mut conn,
+                entry.id,
+                &root,
+                &dir.path().join("restored-backups"),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), b"edited mod payload");
+            assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+        }
+    }
+
+    #[test]
+    fn disabled_uninstall_preserves_another_active_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("mod.asi");
+        std::fs::write(&target, b"old payload").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = setup_installed_mod(&conn, &root, "mod.asi", None);
+        let staging = dir.path().join("staging");
+        crate::state::disable(&conn, id, &staging).unwrap();
+        let newer = setup_installed_mod(&conn, &root, "mod.asi", None);
+        std::fs::write(&target, b"new owner payload").unwrap();
+        uninstall_with_staging(&mut conn, id, &root, &dir.path().join("recycle"), &staging)
+            .unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), b"new owner payload");
+        assert_eq!(mod_status(&conn, newer).unwrap().as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn invalid_disabled_payload_is_rejected_before_snapshotting() {
+        for invalid in ["missing", "directory", "changed", "mapping"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let target = root.join("mod.asi");
+            std::fs::write(&target, b"payload").unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let id = setup_installed_mod(&conn, &root, "mod.asi", None);
+            let staging = dir.path().join("staging");
+            crate::state::disable(&conn, id, &staging).unwrap();
+            let staged = staging.join(id.to_string()).join("0");
+            match invalid {
+                "missing" => {
+                    std::fs::rename(&staged, staged.with_extension("saved")).unwrap();
+                }
+                "directory" => {
+                    std::fs::rename(&staged, staged.with_extension("saved")).unwrap();
+                    std::fs::create_dir(&staged).unwrap();
+                }
+                "mapping" => std::fs::write(
+                    staged.parent().unwrap().join("manifest.json"),
+                    br#"[{"file_id":-1,"index":0,"hash":"invalid"}]"#,
+                )
+                .unwrap(),
+                _ => std::fs::write(&staged, b"unexpected payload").unwrap(),
+            }
+            let recycle = dir.path().join("recycle");
+            assert!(uninstall_with_staging(&mut conn, id, &root, &recycle, &staging).is_err());
+            assert!(!target.exists());
+            assert!(!recycle.exists());
+            assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("disabled"));
+        }
+    }
+
+    // OpenAI-Codex: Legacy staging is accepted only when content can be verified.
+    #[test]
+    fn legacy_staging_requires_matching_recorded_hashes() {
+        for matches in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let id = setup_installed_mod(&conn, &root, "mod.asi", None);
+            conn.execute(
+                "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+            let staging = dir.path().join("staging");
+            let staged = staging.join(id.to_string()).join("0");
+            std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+            std::fs::write(&staged, b"legacy payload").unwrap();
+            if matches {
+                conn.execute(
+                    "UPDATE installed_mod_file SET file_hash = ?1 WHERE installed_mod_id = ?2",
+                    rusqlite::params![crate::util::hash_file(&staged).unwrap(), id],
+                )
+                .unwrap();
+            }
+            let recycle = dir.path().join("recycle");
+            assert_eq!(
+                uninstall_with_staging(&mut conn, id, &root, &recycle, &staging).is_ok(),
+                matches
+            );
+            assert_eq!(recycle.exists(), matches);
+            assert_eq!(std::fs::read(staged).unwrap(), b"legacy payload");
+            assert!(!root.join("mod.asi").exists());
+        }
+    }
+
+    #[test]
+    fn disabled_multifile_mapping_never_substitutes_a_missing_payload() {
+        for missing_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let id = setup_installed_mod(&conn, &root, "z.asi", None);
+            conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, root.join("a.asi").to_string_lossy()]).unwrap();
+            if !missing_first {
+                std::fs::write(root.join("z.asi"), b"z payload").unwrap();
+            }
+            std::fs::write(root.join("a.asi"), b"a payload").unwrap();
+            let staging = dir.path().join("staging");
+            crate::state::disable(&conn, id, &staging).unwrap();
+            let recycle = dir.path().join("recycle");
+            let result = uninstall_with_staging(&mut conn, id, &root, &recycle, &staging);
+            if missing_first {
+                assert!(result.is_err());
+                assert!(!recycle.exists());
+                assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("disabled"));
+            } else {
+                result.unwrap();
+                let entry = crate::recycle_bin::list(&conn).unwrap().remove(0);
+                crate::recycle_bin::restore(
+                    &mut conn,
+                    entry.id,
+                    &root,
+                    &dir.path().join("backups"),
+                )
+                .unwrap();
+                assert_eq!(std::fs::read(root.join("z.asi")).unwrap(), b"z payload");
+                assert_eq!(std::fs::read(root.join("a.asi")).unwrap(), b"a payload");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disabled_staged_symlink_is_rejected_before_snapshotting() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = setup_installed_mod(&conn, &root, "mod.asi", None);
+        conn.execute(
+            "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        let staging = dir.path().join("staging");
+        let staged = staging.join(id.to_string()).join("0");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, b"outside bytes").unwrap();
+        std::os::unix::fs::symlink(&outside, &staged).unwrap();
+        let recycle = dir.path().join("recycle");
+        assert!(uninstall_with_staging(&mut conn, id, &root, &recycle, &staging).is_err());
+        assert!(!recycle.exists());
+        assert_eq!(std::fs::read(outside).unwrap(), b"outside bytes");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_disabled_payload_preserves_status_and_game_files() {
+        // OpenAI-Codex: Metadata can succeed while the payload cannot be read.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("mod.asi"), b"payload").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = setup_installed_mod(&conn, &root, "mod.asi", None);
+        let staging = dir.path().join("staging");
+        crate::state::disable(&conn, id, &staging).unwrap();
+        let staged = staging.join(id.to_string()).join("0");
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&staged)
+            .unwrap();
+        locked.try_lock().unwrap();
+        let recycle = dir.path().join("recycle");
+        let result = uninstall_with_staging(&mut conn, id, &root, &recycle, &staging);
+        locked.unlock().unwrap();
+        assert!(result.is_err());
+        assert!(!recycle.exists());
+        assert!(!root.join("mod.asi").exists());
+        assert_eq!(std::fs::read(staged).unwrap(), b"payload");
+        assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("disabled"));
+    }
 
     // OpenAI-Codex: Refusals must preserve payloads, records, and the recycle bin.
     #[test]

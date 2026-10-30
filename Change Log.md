@@ -15,7 +15,9 @@
 
 ### Fixed
 
-- Reject uninstall targets outside the supplied game root or resolving through an escaping ancestor, and refuse targets tracked by another active mod before snapshotting. This conservative guard can block either overlapping mod; overwrite-chain removal and disabled-mod snapshots remain incomplete.
+- Require recycle-bin restore owners to remain uninstalled and reject the entire restore before writes when any target is tracked by another active mod. Preserve the existing backup behavior for regular targets without an active owner; path containment, backup collisions, and complete recovery remain pending.
+- Snapshot disabled mods from verified staged payloads into the app-owned recycle bin without changing game targets, original backups, or shared DLC metadata. Preserve old core API signatures, require explicit staging context for disabled lifecycle operations, and connect App, CLI, and AI callers. Record staged file identities and actual hashes; conservatively validate legacy staging against recorded hashes. Retain staging and backups for recovery; DLC handling and complete transaction recovery remain pending.
+- Reject uninstall targets outside the supplied game root or resolving through an escaping ancestor, and refuse active-uninstall targets tracked by another active mod before snapshotting. This conservative guard can block either overlapping mod; overwrite-chain removal remains incomplete.
 - Read rollback backups before removing the current target to detect existing read locks early; this does not provide atomic replacement.
 - Validate all uninstall targets and recorded backups before snapshotting or deleting files, rejecting missing, non-regular, unreadable, or self-referential backups.
 - Require confirmation before overwriting untracked existing files, report unknown owners without fabricated IDs, and restrict reinstall exemptions to matching restored-original content.

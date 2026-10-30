@@ -1714,6 +1714,38 @@ pub fn uninstall_mod_for_page_impl(
     result
 }
 
+/// OpenAI-Codex: Explicit context keeps disabled snapshots in app-owned storage.
+pub fn uninstall_mod_with_staging_impl(
+    conn: &mut Connection,
+    mod_id: i64,
+    game_path: Option<&str>,
+    mode: Option<&str>,
+    recycle_bin_root: &std::path::Path,
+    staging_root: &std::path::Path,
+) -> Result<(), String> {
+    let game_root = match mode {
+        Some(mode) => resolve_page_target(conn, game_path, mode)?.0,
+        None => {
+            gtavmm_core::providers::resolve_game_root(game_path.map(std::path::Path::new))
+                .map_err(|e| e.to_string())?
+                .0
+        }
+    };
+    let result = gtavmm_core::uninstall::uninstall_with_staging(
+        conn,
+        mod_id,
+        &game_root,
+        recycle_bin_root,
+        staging_root,
+    )
+    .map_err(|e| e.to_string());
+    if let Err(reason) = &result {
+        let _ =
+            gtavmm_core::app_log::error(&format!("uninstall_mod failed for id {mod_id}: {reason}"));
+    }
+    result
+}
+
 #[tauri::command]
 pub fn uninstall_mod(
     state: tauri::State<crate::AppState>,
@@ -1723,16 +1755,15 @@ pub fn uninstall_mod(
 ) -> Result<(), String> {
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
     let recycle_bin_root = default_recycle_bin_root()?;
-    match mode.as_deref() {
-        Some(mode) => uninstall_mod_for_page_impl(
-            &mut conn,
-            mod_id,
-            game_path.as_deref(),
-            mode,
-            &recycle_bin_root,
-        ),
-        None => uninstall_mod_impl(&mut conn, mod_id, game_path.as_deref(), &recycle_bin_root),
-    }
+    let staging_root = default_staging_root()?;
+    uninstall_mod_with_staging_impl(
+        &mut conn,
+        mod_id,
+        game_path.as_deref(),
+        mode.as_deref(),
+        &recycle_bin_root,
+        &staging_root,
+    )
 }
 
 /// Replaces a mod's files from a newer download. The caller supplies the source
@@ -1753,22 +1784,88 @@ pub fn reinstall_mod_impl(
     backup_root: &std::path::Path,
     recycle_bin_root: &std::path::Path,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
+    reinstall_mod_with_optional_staging_impl(
+        conn,
+        mod_id,
+        new_source_path,
+        version_label,
+        mode,
+        game_path,
+        backup_root,
+        recycle_bin_root,
+        None,
+    )
+}
+
+/// OpenAI-Codex: The caller supplies the same staging root used for disable.
+#[allow(clippy::too_many_arguments)]
+pub fn reinstall_mod_with_staging_impl(
+    conn: &mut Connection,
+    mod_id: i64,
+    new_source_path: &str,
+    version_label: &str,
+    mode: &str,
+    game_path: Option<&str>,
+    backup_root: &std::path::Path,
+    recycle_bin_root: &std::path::Path,
+    staging_root: &std::path::Path,
+) -> Result<gtavmm_core::install::InstallOutcome, String> {
+    reinstall_mod_with_optional_staging_impl(
+        conn,
+        mod_id,
+        new_source_path,
+        version_label,
+        mode,
+        game_path,
+        backup_root,
+        recycle_bin_root,
+        Some(staging_root),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reinstall_mod_with_optional_staging_impl(
+    conn: &mut Connection,
+    mod_id: i64,
+    new_source_path: &str,
+    version_label: &str,
+    mode: &str,
+    game_path: Option<&str>,
+    backup_root: &std::path::Path,
+    recycle_bin_root: &std::path::Path,
+    staging_root: Option<&std::path::Path>,
+) -> Result<gtavmm_core::install::InstallOutcome, String> {
     let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
     let options = gtavmm_core::install::InstallOptions {
         auto_backup: true,
         override_foreign_conflicts: false,
     };
-    let result = gtavmm_core::install::reinstall(
-        conn,
-        mod_id,
-        std::path::Path::new(new_source_path),
-        version_label,
-        provider.as_ref(),
-        &game_root,
-        backup_root,
-        recycle_bin_root,
-        options,
-    )
+    let result = if let Some(staging_root) = staging_root {
+        gtavmm_core::install::reinstall_with_staging(
+            conn,
+            mod_id,
+            std::path::Path::new(new_source_path),
+            version_label,
+            provider.as_ref(),
+            &game_root,
+            backup_root,
+            recycle_bin_root,
+            options,
+            staging_root,
+        )
+    } else {
+        gtavmm_core::install::reinstall(
+            conn,
+            mod_id,
+            std::path::Path::new(new_source_path),
+            version_label,
+            provider.as_ref(),
+            &game_root,
+            backup_root,
+            recycle_bin_root,
+            options,
+        )
+    }
     .and_then(gtavmm_core::install::InstallOutcome::require_success)
     .map_err(|e| e.to_string());
     if let Err(reason) = &result {
@@ -1791,7 +1888,8 @@ pub fn reinstall_mod(
     let backup_root =
         default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
     let recycle_bin_root = default_recycle_bin_root()?;
-    reinstall_mod_impl(
+    let staging_root = default_staging_root()?;
+    reinstall_mod_with_staging_impl(
         &mut conn,
         mod_id,
         &new_source_path,
@@ -1800,6 +1898,7 @@ pub fn reinstall_mod(
         game_path.as_deref(),
         &backup_root,
         &recycle_bin_root,
+        &staging_root,
     )
 }
 
@@ -3156,6 +3255,28 @@ mod tests {
         assert_eq!(std::fs::read(&deployed).unwrap(), b"FiveM client mod");
         assert_eq!(status_of(&conn, mod_id), "active");
         assert!(gtavmm_core::recycle_bin::list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn disabled_uninstall_uses_explicit_staging_for_both_routes() {
+        // OpenAI-Codex: Exercise the same helper used by the Tauri command.
+        for mode in [None, Some("legacy-sp")] {
+            let (mut conn, game_dir, work, staging, id) = installed_fixture();
+            disable_mod_impl(&conn, id, staging.path()).unwrap();
+            let recycle = work.path().join("disabled-recycle");
+            uninstall_mod_with_staging_impl(
+                &mut conn,
+                id,
+                Some(game_dir.path().to_str().unwrap()),
+                mode,
+                &recycle,
+                staging.path(),
+            )
+            .unwrap();
+            assert_eq!(status_of(&conn, id), "uninstalled");
+            assert!(!game_dir.path().join("LifecycleMod.asi").exists());
+            assert_eq!(gtavmm_core::recycle_bin::list(&conn).unwrap().len(), 1);
+        }
     }
 
     #[test]

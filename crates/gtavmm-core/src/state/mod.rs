@@ -23,18 +23,20 @@ use crate::error::{CoreError, CoreResult};
 use crate::protected_files;
 
 struct ModFileRow {
+    id: i64,
     target_path: String,
     backup_path: Option<String>,
 }
 
 fn load_mod_files(conn: &Connection, mod_id: i64) -> CoreResult<Vec<ModFileRow>> {
     let mut stmt = conn.prepare(
-        "SELECT target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
+        "SELECT target_path, backup_path, id FROM installed_mod_file WHERE installed_mod_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map([mod_id], |row| {
         Ok(ModFileRow {
             target_path: row.get(0)?,
             backup_path: row.get(1)?,
+            id: row.get(2)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -61,6 +63,76 @@ fn staging_dir(staging_root: &Path, mod_id: i64) -> PathBuf {
     staging_root.join(mod_id.to_string())
 }
 
+// OpenAI-Codex: Persist identity and actual staged content, including user edits.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StagedFile {
+    file_id: i64,
+    index: usize,
+    hash: String,
+}
+
+pub(crate) fn disabled_payloads(
+    conn: &Connection,
+    mod_id: i64,
+    staging_root: &Path,
+) -> CoreResult<Vec<(i64, PathBuf)>> {
+    let invalid = || {
+        CoreError::UnsupportedFormat {
+        reason: format!("disabled staging for mod {mod_id} is missing, unsafe, or does not match its file records; preserve it for recovery"),
+    }
+    };
+    let root = std::fs::canonicalize(staging_root)?;
+    let directory = staging_dir(staging_root, mod_id);
+    if !std::fs::canonicalize(&directory)?.starts_with(&root) {
+        return Err(invalid());
+    }
+    let manifest_path = directory.join("manifest.json");
+    let manifest: Option<Vec<StagedFile>> = match std::fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            Some(serde_json::from_slice(&std::fs::read(&manifest_path)?).map_err(|_| invalid())?)
+        }
+        Ok(_) => return Err(invalid()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let mut stmt = conn.prepare(
+        "SELECT id, file_hash FROM installed_mod_file WHERE installed_mod_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([mod_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if rows.is_empty()
+        || manifest
+            .as_ref()
+            .is_some_and(|items| items.len() != rows.len())
+    {
+        return Err(invalid());
+    }
+    let mut payloads = Vec::with_capacity(rows.len());
+    for (index, (id, legacy_hash)) in rows.into_iter().enumerate() {
+        let expected_hash = if let Some(items) = &manifest {
+            let item = items
+                .iter()
+                .find(|item| item.file_id == id && item.index == index)
+                .ok_or_else(invalid)?;
+            &item.hash
+        } else {
+            &legacy_hash
+        };
+        let path = directory.join(index.to_string());
+        if !std::fs::symlink_metadata(&path)?.file_type().is_file()
+            || !std::fs::canonicalize(&path)?.starts_with(&root)
+            || crate::util::hash_file(&path)? != *expected_hash
+        {
+            return Err(invalid());
+        }
+        payloads.push((id, path));
+    }
+    Ok(payloads)
+}
+
 /// Deactivates an active mod: its deployed files move to staging, and anything they
 /// overwrote is restored from backup so the game runs unmodified while disabled.
 pub fn disable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResult<()> {
@@ -75,7 +147,36 @@ pub fn disable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResul
     let files = load_mod_files(conn, mod_id)?;
     let mod_staging = staging_dir(staging_root, mod_id);
     std::fs::create_dir_all(&mod_staging)?;
+    // OpenAI-Codex: Do not follow a pre-existing manifest link when writing it.
+    if !std::fs::canonicalize(&mod_staging)?.starts_with(std::fs::canonicalize(staging_root)?) {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "disabled staging escapes its root".to_string(),
+        });
+    }
+    match std::fs::symlink_metadata(mod_staging.join("manifest.json")) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(CoreError::UnsupportedFormat {
+                reason: "disabled staging manifest is not a regular file".to_string(),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    for index in 0..files.len() {
+        match std::fs::symlink_metadata(mod_staging.join(index.to_string())) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: "disabled staging destination is not a regular file".to_string(),
+                })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 
+    let mut manifest = Vec::new();
     for (index, file) in files.iter().enumerate() {
         let target = PathBuf::from(&file.target_path);
         protected_files::check_write(&target)?;
@@ -83,6 +184,11 @@ pub fn disable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResul
         if target.exists() {
             let staged = mod_staging.join(index.to_string());
             crate::util::move_file(&target, &staged)?;
+            manifest.push(StagedFile {
+                file_id: file.id,
+                index,
+                hash: crate::util::hash_file(&staged)?,
+            });
         }
 
         if let Some(backup) = &file.backup_path {
@@ -93,6 +199,13 @@ pub fn disable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResul
         }
     }
 
+    // OpenAI-Codex: Write the manifest before publishing the disabled status.
+    std::fs::write(
+        mod_staging.join("manifest.json"),
+        serde_json::to_vec(&manifest).map_err(|error| CoreError::UnsupportedFormat {
+            reason: error.to_string(),
+        })?,
+    )?;
     conn.execute(
         "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1",
         [mod_id],

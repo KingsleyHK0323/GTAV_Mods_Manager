@@ -215,9 +215,13 @@ pub fn execute_action(
     match action {
         Action::DisableMod { mod_id } => crate::state::disable(conn, *mod_id, ctx.staging_root),
         Action::EnableMod { mod_id } => crate::state::enable(conn, *mod_id, ctx.staging_root),
-        Action::UninstallMod { mod_id } => {
-            crate::uninstall::uninstall(conn, *mod_id, ctx.game_root, ctx.recycle_bin_root)
-        }
+        Action::UninstallMod { mod_id } => crate::uninstall::uninstall_with_staging(
+            conn,
+            *mod_id,
+            ctx.game_root,
+            ctx.recycle_bin_root,
+            ctx.staging_root,
+        ),
         Action::SwitchProfile { profile_id } => {
             crate::profile::switch(conn, *profile_id, ctx.staging_root).map(|_| ())
         }
@@ -225,7 +229,7 @@ pub fn execute_action(
             mod_id,
             source_path,
             version,
-        } => crate::install::reinstall(
+        } => crate::install::reinstall_with_staging(
             conn,
             *mod_id,
             source_path,
@@ -235,6 +239,7 @@ pub fn execute_action(
             ctx.backup_root,
             ctx.recycle_bin_root,
             crate::install::InstallOptions::default(),
+            ctx.staging_root,
         )
         .and_then(crate::install::InstallOutcome::require_success)
         .map(|_| ()),
@@ -308,6 +313,34 @@ mod tests {
             dir.join("recycle"),
             dir.join("backups"),
         )
+    }
+
+    #[test]
+    fn disabled_uninstall_action_uses_its_staging_context() {
+        // OpenAI-Codex: AI dispatch must retain the real disabled payload.
+        let dir = tempfile::tempdir().unwrap();
+        let (game_root, staging_root, recycle_bin_root, backup_root) = ctx(dir.path());
+        std::fs::create_dir(&game_root).unwrap();
+        let target = game_root.join("mod.asi");
+        std::fs::write(&target, b"AI payload").unwrap();
+        let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('AI mod', 'asi', '', 'active')", []).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, target.to_string_lossy()]).unwrap();
+        let context = ExecutionContext {
+            game_root: &game_root,
+            staging_root: &staging_root,
+            recycle_bin_root: &recycle_bin_root,
+            backup_root: &backup_root,
+            provider: &provider,
+        };
+        execute_action(&mut conn, &Action::DisableMod { mod_id: id }, &context).unwrap();
+        execute_action(&mut conn, &Action::UninstallMod { mod_id: id }, &context).unwrap();
+        assert!(!target.exists());
+        let entry = crate::recycle_bin::list(&conn).unwrap().remove(0);
+        crate::recycle_bin::restore(&mut conn, entry.id, &game_root, &backup_root).unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), b"AI payload");
     }
 
     #[test]

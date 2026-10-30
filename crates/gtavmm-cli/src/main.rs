@@ -518,7 +518,15 @@ fn run(cli: Cli) -> Result<()> {
         Command::Uninstall { id } => {
             let (game_root, _) = require_game_root(&cli.game_path)?;
             let recycle_root = db_path.parent().unwrap().join("recycle_bin");
-            gtavmm_core::uninstall::uninstall(&mut conn, id, &game_root, &recycle_root)?;
+            // OpenAI-Codex: Match enable/disable storage; never use the OS recycle bin.
+            let staging_root = db_path.parent().unwrap().join("staging");
+            gtavmm_core::uninstall::uninstall_with_staging(
+                &mut conn,
+                id,
+                &game_root,
+                &recycle_root,
+                &staging_root,
+            )?;
             println!("Uninstalled mod #{id} (recoverable from the recycle bin for 15 days).");
         }
         Command::Reinstall {
@@ -534,7 +542,8 @@ fn run(cli: Cli) -> Result<()> {
                 .unwrap()
                 .join("backups")
                 .join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
-            match gtavmm_core::install::reinstall(
+            let staging_root = db_path.parent().unwrap().join("staging");
+            match gtavmm_core::install::reinstall_with_staging(
                 &mut conn,
                 id,
                 std::path::Path::new(&source_path),
@@ -547,6 +556,7 @@ fn run(cli: Cli) -> Result<()> {
                     override_foreign_conflicts: yes,
                     ..Default::default()
                 },
+                &staging_root,
             )? {
                 gtavmm_core::install::InstallOutcome::Success {
                     installed_mod_id,
