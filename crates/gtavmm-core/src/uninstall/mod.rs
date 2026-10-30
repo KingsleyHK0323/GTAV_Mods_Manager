@@ -103,9 +103,117 @@ pub fn uninstall(
 
     let files = load_mod_files(conn, installed_mod_id)?;
 
-    // Pass 1: validate every target against protected_files before mutating anything.
+    // OpenAI-Codex: Validate both snapshot layout and resolved ancestry before writes.
+    let resolved_root = std::fs::canonicalize(game_root)?;
+    let mut snapshot_relatives = Vec::with_capacity(files.len());
     for file in &files {
-        protected_files::check_write(Path::new(&file.target_path))?;
+        let target = Path::new(&file.target_path);
+        let invalid_target = || CoreError::UnsupportedFormat {
+            reason: format!(
+                "uninstall target is outside its game root or has an unsafe relative path: {}",
+                target.display()
+            ),
+        };
+        let relative = target
+            .strip_prefix(game_root)
+            .map_err(|_| invalid_target())?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid_target());
+        }
+        // Missing targets are allowed, but their closest existing ancestor must
+        // still resolve inside the root (including junctions/symbolic links).
+        let mut ancestor = target;
+        loop {
+            match std::fs::canonicalize(ancestor) {
+                Ok(resolved) => {
+                    if !resolved.starts_with(&resolved_root) {
+                        return Err(invalid_target());
+                    }
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match std::fs::symlink_metadata(ancestor) {
+                        Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(other) => return Err(other.into()),
+                        Ok(_) => return Err(invalid_target()),
+                    }
+                    ancestor = ancestor.parent().ok_or_else(invalid_target)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        snapshot_relatives.push(relative.to_path_buf());
+    }
+
+    // OpenAI-Codex: No overwrite-chain ordering is recorded, so refuse ambiguous
+    // ownership in either direction rather than deleting another active payload.
+    let targets = files
+        .iter()
+        .map(|file| PathBuf::from(&file.target_path))
+        .collect::<Vec<_>>();
+    let conflicts = crate::conflict::analyze(conn, &targets)?;
+    for conflict in conflicts.foreign_conflicts {
+        if let Some(owner_mod_id) = conflict.owner_mod_id {
+            if owner_mod_id != installed_mod_id {
+                return Err(CoreError::ForeignConflict {
+                    path: conflict.path,
+                    owner_mod_id,
+                });
+            }
+        }
+    }
+
+    // Pass 1: validate all targets and backups before snapshotting or mutating anything.
+    let mut deployed_targets = std::collections::HashSet::new();
+    for file in &files {
+        let target = Path::new(&file.target_path);
+        protected_files::check_write(target)?;
+        match std::fs::symlink_metadata(target) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                // OpenAI-Codex: Catch an already-unreadable snapshot source before
+                // any earlier target can be removed. Later I/O can still fail.
+                crate::util::hash_file(target)?;
+                deployed_targets.insert(std::fs::canonicalize(target)?);
+            }
+            Ok(_) => {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!(
+                        "uninstall target is not a regular file: {}",
+                        target.display()
+                    ),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        };
+    }
+    let mut backup_paths = std::collections::HashSet::new();
+    for file in &files {
+        if let Some(backup) = &file.backup_path {
+            if !std::fs::symlink_metadata(backup)?.file_type().is_file() {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!("recorded backup is not a regular file: {backup}"),
+                });
+            }
+            let backup_path = std::fs::canonicalize(backup)?;
+            if deployed_targets.contains(&backup_path) {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!("recorded backup is one of the deployed targets: {backup}"),
+                });
+            }
+            if !backup_paths.insert(backup_path.clone()) {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!("recorded backup is shared by multiple targets: {backup}"),
+                });
+            }
+            // OpenAI-Codex: Metadata alone cannot detect a backup blocked by a read lock.
+            // This preflight reduces early failures; it is not an atomicity guarantee.
+            crate::util::hash_file(&backup_path)?;
+        }
     }
 
     // Pass 2: snapshot deployed files into the recycle bin, then delete/restore.
@@ -119,14 +227,13 @@ pub fn uninstall(
 
     let mut pack_names = std::collections::HashSet::new();
 
-    for file in &files {
+    for (file, relative) in files.iter().zip(&snapshot_relatives) {
         let target = PathBuf::from(&file.target_path);
         if let Some(name) = dlc_pack_name_from_target(&target) {
             pack_names.insert(name);
         }
 
         if target.exists() {
-            let relative = target.strip_prefix(game_root).unwrap_or(&target);
             let snapshot_path = entry_dir.join(relative);
             if let Some(parent) = snapshot_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -184,6 +291,219 @@ pub fn uninstall(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Refusals must preserve payloads, records, and the recycle bin.
+    #[test]
+    fn another_active_owner_blocks_uninstall_before_snapshotting() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("shared.asi");
+        std::fs::write(&target, b"newer payload").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let old = setup_installed_mod(&conn, &root, "shared.asi", None);
+        let newer = setup_installed_mod(&conn, &root, "shared.asi", None);
+        let recycle = dir.path().join("recycle");
+        for (id, owner) in [(old, newer), (newer, old)] {
+            let error = uninstall(&mut conn, id, &root, &recycle).unwrap_err();
+            assert!(
+                matches!(error, CoreError::ForeignConflict { owner_mod_id, .. } if owner_mod_id == owner)
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), b"newer payload");
+            assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+            assert!(!recycle.exists());
+        }
+    }
+
+    #[test]
+    fn outside_root_targets_preserve_all_files_before_snapshotting() {
+        for escape in ["outside.asi", "game/../outside.asi"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let valid = root.join("valid.asi");
+            let outside = dir.path().join("outside.asi");
+            std::fs::write(&valid, b"valid payload").unwrap();
+            std::fs::write(&outside, b"outside payload").unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let id = setup_installed_mod(&conn, &root, "valid.asi", None);
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')",
+                rusqlite::params![id, dir.path().join(escape).to_string_lossy().as_ref()],
+            ).unwrap();
+            let recycle = dir.path().join("recycle");
+            assert!(uninstall(&mut conn, id, &root, &recycle).is_err());
+            assert_eq!(std::fs::read(valid).unwrap(), b"valid payload");
+            assert_eq!(std::fs::read(outside).unwrap(), b"outside payload");
+            assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+            assert!(!recycle.exists());
+        }
+    }
+
+    // OpenAI-Codex: Missing descendants and inactive records remain compatible.
+    #[test]
+    fn missing_nested_target_and_disabled_owner_do_not_block_uninstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = setup_installed_mod(&conn, &root, "missing/sub/mod.asi", None);
+        let inactive = setup_installed_mod(&conn, &root, "missing/sub/mod.asi", None);
+        conn.execute(
+            "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1",
+            [inactive],
+        )
+        .unwrap();
+        uninstall(&mut conn, id, &root, &dir.path().join("recycle")).unwrap();
+        assert_eq!(
+            mod_status(&conn, id).unwrap().as_deref(),
+            Some("uninstalled")
+        );
+        assert_eq!(
+            mod_status(&conn, inactive).unwrap().as_deref(),
+            Some("disabled")
+        );
+        assert!(!root.join("missing").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_symlink_escape_is_rejected_even_when_target_is_missing() {
+        for present in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            let outside = dir.path().join("outside");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+            if present {
+                std::fs::write(outside.join("mod.asi"), b"outside payload").unwrap();
+            }
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let id = setup_installed_mod(&conn, &root, "linked/mod.asi", None);
+            let recycle = dir.path().join("recycle");
+            assert!(uninstall(&mut conn, id, &root, &recycle).is_err());
+            if present {
+                assert_eq!(
+                    std::fs::read(outside.join("mod.asi")).unwrap(),
+                    b"outside payload"
+                );
+            }
+            assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+            assert!(!recycle.exists());
+        }
+    }
+
+    #[test]
+    fn invalid_backup_preserves_every_target_before_snapshotting() {
+        for invalid_kind in [
+            "missing",
+            "directory",
+            "deployed-target",
+            "other-deployed-target",
+            "shared-backup",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let game_root = dir.path().join("game");
+            std::fs::create_dir(&game_root).unwrap();
+            let first = game_root.join("first.asi");
+            let second = game_root.join("second.asi");
+            std::fs::write(&first, b"first mod").unwrap();
+            std::fs::write(&second, b"second mod").unwrap();
+            let backup = match invalid_kind {
+                "directory" => {
+                    let path = dir.path().join("backup-directory");
+                    std::fs::create_dir(&path).unwrap();
+                    path
+                }
+                "deployed-target" => second.clone(),
+                "other-deployed-target" => first.clone(),
+                "shared-backup" => {
+                    let path = dir.path().join("shared.bak");
+                    std::fs::write(&path, b"original").unwrap();
+                    path
+                }
+                _ => dir.path().join("missing.bak"),
+            };
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let first_backup = if invalid_kind == "shared-backup" {
+                Some(backup.as_path())
+            } else {
+                None
+            };
+            let id = setup_installed_mod(&conn, &game_root, "first.asi", first_backup);
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, backup_path, file_hash) VALUES (?1, ?2, ?3, 'hash')",
+                rusqlite::params![id, second.to_string_lossy().as_ref(), backup.to_string_lossy().as_ref()],
+            ).unwrap();
+            let recycle = dir.path().join("recycle");
+            assert!(
+                uninstall(&mut conn, id, &game_root, &recycle).is_err(),
+                "{invalid_kind}"
+            );
+            assert_eq!(std::fs::read(&first).unwrap(), b"first mod");
+            assert_eq!(std::fs::read(&second).unwrap(), b"second mod");
+            assert!(!recycle.exists());
+            assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_locked_backup_does_not_remove_the_deployed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let target = game_root.join("mod.asi");
+        let backup = dir.path().join("original.bak");
+        std::fs::write(&target, b"mod content").unwrap();
+        std::fs::write(&backup, b"original content").unwrap();
+        let locked_backup = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&backup)
+            .unwrap();
+        locked_backup.try_lock().unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = setup_installed_mod(&conn, &game_root, "mod.asi", Some(&backup));
+        let recycle = dir.path().join("recycle");
+        let result = uninstall(&mut conn, id, &game_root, &recycle);
+        locked_backup.unlock().unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"mod content");
+        assert_eq!(std::fs::read(backup).unwrap(), b"original content");
+        assert!(!recycle.exists());
+        assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_later_target_preserves_earlier_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let first = game_root.join("first.asi");
+        let second = game_root.join("second.asi");
+        std::fs::write(&first, b"first mod").unwrap();
+        std::fs::write(&second, b"second mod").unwrap();
+        let locked_target = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&second)
+            .unwrap();
+        locked_target.try_lock().unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = setup_installed_mod(&conn, &game_root, "first.asi", None);
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, second.to_string_lossy().as_ref()]).unwrap();
+        let recycle = dir.path().join("recycle");
+        let result = uninstall(&mut conn, id, &game_root, &recycle);
+        locked_target.unlock().unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(first).unwrap(), b"first mod");
+        assert_eq!(std::fs::read(second).unwrap(), b"second mod");
+        assert!(!recycle.exists());
+        assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("active"));
+    }
 
     fn setup_installed_mod(
         conn: &Connection,

@@ -15,6 +15,9 @@
 
 ### Fixed
 
+- Reject uninstall targets outside the supplied game root or resolving through an escaping ancestor, and refuse targets tracked by another active mod before snapshotting. This conservative guard can block either overlapping mod; overwrite-chain removal and disabled-mod snapshots remain incomplete.
+- Read rollback backups before removing the current target to detect existing read locks early; this does not provide atomic replacement.
+- Validate all uninstall targets and recorded backups before snapshotting or deleting files, rejecting missing, non-regular, unreadable, or self-referential backups.
 - Require confirmation before overwriting untracked existing files, report unknown owners without fabricated IDs, and restrict reinstall exemptions to matching restored-original content.
 - Require confirmation for all tracked file ownership conflicts, even when overlap suggests an update; validate a reinstall package and unrelated conflicts before removing the current version.
 - Restored newly written and overwritten files when an install database transaction fails.

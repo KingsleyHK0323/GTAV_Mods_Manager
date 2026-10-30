@@ -97,6 +97,10 @@ impl InstallTransaction {
                             )
                             .into());
                         }
+                        // OpenAI-Codex: A byte-range lock can permit metadata but
+                        // reject reads. Detect it before removing the current target.
+                        // A later copy can still fail; this is not atomic replacement.
+                        hash_file(&backup)?;
                         drop(backup_file);
                         if target.try_exists()? {
                             std::fs::remove_file(&target)?;
