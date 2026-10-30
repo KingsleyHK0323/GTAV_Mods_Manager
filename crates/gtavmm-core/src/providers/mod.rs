@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! `ModeProvider`: the abstraction that lets later modes (Enhanced SP, Legacy/Enhanced
 //! LSPDFR, FiveM) be added without rewriting `mod_analyzer`'s dispatch logic. Each
@@ -491,6 +493,13 @@ pub fn resolve(
 ) -> crate::error::CoreResult<(PathBuf, Box<dyn ModeProvider>)> {
     use crate::error::CoreError;
 
+    // OpenAI-Codex: Keep pending modes unavailable without altering saved data.
+    if mode == Mode::FivemClient {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "FiveM support is under development".to_string(),
+        });
+    }
+
     if mode == Mode::FivemClient {
         let path = game_path.ok_or_else(|| CoreError::GameNotFound {
             reason: "--mode fivem-client requires an explicit game path pointing at the \
@@ -504,6 +513,11 @@ pub fn resolve(
     }
 
     let (game_root, edition) = resolve_game_root(game_path)?;
+    if edition == "enhanced" {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "GTA V Enhanced support is under development".to_string(),
+        });
+    }
     let provider = provider_for(game_root.clone(), &edition, mode);
     Ok((game_root, provider))
 }
@@ -511,6 +525,21 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Pending modes must not resolve through the shared entry point.
+    #[test]
+    fn pending_fivem_mode_is_rejected_before_path_resolution() {
+        let result = resolve(None, Mode::FivemClient);
+        assert!(matches!(result, Err(crate::error::CoreError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn enhanced_installation_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("GTA5_Enhanced.exe"), b"").unwrap();
+        let result = resolve(Some(dir.path()), Mode::Sp);
+        assert!(matches!(result, Err(crate::error::CoreError::UnsupportedFormat { .. })));
+    }
 
     #[test]
     fn resolves_expected_legacy_sp_layout() {

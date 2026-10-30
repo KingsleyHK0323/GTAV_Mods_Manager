@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Marked FiveM client and GTA V Enhanced provider resolution as under development while focusing on Legacy; other mode entry points still require restrictions.
+
 ### Fixed
 
 - Restored newly written and overwritten files when an install database transaction fails.
