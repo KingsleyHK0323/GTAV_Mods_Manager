@@ -1733,8 +1733,37 @@ mod tests {
 
         restore(&mut conn, entry_id, &game_root, &backup_root).unwrap();
 
-        assert_eq!(std::fs::read(target).unwrap(), b"client snapshot");
-        assert!(!entry_dir.exists());
+        // OpenAI-Codex: Legacy restore uses the recorded root but retains storage.
+        assert_eq!(std::fs::read(&target).unwrap(), b"client snapshot");
+        assert_eq!(
+            std::fs::read(entry_dir.join(relative)).unwrap(),
+            b"client snapshot"
+        );
+        assert!(!game_root.join(relative).exists());
+        let recorded_hash: String = conn
+            .query_row(
+                "SELECT file_hash FROM installed_mod_file WHERE id = ?1",
+                [file_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded_hash, hash_file(&target).unwrap());
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM recycle_bin_entry WHERE id = ?1",
+                [entry_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
     }
 
     #[test]
