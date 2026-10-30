@@ -141,6 +141,8 @@ pub fn restore_with_optional_game_root(
         .ok_or_else(|| CoreError::UnsupportedFormat {
             reason: format!("recycle bin entry {entry_id} has no associated mod to restore"),
         })?;
+    // OpenAI-Codex: Old snapshots must not reactivate a pending workspace.
+    crate::providers::ensure_installed_mod_available(conn, mod_id)?;
     let snapshot_root = PathBuf::from(&entry.mod_package_snapshot_path);
     let metadata: Option<SnapshotMetadata> = entry
         .snapshot_metadata
@@ -161,6 +163,8 @@ pub fn restore_with_optional_game_root(
             })?
             .to_path_buf()
     };
+
+    crate::providers::ensure_game_root_available(&snapshot_game_root)?;
 
     let mut stmt =
         conn.prepare("SELECT id, target_path FROM installed_mod_file WHERE installed_mod_id = ?1")?;
@@ -280,31 +284,65 @@ pub fn restore_with_optional_game_root(
 /// Deletes any `recycle_bin_entry` rows (and their snapshot storage) past
 /// `expires_at`. Called once at app/CLI startup and on demand — there is no
 /// background scheduler.
+/// OpenAI-Codex: Pending or unverifiable workspaces retain their snapshots.
 pub fn sweep_expired(conn: &Connection) -> CoreResult<usize> {
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut stmt = conn.prepare(
-        "SELECT id, mod_package_snapshot_path FROM recycle_bin_entry WHERE expires_at < ?1",
+        "SELECT id, mod_package_snapshot_path, original_installed_mod_id FROM recycle_bin_entry WHERE expires_at < ?1",
     )?;
-    let expired: Vec<(i64, String)> = stmt
-        .query_map([&now], |row| Ok((row.get(0)?, row.get(1)?)))?
+    let expired: Vec<(i64, String, Option<i64>)> = stmt
+        .query_map([&now], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<_, _>>()?;
     drop(stmt);
 
-    for (id, snapshot_path) in &expired {
+    let mut removed = 0;
+    for (id, snapshot_path, mod_id) in &expired {
+        // OpenAI-Codex: Keep snapshots whose workspace cannot currently be used.
+        if let Some(mod_id) = mod_id {
+            if crate::providers::ensure_installed_mod_available(conn, *mod_id).is_err() {
+                continue;
+            }
+        }
         let path = PathBuf::from(snapshot_path);
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }
         conn.execute("DELETE FROM recycle_bin_entry WHERE id = ?1", [id])?;
+        removed += 1;
     }
 
-    Ok(expired.len())
+    Ok(removed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_mode_snapshots_survive_expiry_cleanup_and_cannot_be_restored() {
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        let recycle = dir.path().join("recycle");
+        let (mod_id, entry_id) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &game_root,
+            &recycle,
+            "pending.asi",
+            -1,
+        );
+        conn.execute(
+            "UPDATE installed_mod SET mode = 'fivem-client' WHERE id = ?1",
+            [mod_id],
+        )
+        .unwrap();
+        assert_eq!(sweep_expired(&conn).unwrap(), 0);
+        assert_eq!(list(&conn).unwrap().len(), 1);
+        assert!(restore(&mut conn, entry_id, &game_root, &dir.path().join("backups")).is_err());
+        assert!(!game_root.exists());
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
 
     fn setup_uninstalled_mod_with_recycle_entry(
         conn: &Connection,

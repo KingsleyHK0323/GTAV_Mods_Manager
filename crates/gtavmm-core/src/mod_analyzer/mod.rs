@@ -503,10 +503,11 @@ fn safe_seven_zip_entry_path(
     let entry_name = entry.name();
     let normalized_name = entry_name.replace('\\', "/");
     let name_bytes = normalized_name.as_bytes();
-    let has_windows_drive_prefix = name_bytes.len() >= 2
-        && name_bytes[0].is_ascii_alphabetic()
-        && name_bytes[1] == b':';
-    let has_parent_component = normalized_name.split('/').any(|component| component == "..");
+    let has_windows_drive_prefix =
+        name_bytes.len() >= 2 && name_bytes[0].is_ascii_alphabetic() && name_bytes[1] == b':';
+    let has_parent_component = normalized_name
+        .split('/')
+        .any(|component| component == "..");
 
     let unsafe_path_reason = if entry_name.is_empty() && !entry.is_directory() {
         Some("empty")
@@ -1080,7 +1081,10 @@ mod tests {
             matches!(result, Err(CoreError::UnsupportedFormat { .. })),
             "7z extraction must reject an absolute entry path"
         );
-        assert!(!escaped_path.exists(), "entry must not be written outside staging");
+        assert!(
+            !escaped_path.exists(),
+            "entry must not be written outside staging"
+        );
     }
 
     #[test]
@@ -1106,7 +1110,10 @@ mod tests {
             matches!(result, Err(CoreError::UnsupportedFormat { .. })),
             "7z extraction must reject parent-directory entry paths"
         );
-        assert!(!escaped_path.exists(), "entry must not be written outside staging");
+        assert!(
+            !escaped_path.exists(),
+            "entry must not be written outside staging"
+        );
     }
 
     #[test]

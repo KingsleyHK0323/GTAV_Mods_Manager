@@ -11,6 +11,9 @@
 //! classifier only decides *what kind* of file something is and asks the active
 //! provider *where it goes*.
 //!
+//! OpenAI-Codex: Runtime operations currently permit Legacy only. Enhanced and FiveM
+//! implementations remain here for future development and historical data compatibility.
+//!
 //! Implemented so far: [`LegacySpProvider`], [`EnhancedSpProvider`],
 //! [`LegacyLspdfrProvider`], [`EnhancedLspdfrProvider`], [`FiveMClientProvider`]. The
 //! FiveM server side (`resources\` dependency-order resolution) doesn't fit this
@@ -437,7 +440,7 @@ pub fn resolve_game_root(game_path: Option<&Path>) -> crate::error::CoreResult<(
     use crate::error::CoreError;
     use crate::game_locator::{self, DetectResult};
 
-    match game_path {
+    let resolved = match game_path {
         Some(path) => match game_locator::validate_manual_path(path)? {
             DetectResult::Found(installation) => Ok((
                 PathBuf::from(installation.install_path),
@@ -479,7 +482,61 @@ pub fn resolve_game_root(game_path: Option<&Path>) -> crate::error::CoreResult<(
                     .to_string(),
             }),
         },
+    }?;
+    ensure_game_root_available(&resolved.0)?;
+    Ok(resolved)
+}
+
+/// OpenAI-Codex: Preserve stored mode names while restricting executable workspaces.
+pub fn ensure_mode_available(mode: &str) -> crate::error::CoreResult<()> {
+    match mode {
+        "legacy-sp" | "legacy-lspdfr" | "sp" | "lspdfr" => Ok(()),
+        "enhanced-sp" | "enhanced-lspdfr" | "enhanced" => {
+            Err(crate::error::CoreError::UnsupportedFormat {
+                reason: "GTA V Enhanced support is under development".to_string(),
+            })
+        }
+        "fivem-client" | "fivem-server" | "fivem-converter" => {
+            Err(crate::error::CoreError::UnsupportedFormat {
+                reason: "FiveM support is under development".to_string(),
+            })
+        }
+        other => Err(crate::error::CoreError::UnsupportedFormat {
+            reason: format!("unknown workspace mode: {other}"),
+        }),
     }
+}
+
+/// OpenAI-Codex: Reject an Enhanced root even when a caller selects a Legacy mode.
+pub fn ensure_game_root_available(game_root: &Path) -> crate::error::CoreResult<()> {
+    if game_root.join("GTA5_Enhanced.exe").try_exists()? {
+        return ensure_mode_available("enhanced");
+    }
+    Ok(())
+}
+
+/// OpenAI-Codex: Check persisted ownership before touching an existing mod's files.
+pub fn ensure_installed_mod_available(
+    conn: &rusqlite::Connection,
+    mod_id: i64,
+) -> crate::error::CoreResult<()> {
+    let (mode, root): (Option<String>, String) = conn
+        .query_row(
+            "SELECT mode, install_path FROM installed_mod WHERE id = ?1",
+            [mod_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| {
+            if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
+                crate::error::CoreError::UnsupportedFormat {
+                    reason: format!("no installed mod with id {mod_id}"),
+                }
+            } else {
+                error.into()
+            }
+        })?;
+    ensure_mode_available(mode.as_deref().unwrap_or("legacy-sp"))?;
+    ensure_game_root_available(Path::new(&root))
 }
 
 /// Resolves the game root and [`ModeProvider`] to use for install/inspect, given an
@@ -526,11 +583,71 @@ pub fn resolve(
 mod tests {
     use super::*;
 
+    #[test]
+    fn pending_modes_are_rejected_without_resolving_paths() {
+        for mode in [
+            "enhanced-sp",
+            "enhanced-lspdfr",
+            "fivem-client",
+            "fivem-server",
+            "fivem-converter",
+        ] {
+            assert!(ensure_mode_available(mode).is_err(), "{mode}");
+        }
+        assert!(ensure_mode_available("legacy-sp").is_ok());
+        assert!(ensure_mode_available("legacy-lspdfr").is_ok());
+    }
+
+    #[test]
+    fn pending_mod_lifecycle_preserves_existing_files_and_rows() {
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("existing.asi");
+        std::fs::write(&target, b"keep existing content").unwrap();
+        for mode in ["enhanced-sp", "enhanced-lspdfr", "fivem-client"] {
+            conn.execute(
+                "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES (?1, 'asi', ?2, 'active', ?1)",
+                rusqlite::params![mode, dir.path().to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            let id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')",
+                rusqlite::params![id, target.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            let staging = dir.path().join("staging");
+            let recycle = dir.path().join("recycle");
+            assert!(crate::state::disable(&conn, id, &staging).is_err());
+            assert!(crate::uninstall::uninstall(&mut conn, id, dir.path(), &recycle).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"keep existing content");
+            assert!(!staging.exists());
+            assert!(!recycle.exists());
+            conn.execute(
+                "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+            assert!(crate::state::enable(&conn, id, &staging).is_err());
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "disabled");
+        }
+    }
+
     // OpenAI-Codex: Pending modes must not resolve through the shared entry point.
     #[test]
     fn pending_fivem_mode_is_rejected_before_path_resolution() {
         let result = resolve(None, Mode::FivemClient);
-        assert!(matches!(result, Err(crate::error::CoreError::UnsupportedFormat { .. })));
+        assert!(matches!(
+            result,
+            Err(crate::error::CoreError::UnsupportedFormat { .. })
+        ));
     }
 
     #[test]
@@ -538,7 +655,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("GTA5_Enhanced.exe"), b"").unwrap();
         let result = resolve(Some(dir.path()), Mode::Sp);
-        assert!(matches!(result, Err(crate::error::CoreError::UnsupportedFormat { .. })));
+        assert!(matches!(
+            result,
+            Err(crate::error::CoreError::UnsupportedFormat { .. })
+        ));
     }
 
     #[test]

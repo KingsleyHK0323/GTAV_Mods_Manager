@@ -84,6 +84,9 @@ pub fn uninstall(
     game_root: &Path,
     recycle_bin_root: &Path,
 ) -> CoreResult<()> {
+    // OpenAI-Codex: Reject pending workspaces before snapshots or file changes.
+    crate::providers::ensure_installed_mod_available(conn, installed_mod_id)?;
+    crate::providers::ensure_game_root_available(game_root)?;
     match mod_status(conn, installed_mod_id)? {
         None => {
             return Err(CoreError::UnsupportedFormat {

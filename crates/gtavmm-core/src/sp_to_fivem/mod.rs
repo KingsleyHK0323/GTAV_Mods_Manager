@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! SP → FiveM Add-on/vehicle-pack converter (v0.7.x, scope confirmed to **vehicle/Add-on
 //! packs only** — script mod conversion is a future, unscheduled extension).
@@ -91,6 +93,15 @@ pub struct ConversionReport {
 /// `output_dir` (created if it doesn't exist; existing contents are not cleared first —
 /// caller's responsibility, matching this project's "never silently delete" stance).
 pub fn convert_vehicle_pack(dlc_rpf: &Path, output_dir: &Path) -> CoreResult<ConversionReport> {
+    // OpenAI-Codex: No input reads or output creation while FiveM is pending.
+    crate::providers::ensure_mode_available("fivem-converter")?;
+    convert_vehicle_pack_unrestricted(dlc_rpf, output_dir)
+}
+
+fn convert_vehicle_pack_unrestricted(
+    dlc_rpf: &Path,
+    output_dir: &Path,
+) -> CoreResult<ConversionReport> {
     let file = RpfFile::open(dlc_rpf, None).map_err(|e| CoreError::SpToFivem {
         reason: format!("could not open {}: {e}", dlc_rpf.display()),
     })?;
@@ -146,6 +157,17 @@ pub fn convert_vehicle_pack(dlc_rpf: &Path, output_dir: &Path) -> CoreResult<Con
 #[cfg(test)]
 mod tests {
     use super::*;
+    // OpenAI-Codex: Exercise dormant conversion separately from its public gate.
+    use super::convert_vehicle_pack_unrestricted as convert_vehicle_pack;
+
+    #[test]
+    fn pending_converter_does_not_create_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output");
+        let result = super::convert_vehicle_pack(&dir.path().join("missing.rpf"), &output);
+        assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+        assert!(!output.exists());
+    }
     use rpf_archive::{RpfBuilder, RpfEncryption};
 
     /// Builds a minimal but realistic dlc.rpf: root-level meta files (as a real SP

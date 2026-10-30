@@ -18,6 +18,9 @@ use gtavmm_core::db::models::{InstalledMod, ModStatus};
 /// page — what the profile membership table and the global search want, and what
 /// this function did unconditionally before schema v11 gave mods a page.
 pub fn list_mods_impl(conn: &Connection, mode: Option<&str>) -> Result<Vec<InstalledMod>, String> {
+    if let Some(mode) = mode {
+        crate::page_mode::PageMode::parse(mode)?.ensure_available()?;
+    }
     let mut stmt = conn
         .prepare(
             "SELECT id, name, source_type, install_path, installed_at, status, notes, link,              mode, mode_inferred, category              FROM installed_mod WHERE (?1 IS NULL OR mode = ?1) ORDER BY id ASC",
@@ -66,6 +69,9 @@ pub fn list_mods(
 /// check something they have already checked.
 pub fn set_mod_mode_impl(conn: &Connection, mod_id: i64, mode: &str) -> Result<(), String> {
     let page = crate::page_mode::PageMode::parse(mode)?;
+    page.ensure_available()?;
+    gtavmm_core::providers::ensure_installed_mod_available(conn, mod_id)
+        .map_err(|error| error.to_string())?;
     let changed = conn
         .execute(
             "UPDATE installed_mod SET mode = ?1, mode_inferred = 0 WHERE id = ?2",
@@ -186,6 +192,9 @@ pub fn convert_vehicle_pack(
 /// stay accepted because the converter and the read-only inspect path have no
 /// page to speak of and never had one.
 fn mode_from_str(mode: &str) -> Result<gtavmm_core::providers::Mode, String> {
+    if matches!(mode, "enhanced-sp" | "enhanced-lspdfr" | "fivem-client") {
+        gtavmm_core::providers::ensure_mode_available(mode).map_err(|error| error.to_string())?;
+    }
     match mode {
         "sp" => Ok(gtavmm_core::providers::Mode::Sp),
         "lspdfr" => Ok(gtavmm_core::providers::Mode::Lspdfr),
@@ -244,6 +253,7 @@ fn ensure_page_game_edition(
     page: crate::page_mode::PageMode,
     game_root: &std::path::Path,
 ) -> Result<(), String> {
+    page.ensure_available()?;
     let Some(expected) = page.expected_game_edition() else {
         return Ok(());
     };
@@ -274,6 +284,7 @@ fn resolve_page_target(
     String,
 > {
     let page = crate::page_mode::PageMode::parse(mode)?;
+    page.ensure_available()?;
     let core_mode = page.provider_mode();
     let effective_game_path = effective_game_path_impl(conn, game_path, core_mode)?;
     let game_path = normalize_game_path_for_mode(effective_game_path.as_deref(), core_mode)?;
@@ -1152,6 +1163,7 @@ fn full_backup_edition_for_mode(
     mode: &str,
 ) -> Result<gtavmm_core::full_backup::GameEdition, String> {
     let page = crate::page_mode::PageMode::parse(mode)?;
+    page.ensure_available()?;
     match page.expected_game_edition() {
         Some("legacy") => Ok(gtavmm_core::full_backup::GameEdition::Legacy),
         Some("enhanced") => Ok(gtavmm_core::full_backup::GameEdition::Enhanced),
@@ -1757,6 +1769,7 @@ pub fn reinstall_mod_impl(
         recycle_bin_root,
         options,
     )
+    .and_then(gtavmm_core::install::InstallOutcome::require_success)
     .map_err(|e| e.to_string());
     if let Err(reason) = &result {
         let _ =
@@ -1914,6 +1927,8 @@ pub fn load_fivem_client_path(
 }
 
 pub fn save_fivem_client_path_impl(conn: &Connection, path: &str) -> Result<String, String> {
+    gtavmm_core::providers::ensure_mode_available("fivem-client")
+        .map_err(|error| error.to_string())?;
     let path = path.trim();
     if path.is_empty() {
         return Err("FiveM Client path cannot be empty".to_string());
@@ -2270,7 +2285,7 @@ mod tests {
             Ok(_) => panic!("a Legacy LSPDFR page must reject an Enhanced install"),
         };
 
-        assert!(err.contains("requires a legacy"), "{err}");
+        assert!(err.contains("under development"), "{err}");
     }
 
     #[test]
@@ -2293,10 +2308,7 @@ mod tests {
             full_backup_edition_for_mode("legacy-sp").unwrap(),
             gtavmm_core::full_backup::GameEdition::Legacy
         );
-        assert_eq!(
-            full_backup_edition_for_mode("enhanced-lspdfr").unwrap(),
-            gtavmm_core::full_backup::GameEdition::Enhanced
-        );
+        assert!(full_backup_edition_for_mode("enhanced-lspdfr").is_err());
         assert!(full_backup_edition_for_mode("fivem-client").is_err());
         assert!(full_backup_edition_for_mode("sp").is_err());
     }
@@ -2387,7 +2399,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("requires a legacy"), "{err}");
+        assert!(err.contains("under development"), "{err}");
     }
 
     #[test]
@@ -2429,7 +2441,7 @@ mod tests {
     }
 
     #[test]
-    fn fivem_preview_uses_the_explicit_client_path_instead_of_the_saved_gta_path() {
+    fn pending_fivem_preview_preserves_both_roots() {
         let conn = gtavmm_core::db::open_in_memory().unwrap();
         let saved_game_dir = fake_game_root();
         let client_dir = tempfile::tempdir().unwrap();
@@ -2438,18 +2450,17 @@ mod tests {
         std::fs::write(&asi_path, b"fake asi bytes").unwrap();
         complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
 
-        let plan = inspect_mod_for_settings_impl(
+        let err = inspect_mod_for_settings_impl(
             &conn,
             client_dir.path().to_str(),
             "fivem-client",
             asi_path.to_str().unwrap(),
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(
-            plan.files[0].target,
-            client_dir.path().join("ClientMod.asi")
-        );
+        assert!(err.contains("under development"), "{err}");
+        assert!(!client_dir.path().join("ClientMod.asi").exists());
+        assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
     }
 
     #[test]
@@ -2465,10 +2476,7 @@ mod tests {
             inspect_mod_for_settings_impl(&conn, None, "fivem-client", asi_path.to_str().unwrap())
                 .unwrap_err();
 
-        assert!(
-            err.contains("fivem-client requires an explicit client directory"),
-            "{err}"
-        );
+        assert!(err.contains("under development"), "{err}");
     }
 
     #[test]
@@ -2536,7 +2544,7 @@ mod tests {
         };
         assert_eq!(names(Some("legacy-sp")), vec!["Menyoo"]);
         assert_eq!(names(Some("legacy-lspdfr")), vec!["Better Chases"]);
-        assert_eq!(names(Some("enhanced-sp")), Vec::<String>::new());
+        assert!(list_mods_impl(&conn, Some("enhanced-sp")).is_err());
         // No filter still means everything — the profile membership table and
         // the global search both depend on that.
         assert_eq!(names(None).len(), 3);
@@ -2559,6 +2567,25 @@ mod tests {
         assert_eq!(moved.len(), 1);
         assert!(!moved[0].mode_inferred, "a correction is not a guess");
         assert!(list_mods_impl(&conn, Some("legacy-sp")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_mod_cannot_be_relabelled_to_bypass_its_restriction() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('Pending', 'asi', '/unused', 'active', 'fivem-client')",
+            [],
+        ).unwrap();
+        let id = conn.last_insert_rowid();
+        assert!(set_mod_mode_impl(&conn, id, "legacy-sp").is_err());
+        let mode: String = conn
+            .query_row(
+                "SELECT mode FROM installed_mod WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mode, "fivem-client");
     }
 
     #[test]
@@ -2630,7 +2657,7 @@ mod tests {
     }
 
     #[test]
-    fn fivem_install_uses_the_explicit_client_path_instead_of_the_saved_gta_path() {
+    fn pending_fivem_install_preserves_files_and_database() {
         let mut conn = gtavmm_core::db::open_in_memory().unwrap();
         let saved_game_dir = fake_game_root();
         let client_dir = tempfile::tempdir().unwrap();
@@ -2640,7 +2667,7 @@ mod tests {
         std::fs::write(&asi_path, b"fake asi bytes").unwrap();
         complete_onboarding_impl(&conn, saved_game_dir.path().to_str()).unwrap();
 
-        install_mod_impl(
+        let err = install_mod_impl(
             &mut conn,
             client_dir.path().to_str(),
             "fivem-client",
@@ -2649,10 +2676,12 @@ mod tests {
             false,
             backup_dir.path(),
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(client_dir.path().join("ClientMod.asi").exists());
+        assert!(err.contains("under development"), "{err}");
+        assert!(!client_dir.path().join("ClientMod.asi").exists());
         assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
 
     #[test]
@@ -2676,10 +2705,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            err.contains("fivem-client requires an explicit client directory"),
-            "{err}"
-        );
+        assert!(err.contains("under development"), "{err}");
         assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
@@ -2707,10 +2733,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            err.contains("is not an existing FiveM client directory"),
-            "{err}"
-        );
+        assert!(err.contains("under development"), "{err}");
         assert!(!saved_game_dir.path().join("ClientMod.asi").exists());
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
@@ -2761,7 +2784,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("requires a legacy"), "{err}");
+        assert!(err.contains("under development"), "{err}");
         assert!(!game_dir.path().join("SomeMod.asi").exists());
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
     }
@@ -2836,7 +2859,7 @@ mod tests {
             dir.path().join("out").to_str().unwrap(),
         )
         .unwrap_err();
-        assert!(err.contains("SP → FiveM"));
+        assert!(err.contains("under development"));
     }
 
     #[test]
@@ -2849,29 +2872,30 @@ mod tests {
     }
 
     #[test]
-    fn fivem_resolve_load_order_impl_orders_by_dependency() {
+    fn pending_fivem_load_order_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "core-lib", "fx_version 'cerulean'\n");
         write_manifest(dir.path(), "framework", "dependency 'core-lib'\n");
 
-        let order = fivem_resolve_load_order_impl(dir.path().to_str().unwrap()).unwrap();
-        let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
-        assert!(pos("core-lib") < pos("framework"));
+        let err = fivem_resolve_load_order_impl(dir.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("under development"), "{err}");
     }
 
     #[test]
-    fn fivem_apply_load_order_impl_writes_server_cfg() {
+    fn pending_fivem_load_order_preserves_server_cfg() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "core-lib", "fx_version 'cerulean'\n");
         let server_cfg = dir.path().join("server.cfg");
         std::fs::write(&server_cfg, "sv_hostname \"Test\"\n").unwrap();
 
-        fivem_apply_load_order_impl(dir.path().to_str().unwrap(), server_cfg.to_str().unwrap())
-            .unwrap();
+        let err =
+            fivem_apply_load_order_impl(dir.path().to_str().unwrap(), server_cfg.to_str().unwrap())
+                .unwrap_err();
+        assert!(err.contains("under development"), "{err}");
 
         let contents = std::fs::read_to_string(&server_cfg).unwrap();
         assert!(contents.contains("sv_hostname \"Test\""));
-        assert!(contents.contains("ensure core-lib"));
+        assert_eq!(contents, "sv_hostname \"Test\"\n");
     }
 
     #[test]
@@ -3099,7 +3123,7 @@ mod tests {
 
     // OpenAI-Codex: Cover page-aware uninstall routing for the FiveM client root.
     #[test]
-    fn fivem_client_uninstall_uses_the_explicit_client_root() {
+    fn pending_fivem_uninstall_preserves_deployed_files() {
         let client_dir = tempfile::tempdir().unwrap();
         let deployed = client_dir.path().join("client-mod.asi");
         std::fs::write(&deployed, b"FiveM client mod").unwrap();
@@ -3119,21 +3143,19 @@ mod tests {
         )
         .unwrap();
 
-        uninstall_mod_for_page_impl(
+        let err = uninstall_mod_for_page_impl(
             &mut conn,
             mod_id,
             Some(client_dir.path().to_str().unwrap()),
             "fivem-client",
             &client_dir.path().join("recycle_bin"),
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(
-            !deployed.exists(),
-            "uninstall should remove the deployed client file"
-        );
-        assert_eq!(status_of(&conn, mod_id), "uninstalled");
-        assert_eq!(gtavmm_core::recycle_bin::list(&conn).unwrap().len(), 1);
+        assert!(err.contains("under development"), "{err}");
+        assert_eq!(std::fs::read(&deployed).unwrap(), b"FiveM client mod");
+        assert_eq!(status_of(&conn, mod_id), "active");
+        assert!(gtavmm_core::recycle_bin::list(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -3208,7 +3230,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.contains("requires a legacy"), "{err}");
+        assert!(err.contains("under development"), "{err}");
         assert_eq!(std::fs::read(&deployed).unwrap(), before);
         assert_eq!(status_of(&conn, id), "active");
     }

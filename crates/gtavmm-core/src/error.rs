@@ -21,6 +21,9 @@ pub enum CoreError {
     #[error("conflict with a different mod's file: {path} (owned by mod #{owner_mod_id})")]
     ForeignConflict { path: PathBuf, owner_mod_id: i64 },
 
+    #[error("existing file is not tracked by this app; confirmation is required before overwriting: {path}")]
+    UntrackedFileConflict { path: PathBuf },
+
     #[error("database error")]
     Database(#[from] rusqlite::Error),
 

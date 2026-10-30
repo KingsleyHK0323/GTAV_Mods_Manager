@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Which workspace page a mod belongs to.
 //!
@@ -30,6 +32,12 @@ pub enum PageMode {
 }
 
 impl PageMode {
+    /// OpenAI-Codex: Parsing historical names must not enable pending workspaces.
+    pub fn ensure_available(self) -> Result<(), String> {
+        gtavmm_core::providers::ensure_mode_available(self.as_str())
+            .map_err(|error| error.to_string())
+    }
+
     /// The stored form, matching what schema v11 writes into `installed_mod.mode`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -74,6 +82,20 @@ impl PageMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_pages_remain_readable_but_cannot_be_activated() {
+        for page in [
+            PageMode::EnhancedSp,
+            PageMode::EnhancedLspdfr,
+            PageMode::FivemClient,
+        ] {
+            assert_eq!(PageMode::parse(page.as_str()), Ok(page));
+            assert!(page.ensure_available().is_err());
+        }
+        assert!(PageMode::LegacySp.ensure_available().is_ok());
+        assert!(PageMode::LegacyLspdfr.ensure_available().is_ok());
+    }
 
     #[test]
     fn every_page_round_trips_through_its_stored_form() {

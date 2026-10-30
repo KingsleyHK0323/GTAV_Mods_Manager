@@ -82,6 +82,19 @@ fn create_with_edition(
     backup_root: &Path,
     edition: Option<GameEdition>,
 ) -> CoreResult<PathBuf> {
+    // OpenAI-Codex: Validate the target and requested edition before creating files.
+    crate::providers::ensure_game_root_available(game_root)?;
+    if edition == Some(GameEdition::Enhanced) {
+        crate::providers::ensure_mode_available("enhanced")?;
+    }
+    create_with_edition_unrestricted(game_root, backup_root, edition)
+}
+
+fn create_with_edition_unrestricted(
+    game_root: &Path,
+    backup_root: &Path,
+    edition: Option<GameEdition>,
+) -> CoreResult<PathBuf> {
     let mods_dir = game_root.join(MODS_SUBFOLDER);
     if !mods_dir.is_dir() {
         return Err(CoreError::UnsupportedFormat {
@@ -161,8 +174,12 @@ pub fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<
 /// deletes files that aren't present in the archive. This is the unscoped CLI helper;
 /// the App should call [`restore_for_edition`].
 pub fn restore(zip_path: &Path, game_root: &Path) -> CoreResult<()> {
+    crate::providers::ensure_game_root_available(game_root)?;
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(zip_err("reading backup zip"))?;
+    if edition_from_archive(&archive) == Some(GameEdition::Enhanced) {
+        crate::providers::ensure_mode_available("enhanced")?;
+    }
     extract_archive(&mut archive, game_root)
 }
 
@@ -172,6 +189,10 @@ pub fn restore_for_edition(
     game_root: &Path,
     expected_edition: GameEdition,
 ) -> CoreResult<()> {
+    crate::providers::ensure_game_root_available(game_root)?;
+    if expected_edition == GameEdition::Enhanced {
+        crate::providers::ensure_mode_available("enhanced")?;
+    }
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(zip_err("reading backup zip"))?;
     let actual_edition = edition_from_archive(&archive);
@@ -235,6 +256,22 @@ fn zip_err(context: &'static str) -> impl Fn(zip::result::ZipError) -> CoreError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_backup_operations_do_not_create_target_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let backups = dir.path().join("backups");
+        assert!(create_for_edition(&game, &backups, GameEdition::Enhanced).is_err());
+        assert!(!backups.exists());
+        assert!(restore_for_edition(
+            &dir.path().join("missing.zip"),
+            &game,
+            GameEdition::Enhanced
+        )
+        .is_err());
+        assert!(!game.exists());
+    }
 
     #[test]
     fn create_fails_when_mods_folder_does_not_exist() {
@@ -320,7 +357,10 @@ mod tests {
         let legacy = create_for_edition(&game_root, &backup_root, GameEdition::Legacy).unwrap();
         let legacy_path = legacy.with_file_name("legacy.zip");
         std::fs::rename(legacy, &legacy_path).unwrap();
-        let enhanced = create_for_edition(&game_root, &backup_root, GameEdition::Enhanced).unwrap();
+        // OpenAI-Codex: Build an old-format fixture without enabling the pending API.
+        let enhanced =
+            create_with_edition_unrestricted(&game_root, &backup_root, Some(GameEdition::Enhanced))
+                .unwrap();
         let enhanced_path = enhanced.with_file_name("enhanced.zip");
         std::fs::rename(enhanced, &enhanced_path).unwrap();
         let unmarked = create(&game_root, &backup_root).unwrap();
@@ -367,7 +407,7 @@ mod tests {
         let mismatch = restore_for_edition(&legacy, &enhanced_target, GameEdition::Enhanced)
             .unwrap_err()
             .to_string();
-        assert!(mismatch.contains("Legacy"));
+        assert!(mismatch.contains("under development"));
         assert!(mismatch.contains("Enhanced"));
         assert!(!enhanced_target.join(MODS_SUBFOLDER).exists());
 

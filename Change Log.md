@@ -10,9 +10,13 @@
 ### Changed
 
 - Marked FiveM client and GTA V Enhanced provider resolution as under development while focusing on Legacy; other mode entry points still require restrictions.
+- Extended pending-mode restrictions to existing mod lifecycle actions, profile switching, recycle-bin restoration, full-backup operations, FiveM server tools and conversion, and CLI mode selection. Preserved stored data and pending-mode recycle-bin snapshots; UI changes are deferred.
+- Corrected Rust formatting in provider tests and existing 7z path-validation code.
 
 ### Fixed
 
+- Require confirmation before overwriting untracked existing files, report unknown owners without fabricated IDs, and restrict reinstall exemptions to matching restored-original content.
+- Require confirmation for all tracked file ownership conflicts, even when overlap suggests an update; validate a reinstall package and unrelated conflicts before removing the current version.
 - Restored newly written and overwritten files when an install database transaction fails.
 - Report filesystem rollback failures alongside the original install database error.
 - Continue remaining rollback actions after failures, report each failure, and preserve existing DLC entries and files when their backups are missing.

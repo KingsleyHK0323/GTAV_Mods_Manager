@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! FiveM support: server `resources\` dependency-order resolution (this module) and a
 //! client-side asset-mod provider (`providers::FiveMClientProvider`).
@@ -151,6 +153,12 @@ pub fn discover_resources(resources_root: &Path) -> CoreResult<Vec<ResourceInfo>
 /// Returns `CoreError::DependencyGraph` if a genuine cycle exists among the resources
 /// that *were* discovered (impossible to produce any valid order).
 pub fn resolve_load_order(resources_root: &Path) -> CoreResult<Vec<String>> {
+    // OpenAI-Codex: Keep the implementation available for future development only.
+    crate::providers::ensure_mode_available("fivem-server")?;
+    resolve_load_order_unrestricted(resources_root)
+}
+
+fn resolve_load_order_unrestricted(resources_root: &Path) -> CoreResult<Vec<String>> {
     let resources = discover_resources(resources_root)?;
     let known: HashSet<&str> = resources.iter().map(|r| r.name.as_str()).collect();
 
@@ -229,7 +237,15 @@ const MANAGED_BLOCK_END: &str = "# --- END managed by GTAV Mods Manager (fivem-r
 /// new one otherwise. Every other line — server settings, unrelated `ensure`s, manual
 /// edits — is left untouched.
 pub fn apply_load_order(resources_root: &Path, server_cfg_path: &Path) -> CoreResult<Vec<String>> {
-    let order = resolve_load_order(resources_root)?;
+    crate::providers::ensure_mode_available("fivem-server")?;
+    apply_load_order_unrestricted(resources_root, server_cfg_path)
+}
+
+fn apply_load_order_unrestricted(
+    resources_root: &Path,
+    server_cfg_path: &Path,
+) -> CoreResult<Vec<String>> {
+    let order = resolve_load_order_unrestricted(resources_root)?;
 
     let existing = std::fs::read_to_string(server_cfg_path).unwrap_or_default();
     let mut block = String::new();
@@ -270,6 +286,24 @@ pub fn apply_load_order(resources_root: &Path, server_cfg_path: &Path) -> CoreRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    // OpenAI-Codex: Retain coverage of dormant implementations and test the gate below.
+    use super::{
+        apply_load_order_unrestricted as apply_load_order,
+        resolve_load_order_unrestricted as resolve_load_order,
+    };
+
+    #[test]
+    fn pending_server_operations_do_not_modify_existing_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let server_cfg = dir.path().join("server.cfg");
+        std::fs::write(&server_cfg, b"existing configuration").unwrap();
+        assert!(super::resolve_load_order(dir.path()).is_err());
+        assert!(super::apply_load_order(dir.path(), &server_cfg).is_err());
+        assert_eq!(
+            std::fs::read(&server_cfg).unwrap(),
+            b"existing configuration"
+        );
+    }
 
     fn write_manifest(dir: &Path, name: &str, body: &str) {
         let resource_dir = dir.join(name);

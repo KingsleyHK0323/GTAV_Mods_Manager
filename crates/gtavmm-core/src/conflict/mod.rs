@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Compares a planned install's target files against existing `InstalledModFile` rows
 //! (the "who owns which file" ownership tracking that lets the core distinguish, e.g.,
@@ -9,18 +11,19 @@
 //!   checked independently of everything else below.
 //! - **Self-update** — the planned targets overlap mostly with one *existing active*
 //!   mod's own files (overlap ratio ≥ [`SELF_UPDATE_OVERLAP_THRESHOLD`]) → suggested,
-//!   not forced; caller may proceed without extra confirmation ("warn, one-click
-//!   continue").
+//!   not forced; the overlap still requires explicit confirmation.
 //! - **Foreign conflict** — a planned target matches a file owned by a *different*
 //!   active mod → requires explicit override from the caller before `install`
 //!   proceeds.
+//! - **Untracked existing file** — a target exists without a recorded active owner;
+//!   it also requires confirmation, with no fabricated owner ID.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 use crate::protected_files;
 
 /// Overlap ratio (matching files / existing mod's total files) at or above which we
@@ -43,7 +46,8 @@ pub struct ProtectedHit {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ForeignConflict {
-    pub owner_mod_id: i64,
+    /// None when the target exists but has no active owner recorded by this app.
+    pub owner_mod_id: Option<i64>,
     pub owner_name: String,
     pub path: PathBuf,
 }
@@ -99,6 +103,19 @@ fn load_active_files(conn: &Connection) -> CoreResult<Vec<ExistingFile>> {
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// OpenAI-Codex: Compare existing aliases consistently while retaining display paths.
+fn comparison_key(path: &Path) -> PathBuf {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(windows)]
+    {
+        PathBuf::from(resolved.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        resolved
+    }
+}
+
 /// Analyzes `planned_targets` (absolute paths this install would write) against the
 /// database's current active-mod file ownership.
 pub fn analyze(conn: &Connection, planned_targets: &[PathBuf]) -> CoreResult<ConflictReport> {
@@ -113,8 +130,38 @@ pub fn analyze(conn: &Connection, planned_targets: &[PathBuf]) -> CoreResult<Con
     }
 
     let existing = load_active_files(conn)?;
-    let planned_set: std::collections::HashSet<&Path> =
-        planned_targets.iter().map(PathBuf::as_path).collect();
+    let tracked_targets: std::collections::HashSet<PathBuf> = existing
+        .iter()
+        .map(|file| comparison_key(Path::new(&file.target_path)))
+        .collect();
+    let mut untracked_targets = std::collections::HashSet::new();
+    for target in planned_targets {
+        if protected_files::is_protected(target) {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(CoreError::UnsupportedFormat {
+                reason: format!("install target is not a regular file: {}", target.display()),
+            });
+        }
+        let key = comparison_key(target);
+        if !tracked_targets.contains(&key) && untracked_targets.insert(key) {
+            report.foreign_conflicts.push(ForeignConflict {
+                owner_mod_id: None,
+                owner_name: "Unknown (existing file not tracked by this app)".to_string(),
+                path: target.clone(),
+            });
+        }
+    }
+    let planned_set: std::collections::HashSet<PathBuf> = planned_targets
+        .iter()
+        .map(|path| comparison_key(path))
+        .collect();
 
     // Group existing files by owning mod so we can compute a per-mod overlap ratio.
     let mut by_mod: HashMap<i64, (String, Vec<String>)> = HashMap::new();
@@ -133,7 +180,7 @@ pub fn analyze(conn: &Connection, planned_targets: &[PathBuf]) -> CoreResult<Con
         }
         let overlap_count = paths
             .iter()
-            .filter(|p| planned_set.contains(Path::new(p.as_str())))
+            .filter(|p| planned_set.contains(&comparison_key(Path::new(p.as_str()))))
             .count();
         let ratio = overlap_count as f64 / paths.len() as f64;
         if ratio >= SELF_UPDATE_OVERLAP_THRESHOLD {
@@ -151,14 +198,11 @@ pub fn analyze(conn: &Connection, planned_targets: &[PathBuf]) -> CoreResult<Con
     }
     report.self_update = best_suggestion;
 
-    let self_update_mod_id = report.self_update.as_ref().map(|s| s.existing_mod_id);
     for file in &existing {
-        if Some(file.mod_id) == self_update_mod_id {
-            continue; // this overlap is the accepted self-update, not a foreign conflict
-        }
-        if planned_set.contains(Path::new(file.target_path.as_str())) {
+        // OpenAI-Codex: A similarity hint is not proof of ownership or consent.
+        if planned_set.contains(&comparison_key(Path::new(file.target_path.as_str()))) {
             report.foreign_conflicts.push(ForeignConflict {
-                owner_mod_id: file.mod_id,
+                owner_mod_id: Some(file.mod_id),
                 owner_name: file.mod_name.clone(),
                 path: PathBuf::from(&file.target_path),
             });
@@ -171,6 +215,76 @@ pub fn analyze(conn: &Connection, planned_targets: &[PathBuf]) -> CoreResult<Con
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_target_is_rejected_before_overwriting_its_destination() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.asi");
+        let target = dir.path().join("link.asi");
+        std::fs::write(&original, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&original, &target).unwrap();
+        assert!(analyze(&conn, &[target]).is_err());
+        assert_eq!(std::fs::read(original).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn existing_untracked_file_requires_confirmation_without_an_owner_id() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("existing.asi");
+        std::fs::write(&target, b"manual installation").unwrap();
+        let report = analyze(&conn, &[target.clone(), target.clone()]).unwrap();
+        assert!(report.requires_explicit_override());
+        assert_eq!(report.foreign_conflicts.len(), 1);
+        assert_eq!(report.foreign_conflicts[0].owner_mod_id, None);
+        assert_eq!(report.foreign_conflicts[0].path, target);
+    }
+
+    #[test]
+    fn known_owner_is_not_also_reported_as_untracked() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("existing.asi");
+        std::fs::write(&target, b"existing").unwrap();
+        let owner = insert_active_mod(&conn, "Existing", &[target.to_str().unwrap()]);
+        let report = analyze(&conn, &[target]).unwrap();
+        assert_eq!(report.foreign_conflicts.len(), 1);
+        assert_eq!(report.foreign_conflicts[0].owner_mod_id, Some(owner));
+    }
+
+    #[test]
+    fn existing_directory_is_not_an_overridable_file_conflict() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(analyze(&conn, &[dir.path().to_path_buf()]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_case_alias_of_existing_target_is_a_conflict() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("Shared.asi");
+        std::fs::write(&existing, b"existing").unwrap();
+        let owner = insert_active_mod(&conn, "Existing", &[existing.to_str().unwrap()]);
+        let alias = dir.path().join("shared.ASI");
+        let report = analyze(&conn, &[alias]).unwrap();
+        assert!(report.requires_explicit_override());
+        assert_eq!(report.foreign_conflicts[0].owner_mod_id, Some(owner));
+    }
+
+    #[test]
+    fn unrelated_single_file_overlap_requires_confirmation_despite_update_hint() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let owner = insert_active_mod(&conn, "Unrelated original", &["/game/shared.asi"]);
+        let report = analyze(&conn, &[PathBuf::from("/game/shared.asi")]).unwrap();
+        assert_eq!(report.self_update.as_ref().unwrap().existing_mod_id, owner);
+        assert!(report.requires_explicit_override());
+        assert_eq!(report.foreign_conflicts.len(), 1);
+        assert_eq!(report.foreign_conflicts[0].owner_mod_id, Some(owner));
+    }
 
     fn insert_active_mod(conn: &Connection, name: &str, files: &[&str]) -> i64 {
         conn.execute(
@@ -224,11 +338,8 @@ mod tests {
             .expect("expected a self-update suggestion");
         assert_eq!(suggestion.existing_name, "CoolMod");
         assert_eq!(suggestion.overlap_ratio, 1.0);
-        assert!(
-            report.foreign_conflicts.is_empty(),
-            "self-update overlap must not also be a foreign conflict"
-        );
-        assert!(!report.requires_explicit_override());
+        assert_eq!(report.foreign_conflicts.len(), 2);
+        assert!(report.requires_explicit_override());
     }
 
     #[test]

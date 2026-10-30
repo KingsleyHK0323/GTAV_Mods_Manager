@@ -166,12 +166,42 @@ pub enum InstallOutcome {
         files_written: usize,
     },
     /// Refused: at least one target collides with a *different* mod's file, and
-    /// `InstallOptions::override_foreign_conflicts` was not set. No filesystem
-    /// changes were made. Re-invoke with the flag set after obtaining user consent.
+    /// `InstallOptions::override_foreign_conflicts` was not set. Direct installs
+    /// do not write files before this result. Reinstall performs a preflight, but
+    /// a later conflict can arise after uninstall if the filesystem or DB changes.
     RequiresOverride(ConflictReport),
     /// Refused, unconditionally: at least one target is on the `protected_files`
-    /// list. No filesystem changes were made, and no option can bypass this.
+    /// list. No option can bypass this; see the reinstall caveat above.
     ProtectedFileBlocked(Vec<PathBuf>),
+}
+
+impl InstallOutcome {
+    /// OpenAI-Codex: Do not let callers treat a refused operation as successful.
+    pub fn require_success(self) -> CoreResult<Self> {
+        match &self {
+            Self::Success { .. } => Ok(self),
+            Self::RequiresOverride(report) => match report.foreign_conflicts.first() {
+                Some(conflict) => match conflict.owner_mod_id {
+                    Some(owner_mod_id) => Err(CoreError::ForeignConflict {
+                        path: conflict.path.clone(),
+                        owner_mod_id,
+                    }),
+                    None => Err(CoreError::UntrackedFileConflict {
+                        path: conflict.path.clone(),
+                    }),
+                },
+                None => Err(CoreError::UnsupportedFormat {
+                    reason: "the installation requires conflict confirmation".to_string(),
+                }),
+            },
+            Self::ProtectedFileBlocked(paths) => match paths.first() {
+                Some(path) => Err(CoreError::ProtectedFileViolation { path: path.clone() }),
+                None => Err(CoreError::UnsupportedFormat {
+                    reason: "the installation targets a protected file".to_string(),
+                }),
+            },
+        }
+    }
 }
 
 fn source_type_str(format: &ModFormat) -> CoreResult<&'static str> {
@@ -205,11 +235,37 @@ pub fn install(
     options: InstallOptions,
     source_path: &Path,
 ) -> CoreResult<InstallOutcome> {
+    install_with_expected_restores(
+        conn,
+        name,
+        plan,
+        game_root,
+        backup_root,
+        options,
+        source_path,
+        &std::collections::HashMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_with_expected_restores(
+    conn: &mut Connection,
+    name: &str,
+    plan: &ModPlan,
+    game_root: &Path,
+    backup_root: &Path,
+    options: InstallOptions,
+    source_path: &Path,
+    expected_restores: &std::collections::HashMap<PathBuf, String>,
+) -> CoreResult<InstallOutcome> {
+    // OpenAI-Codex: Shared protection for callers that already hold a plan.
+    crate::providers::ensure_game_root_available(game_root)?;
     let source_type = source_type_str(&plan.format)?;
 
     // --- ConflictCheck ---
     let targets: Vec<PathBuf> = plan.files.iter().map(|f| f.target.clone()).collect();
-    let report = conflict::analyze(conn, &targets)?;
+    let mut report = conflict::analyze(conn, &targets)?;
+    retain_unexpected_conflicts(&mut report, expected_restores)?;
 
     if report.has_protected_hits() {
         let paths = report
@@ -331,6 +387,37 @@ pub fn install(
     })
 }
 
+/// OpenAI-Codex: A reinstall may recognize only its own unchanged restored originals.
+fn retain_unexpected_conflicts(
+    report: &mut ConflictReport,
+    expected_restores: &std::collections::HashMap<PathBuf, String>,
+) -> CoreResult<()> {
+    let conflicts = std::mem::take(&mut report.foreign_conflicts);
+    for conflict in conflicts {
+        if conflict.owner_mod_id.is_none() {
+            if let Some(expected_hash) = expected_restores.get(&rollback_target_key(&conflict.path))
+            {
+                if !std::fs::symlink_metadata(&conflict.path)?
+                    .file_type()
+                    .is_file()
+                {
+                    return Err(CoreError::UnsupportedFormat {
+                        reason: format!(
+                            "restored target is not a regular file: {}",
+                            conflict.path.display()
+                        ),
+                    });
+                }
+                if &hash_file(&conflict.path)? == expected_hash {
+                    continue;
+                }
+            }
+        }
+        report.foreign_conflicts.push(conflict);
+    }
+    Ok(())
+}
+
 /// Reinstalls `mod_id` from `new_source_path` — uninstalling its current files first
 /// (if not already uninstalled), then running the normal install pipeline against the
 /// new source. This is the backing implementation for the AI Action Schema's
@@ -358,6 +445,9 @@ pub fn reinstall(
     recycle_bin_root: &Path,
     options: InstallOptions,
 ) -> CoreResult<InstallOutcome> {
+    // OpenAI-Codex: Check both workspaces before uninstalling the previous version.
+    crate::providers::ensure_installed_mod_available(conn, mod_id)?;
+    crate::providers::ensure_game_root_available(game_root)?;
     let (old_name, status): (String, String) = conn
         .query_row(
             "SELECT name, status FROM installed_mod WHERE id = ?1",
@@ -374,13 +464,113 @@ pub fn reinstall(
             }
         })?;
 
+    // OpenAI-Codex: Validate the new package and unrelated conflicts before removal.
+    // Keep this plan alive: archive source paths belong to its staging directory.
+    let plan = crate::mod_analyzer::classify(new_source_path, provider)?;
+    source_type_str(&plan.format)?;
+    if plan.files.is_empty() {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "the new package contains no installable files".to_string(),
+        });
+    }
+    for file in &plan.files {
+        if !std::fs::metadata(&file.source)?.is_file() {
+            return Err(CoreError::UnsupportedFormat {
+                reason: format!(
+                    "install source is not a regular file: {}",
+                    file.source.display()
+                ),
+            });
+        }
+        match std::fs::metadata(&file.target) {
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!(
+                        "install target is not a regular file: {}",
+                        file.target.display()
+                    ),
+                });
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error.into());
+            }
+            _ => {}
+        }
+    }
+    let targets: Vec<PathBuf> = plan.files.iter().map(|file| file.target.clone()).collect();
+    let mut report = conflict::analyze(conn, &targets)?;
+    if report.has_protected_hits() {
+        return Ok(InstallOutcome::ProtectedFileBlocked(
+            report
+                .protected_hits
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect(),
+        ));
+    }
+    report
+        .foreign_conflicts
+        .retain(|conflict| conflict.owner_mod_id != Some(mod_id));
+    if report
+        .self_update
+        .as_ref()
+        .is_some_and(|suggestion| suggestion.existing_mod_id == mod_id)
+    {
+        report.self_update = None;
+    }
+    if report.requires_explicit_override() && !options.override_foreign_conflicts {
+        return Ok(InstallOutcome::RequiresOverride(report));
+    }
+
+    let mut expected_restores = std::collections::HashMap::new();
     if status != "uninstalled" {
+        let mut statement = conn.prepare(
+            "SELECT target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
+        )?;
+        let old_targets: Vec<(String, Option<String>)> = statement
+            .query_map([mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        drop(statement);
+        let mut old_paths = std::collections::HashSet::new();
+        let planned_keys: std::collections::HashSet<PathBuf> = targets
+            .iter()
+            .map(|path| rollback_target_key(path))
+            .collect();
+        for (target, backup) in old_targets {
+            // OpenAI-Codex: Uninstall touches every old target, including files
+            // absent from the update, so validate all recorded backups first.
+            if let Some(backup) = backup {
+                if !std::fs::symlink_metadata(&backup)?.file_type().is_file() {
+                    return Err(CoreError::UnsupportedFormat {
+                        reason: format!("backup is not a regular file: {backup}"),
+                    });
+                }
+                let key = rollback_target_key(Path::new(&target));
+                if planned_keys.contains(&key) {
+                    expected_restores.insert(key, hash_file(Path::new(&backup))?);
+                }
+            }
+            match std::fs::canonicalize(&target) {
+                Ok(path) => {
+                    old_paths.insert(rollback_target_key(&path));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for file in &plan.files {
+            let source = std::fs::canonicalize(&file.source)?;
+            if old_paths.contains(&rollback_target_key(&source)) {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!("the new package uses a currently deployed file as its source: {}; choose the original package instead", file.source.display()),
+                });
+            }
+        }
         crate::uninstall::uninstall(conn, mod_id, game_root, recycle_bin_root)?;
     }
 
-    let plan = crate::mod_analyzer::classify(new_source_path, provider)?;
     let new_name = format!("{old_name} ({version_label})");
-    install(
+    install_with_expected_restores(
         conn,
         &new_name,
         &plan,
@@ -388,6 +578,7 @@ pub fn reinstall(
         backup_root,
         options,
         new_source_path,
+        &expected_restores,
     )
 }
 
@@ -474,10 +665,208 @@ mod tests {
     use super::*;
     use crate::mod_analyzer::PlannedFile;
 
+    #[test]
+    fn refused_install_outcomes_do_not_become_success_for_command_callers() {
+        let conflict = conflict::ForeignConflict {
+            owner_mod_id: Some(42),
+            owner_name: "Existing".to_string(),
+            path: PathBuf::from("shared.asi"),
+        };
+        let report = conflict::ConflictReport {
+            foreign_conflicts: vec![conflict],
+            ..Default::default()
+        };
+        assert!(matches!(
+            InstallOutcome::RequiresOverride(report).require_success(),
+            Err(CoreError::ForeignConflict {
+                owner_mod_id: 42,
+                ..
+            })
+        ));
+        let untracked = conflict::ConflictReport {
+            foreign_conflicts: vec![conflict::ForeignConflict {
+                owner_mod_id: None,
+                owner_name: "Unknown".to_string(),
+                path: PathBuf::from("manual.asi"),
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            InstallOutcome::RequiresOverride(untracked).require_success(),
+            Err(CoreError::UntrackedFileConflict { .. })
+        ));
+        assert!(matches!(
+            InstallOutcome::ProtectedFileBlocked(vec![PathBuf::from("GTA5.exe")]).require_success(),
+            Err(CoreError::ProtectedFileViolation { .. })
+        ));
+        assert!(InstallOutcome::Success {
+            installed_mod_id: 1,
+            files_written: 1
+        }
+        .require_success()
+        .is_ok());
+    }
+
     fn write_source(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn untracked_existing_file_is_preserved_until_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let target = write_source(&game_root, "existing.asi", b"manual mod");
+        let source = write_source(dir.path(), "new.asi", b"new mod");
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let backup = dir.path().join("backups");
+        let outcome = install(
+            &mut conn,
+            "New",
+            &plan,
+            &game_root,
+            &backup,
+            InstallOptions::default(),
+            &source,
+        )
+        .unwrap();
+        let InstallOutcome::RequiresOverride(report) = outcome else {
+            panic!("expected confirmation");
+        };
+        assert_eq!(report.foreign_conflicts[0].owner_mod_id, None);
+        assert_eq!(std::fs::read(&target).unwrap(), b"manual mod");
+        assert!(!backup.exists());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn changed_restored_content_cannot_use_the_reinstall_exemption() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "target.asi", b"expected original");
+        let mut expected = std::collections::HashMap::new();
+        expected.insert(rollback_target_key(&target), hash_file(&target).unwrap());
+        std::fs::write(&target, b"changed externally").unwrap();
+        let mut report = conflict::analyze(
+            &crate::db::open_in_memory().unwrap(),
+            std::slice::from_ref(&target),
+        )
+        .unwrap();
+        retain_unexpected_conflicts(&mut report, &expected).unwrap();
+        assert!(report.requires_explicit_override());
+        assert_eq!(std::fs::read(target).unwrap(), b"changed externally");
+    }
+
+    #[test]
+    fn known_owner_cannot_use_a_matching_restored_content_exemption() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_source(dir.path(), "target.asi", b"matching content");
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('Other', 'asi', '', 'active')", []).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, target.to_string_lossy().as_ref()]).unwrap();
+        let mut expected = std::collections::HashMap::new();
+        expected.insert(rollback_target_key(&target), hash_file(&target).unwrap());
+        let mut report = conflict::analyze(&conn, &[target]).unwrap();
+        retain_unexpected_conflicts(&mut report, &expected).unwrap();
+        assert!(report.requires_explicit_override());
+        assert_eq!(report.foreign_conflicts[0].owner_mod_id, Some(id));
+    }
+
+    #[test]
+    fn reinstall_recognizes_only_its_own_restored_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        write_source(&game_root, "mod.asi", b"original game file");
+        let old_source = write_source(dir.path(), "mod.asi", b"old mod");
+        let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+        let plan = crate::mod_analyzer::classify(&old_source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let first = install(
+            &mut conn,
+            "Old",
+            &plan,
+            &game_root,
+            &dir.path().join("old-backups"),
+            InstallOptions {
+                override_foreign_conflicts: true,
+                ..Default::default()
+            },
+            &old_source,
+        )
+        .unwrap();
+        let InstallOutcome::Success {
+            installed_mod_id, ..
+        } = first
+        else {
+            panic!("expected installation");
+        };
+        let update_dir = dir.path().join("update");
+        std::fs::create_dir(&update_dir).unwrap();
+        let source = write_source(&update_dir, "mod.asi", b"new mod");
+        let new_backup = dir.path().join("new-backups");
+        let outcome = reinstall(
+            &mut conn,
+            installed_mod_id,
+            &source,
+            "v2",
+            &provider,
+            &game_root,
+            &new_backup,
+            &dir.path().join("recycle"),
+            InstallOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, InstallOutcome::Success { .. }));
+        assert_eq!(
+            std::fs::read(game_root.join("mod.asi")).unwrap(),
+            b"new mod"
+        );
+        assert_eq!(
+            std::fs::read(new_backup.join("0.bak")).unwrap(),
+            b"original game file"
+        );
+    }
+
+    #[test]
+    fn missing_recorded_backup_blocks_reinstall_before_removing_unrelated_old_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let target = write_source(&game_root, "old.asi", b"old mod");
+        let source = write_source(dir.path(), "new.asi", b"new mod");
+        let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('Old', 'asi', ?1, 'active')", [game_root.to_string_lossy().as_ref()]).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, backup_path, file_hash) VALUES (?1, ?2, ?3, 'hash')", rusqlite::params![id, target.to_string_lossy().as_ref(), dir.path().join("missing.bak").to_string_lossy().as_ref()]).unwrap();
+        let recycle = dir.path().join("recycle");
+        let result = reinstall(
+            &mut conn,
+            id,
+            &source,
+            "v2",
+            &provider,
+            &game_root,
+            &dir.path().join("backups"),
+            &recycle,
+            InstallOptions::default(),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"old mod");
+        assert!(!recycle.exists());
     }
 
     #[test]
@@ -769,7 +1158,10 @@ mod tests {
             &plan,
             &game_root,
             &dir.path().join("backups"),
-            InstallOptions::default(),
+            InstallOptions {
+                override_foreign_conflicts: true,
+                ..Default::default()
+            },
             &source,
         )
         .unwrap_err();
@@ -876,7 +1268,10 @@ mod tests {
             &plan,
             &game_root,
             &dir.path().join("backups"),
-            InstallOptions::default(),
+            InstallOptions {
+                override_foreign_conflicts: true,
+                ..Default::default()
+            },
             &existing_source,
         )
         .unwrap_err();
@@ -948,7 +1343,10 @@ mod tests {
             &plan,
             &game_root,
             &backup_root,
-            InstallOptions::default(),
+            InstallOptions {
+                override_foreign_conflicts: true,
+                ..Default::default()
+            },
             &source,
         )
         .unwrap_err();
@@ -1192,6 +1590,139 @@ mod tests {
     }
 
     #[test]
+    fn reinstall_invalid_package_preserves_old_files_and_active_record() {
+        for new_name in [
+            "missing.asi",
+            "unsupported.oiv",
+            "deployed.asi",
+            "directory.asi",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let game_root = dir.path().join("game");
+            let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+            let source = write_source(dir.path(), "original.asi", b"original");
+            let plan = crate::mod_analyzer::classify(&source, &provider).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let backup = dir.path().join("backups");
+            let outcome = install(
+                &mut conn,
+                "Original",
+                &plan,
+                &game_root,
+                &backup,
+                InstallOptions::default(),
+                &source,
+            )
+            .unwrap();
+            let InstallOutcome::Success {
+                installed_mod_id, ..
+            } = outcome
+            else {
+                panic!("expected initial installation");
+            };
+            let recycle = dir.path().join("recycle");
+            let new_source = if new_name == "deployed.asi" {
+                game_root.join("original.asi")
+            } else {
+                if new_name == "directory.asi" {
+                    write_source(dir.path(), new_name, b"new");
+                    std::fs::create_dir(game_root.join(new_name)).unwrap();
+                }
+                dir.path().join(new_name)
+            };
+            let result = reinstall(
+                &mut conn,
+                installed_mod_id,
+                &new_source,
+                "v2",
+                &provider,
+                &game_root,
+                &backup,
+                &recycle,
+                InstallOptions::default(),
+            );
+            assert!(result.is_err(), "{new_name}");
+            assert_eq!(
+                std::fs::read(game_root.join("original.asi")).unwrap(),
+                b"original"
+            );
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [installed_mod_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "active");
+            assert!(!recycle.exists());
+        }
+    }
+
+    #[test]
+    fn reinstall_checks_existing_conflicts_before_removing_the_old_version() {
+        for tracked in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let game_root = dir.path().join("game");
+            let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let backup = dir.path().join("backups");
+            let mut old_id = 0;
+            for name in ["old.asi", "shared.asi"] {
+                if name == "shared.asi" && !tracked {
+                    std::fs::write(game_root.join(name), b"shared.asi").unwrap();
+                    continue;
+                }
+                let source = write_source(dir.path(), name, name.as_bytes());
+                let plan = crate::mod_analyzer::classify(&source, &provider).unwrap();
+                let outcome = install(
+                    &mut conn,
+                    name,
+                    &plan,
+                    &game_root,
+                    &backup,
+                    InstallOptions::default(),
+                    &source,
+                )
+                .unwrap();
+                if name == "old.asi" {
+                    let InstallOutcome::Success {
+                        installed_mod_id, ..
+                    } = outcome
+                    else {
+                        panic!("expected initial installation");
+                    };
+                    old_id = installed_mod_id;
+                }
+            }
+            std::fs::create_dir_all(dir.path().join("new")).unwrap();
+            let source = write_source(&dir.path().join("new"), "shared.asi", b"new content");
+            let recycle = dir.path().join("recycle");
+            let outcome = reinstall(
+                &mut conn,
+                old_id,
+                &source,
+                "v2",
+                &provider,
+                &game_root,
+                &backup,
+                &recycle,
+                InstallOptions::default(),
+            )
+            .unwrap();
+            assert!(matches!(outcome, InstallOutcome::RequiresOverride(_)));
+            assert_eq!(
+                std::fs::read(game_root.join("old.asi")).unwrap(),
+                b"old.asi"
+            );
+            assert_eq!(
+                std::fs::read(game_root.join("shared.asi")).unwrap(),
+                b"shared.asi"
+            );
+            assert!(!recycle.exists());
+        }
+    }
+
+    #[test]
     fn protected_file_target_blocks_with_no_writes() {
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
@@ -1238,12 +1769,7 @@ mod tests {
         )
         .unwrap();
         let other_mod_id = conn.last_insert_rowid();
-        // OtherMod owns three files, only one of which the new install would
-        // overwrite — a 1/3 overlap ratio, clearly below the self-update threshold,
-        // so this is unambiguously a foreign conflict rather than a coincidental
-        // single-file 100%-overlap case (which the ratio heuristic can't distinguish
-        // from a genuine self-update; see conflict::mod's design note — that
-        // ambiguity is resolved by human review in the full product, not here).
+        // OpenAI-Codex: A low-overlap conflict also requires explicit confirmation.
         for file in ["shared.dll", "other_a.dll", "other_b.dll"] {
             conn.execute(
                 "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \

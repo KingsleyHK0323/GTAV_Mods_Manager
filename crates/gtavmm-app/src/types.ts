@@ -79,7 +79,8 @@ export interface ProtectedHit {
   path: string;
 }
 export interface ForeignConflict {
-  owner_mod_id: number;
+  /** OpenAI-Codex: null identifies an existing file with no recorded active owner. */
+  owner_mod_id: number | null;
   owner_name: string;
   path: string;
 }

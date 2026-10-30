@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Plan → 同意 → 執行 safety model (v0.7.x): the **limited, closed** set of actions an
 //! AI-generated Plan is allowed to be built from (design doc §3.2). Deliberately does
@@ -234,6 +236,7 @@ pub fn execute_action(
             ctx.recycle_bin_root,
             crate::install::InstallOptions::default(),
         )
+        .and_then(crate::install::InstallOutcome::require_success)
         .map(|_| ()),
         Action::ReorderLoadOrder {
             resources_root,
@@ -404,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn reorder_load_order_action_actually_writes_server_cfg_via_the_real_pipeline() {
+    fn pending_fivem_action_preserves_server_cfg() {
         let dir = tempfile::tempdir().unwrap();
         let (game_root, staging_root, recycle_bin_root, backup_root) = ctx(dir.path());
         let provider = crate::providers::LegacySpProvider::new(game_root.clone());
@@ -429,19 +432,23 @@ mod tests {
             provider: &provider,
         };
 
-        execute_action(
+        let result = execute_action(
             &mut conn,
             &Action::ReorderLoadOrder {
                 resources_root,
                 server_cfg_path: server_cfg_path.clone(),
             },
             &exec_ctx,
-        )
-        .unwrap();
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::error::CoreError::UnsupportedFormat { .. })
+        ));
 
         let contents = std::fs::read_to_string(&server_cfg_path).unwrap();
         assert!(contents.contains("sv_hostname \"Test\""));
-        assert!(contents.contains("ensure core-lib"));
+        assert_eq!(contents, "sv_hostname \"Test\"\n");
     }
 
     #[test]
@@ -502,6 +509,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(old_status, "uninstalled");
+    }
+
+    #[test]
+    fn reinstall_conflict_is_reported_as_failure_and_preserves_existing_mod() {
+        let dir = tempfile::tempdir().unwrap();
+        let (game_root, staging_root, recycle_bin_root, backup_root) = ctx(dir.path());
+        std::fs::create_dir_all(&game_root).unwrap();
+        let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+        let old_target = game_root.join("old.asi");
+        let foreign_target = game_root.join("shared.asi");
+        std::fs::write(&old_target, b"old mod").unwrap();
+        std::fs::write(&foreign_target, b"other mod").unwrap();
+        let source = dir.path().join("shared.asi");
+        std::fs::write(&source, b"new mod").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let mut old_id = 0;
+        for (name, target) in [("Old", &old_target), ("Other", &foreign_target)] {
+            conn.execute(
+                "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES (?1, 'asi', ?2, 'active', 'legacy-sp')",
+                rusqlite::params![name, game_root.to_string_lossy().as_ref()],
+            ).unwrap();
+            let id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')",
+                rusqlite::params![id, target.to_string_lossy().as_ref()],
+            ).unwrap();
+            if name == "Old" {
+                old_id = id;
+            }
+        }
+        let exec_ctx = ExecutionContext {
+            game_root: &game_root,
+            staging_root: &staging_root,
+            recycle_bin_root: &recycle_bin_root,
+            backup_root: &backup_root,
+            provider: &provider,
+        };
+        let result = execute_action(
+            &mut conn,
+            &Action::ReinstallMod {
+                mod_id: old_id,
+                source_path: source,
+                version: "v2".to_string(),
+            },
+            &exec_ctx,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::error::CoreError::ForeignConflict { .. })
+        ));
+        assert_eq!(std::fs::read(&old_target).unwrap(), b"old mod");
+        assert_eq!(std::fs::read(&foreign_target).unwrap(), b"other mod");
+        assert!(!recycle_bin_root.exists());
     }
 
     #[test]

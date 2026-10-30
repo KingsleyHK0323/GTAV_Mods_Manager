@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Enable/disable: moves a mod's currently-deployed files to/from a per-mod staging
 //! directory (distinct from the recycle bin — this is instant and reversible, no
@@ -62,6 +64,7 @@ fn staging_dir(staging_root: &Path, mod_id: i64) -> PathBuf {
 /// Deactivates an active mod: its deployed files move to staging, and anything they
 /// overwrote is restored from backup so the game runs unmodified while disabled.
 pub fn disable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResult<()> {
+    crate::providers::ensure_installed_mod_available(conn, mod_id)?;
     let status = mod_status(conn, mod_id)?;
     if status != "active" {
         return Err(CoreError::UnsupportedFormat {
@@ -105,6 +108,7 @@ pub fn disable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResul
 /// overwriting whatever is currently there (the restored-backup state left by
 /// `disable`, or nothing if the file didn't exist before this mod was installed).
 pub fn enable(conn: &Connection, mod_id: i64, staging_root: &Path) -> CoreResult<()> {
+    crate::providers::ensure_installed_mod_available(conn, mod_id)?;
     let status = mod_status(conn, mod_id)?;
     if status != "disabled" {
         return Err(CoreError::UnsupportedFormat {

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Developer and power-user CLI for gtavmm-core. It shares the same core engine as
 //! the Tauri/React desktop app (`gtavmm-app`) and is the quickest way to exercise
@@ -84,6 +86,9 @@ enum Command {
         source_path: String,
         /// Free-text label recorded in the new mod's name (e.g. "1.2.0").
         version: String,
+        /// Confirm overwriting another installed mod's files after reviewing conflicts.
+        #[arg(long)]
+        yes: bool,
     },
     /// Enable a disabled mod.
     Enable { id: i64 },
@@ -362,6 +367,18 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    // OpenAI-Codex: Reject explicit pending modes before opening or sweeping the DB.
+    if matches!(cli.mode, Mode::FivemClient) {
+        gtavmm_core::providers::ensure_mode_available("fivem-client")?;
+    }
+    if matches!(
+        &cli.command,
+        Command::FivemResourceOrder { .. }
+            | Command::FivemApplyLoadOrder { .. }
+            | Command::ConvertVehicle { .. }
+    ) {
+        gtavmm_core::providers::ensure_mode_available("fivem-server")?;
+    }
     let db_path = db::default_db_path()
         .ok_or_else(|| anyhow::anyhow!("could not resolve an app-data directory on this OS"))?;
     let mut conn = db::open(&db_path)?;
@@ -473,6 +490,7 @@ fn run(cli: Cli) -> Result<()> {
                     for p in paths {
                         println!("  {}", p.display());
                     }
+                    return Err(anyhow::anyhow!("installation blocked by protected files"));
                 }
                 gtavmm_core::install::InstallOutcome::RequiresOverride(report) => {
                     println!("This install collides with existing mod file(s):");
@@ -491,6 +509,9 @@ fn run(cli: Cli) -> Result<()> {
                         );
                     }
                     println!("Re-run with --yes to overwrite anyway.");
+                    return Err(anyhow::anyhow!(
+                        "installation requires conflict confirmation"
+                    ));
                 }
             }
         }
@@ -504,6 +525,7 @@ fn run(cli: Cli) -> Result<()> {
             id,
             source_path,
             version,
+            yes,
         } => {
             let (game_root, provider) = resolve_provider(&cli.game_path, cli.mode)?;
             let recycle_root = db_path.parent().unwrap().join("recycle_bin");
@@ -521,7 +543,10 @@ fn run(cli: Cli) -> Result<()> {
                 &game_root,
                 &backup_root,
                 &recycle_root,
-                gtavmm_core::install::InstallOptions::default(),
+                gtavmm_core::install::InstallOptions {
+                    override_foreign_conflicts: yes,
+                    ..Default::default()
+                },
             )? {
                 gtavmm_core::install::InstallOutcome::Success {
                     installed_mod_id,
@@ -533,13 +558,14 @@ fn run(cli: Cli) -> Result<()> {
                     );
                 }
                 gtavmm_core::install::InstallOutcome::ProtectedFileBlocked(paths) => {
-                    println!("Refused: the new version would write to protected core file(s) — old mod #{id} was already uninstalled:");
+                    println!("Refused: the new version would write to protected core file(s). Check mod #{id}'s current status if files changed concurrently:");
                     for p in paths {
                         println!("  {}", p.display());
                     }
+                    return Err(anyhow::anyhow!("reinstallation blocked by protected files"));
                 }
                 gtavmm_core::install::InstallOutcome::RequiresOverride(report) => {
-                    println!("The new version collides with existing mod file(s) — old mod #{id} was already uninstalled:");
+                    println!("The new version collides with existing mod file(s); check mod #{id}'s current status if files changed concurrently:");
                     for conflict in &report.foreign_conflicts {
                         println!(
                             "  {} (owned by '{}')",
@@ -547,6 +573,10 @@ fn run(cli: Cli) -> Result<()> {
                             conflict.owner_name
                         );
                     }
+                    println!("After reviewing the conflicts, re-run with --yes to confirm overwriting them.");
+                    return Err(anyhow::anyhow!(
+                        "reinstallation requires conflict confirmation"
+                    ));
                 }
             }
         }

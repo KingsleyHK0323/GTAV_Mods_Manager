@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_Responsible: Source_Code
 
 //! Multi-profile support: a Profile is a named set of mods that should be active
 //! together (e.g. a "Roleplay" profile vs. a "Graphics Showcase" profile on the same
@@ -126,6 +128,11 @@ pub fn switch(
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
 
+    // OpenAI-Codex: Validate the whole switch before changing the first mod.
+    for mod_id in target_mods.iter().chain(other_active.iter()) {
+        crate::providers::ensure_installed_mod_available(conn, *mod_id)?;
+    }
+
     let mut outcome = SwitchOutcome::default();
     for mod_id in other_active {
         if target_mods.contains(&mod_id) {
@@ -221,6 +228,35 @@ pub fn import(conn: &Connection, export: &ProfileExport) -> CoreResult<ImportOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_profile_member_blocks_the_whole_switch_before_legacy_changes() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let outgoing = create(&conn, "outgoing").unwrap();
+        let incoming = create(&conn, "incoming").unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('Legacy', 'asi', ?1, 'active', 'legacy-sp')",
+            [dir.path().to_string_lossy().as_ref()],
+        ).unwrap();
+        let legacy_id = conn.last_insert_rowid();
+        add_mod(&conn, outgoing, legacy_id).unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('Pending', 'asi', ?1, 'disabled', 'fivem-client')",
+            [dir.path().to_string_lossy().as_ref()],
+        ).unwrap();
+        add_mod(&conn, incoming, conn.last_insert_rowid()).unwrap();
+        assert!(switch(&conn, incoming, &dir.path().join("staging")).is_err());
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [legacy_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert!(!dir.path().join("staging").exists());
+    }
 
     fn insert_mod(conn: &Connection, name: &str, status: &str) -> i64 {
         conn.execute(
