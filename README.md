@@ -22,7 +22,11 @@ The app uses its own recycle-bin snapshot directory, never the operating system'
 
 Rollback also reads its backup before removing the current target, to detect existing read locks early. These checks do not prevent files from changing afterward and do not provide atomic replacement.
 
-Recycle-bin restore requires the associated mod to remain uninstalled and checks the complete restore target set for other active owners before creating backups or changing files. An ownership conflict preserves the entry for later recovery. Existing regular files without an active owner keep the existing backup-and-replace behavior; the app cannot prove whether they are originals or newly added external files. Restore path containment, backup collision handling, and complete recovery after later I/O failures still require further hardening.
+Recycle-bin restore requires the associated mod to remain uninstalled and checks the complete restore target set for other active owners before creating backups or changing files. An ownership conflict preserves the entry for later recovery. Existing regular files without an active owner keep the existing backup-and-replace behavior; the app cannot prove whether they are originals or newly added external files.
+
+Restore preflights absolute paths, safe relative components, resolved source/target ancestry, ordinary readable files, duplicate targets, and overlapping snapshot/target/backup storage. Every required backup completes before the first target write. Backup candidates use exclusive creation and the same open handle for copying, preserving existing files and partial recovery data on failure. These checks do not establish hard-link identity, prevent later directory replacement, or provide atomic target writes or complete filesystem/database rollback. The stored snapshot root still lacks an explicit trusted app recycle-root context for the existing post-restore cleanup; that cleanup boundary requires separate hardening.
+
+Restore requires an existing game-root directory and absolute game, snapshot, and backup roots; missing target subdirectories inside the game root can still be created. A dangling link in a backup candidate causes a conservative refusal instead of automatic collision retry.
 
 Download installers only from [GitHub Releases](https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases) and verify the SHA-256 checksum file attached to each release. See [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md).
 

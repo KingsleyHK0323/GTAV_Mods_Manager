@@ -115,6 +115,57 @@ pub fn has_recorded_snapshot_metadata(conn: &Connection, entry_id: i64) -> CoreR
     Ok(load_entry(conn, entry_id)?.snapshot_metadata.is_some())
 }
 
+// OpenAI-Codex: Resolve missing descendants through their nearest existing ancestor.
+// This is a preflight check, not protection against later directory replacement.
+fn resolved_restore_path(path: &Path) -> CoreResult<PathBuf> {
+    let invalid = || CoreError::UnsupportedFormat {
+        reason: format!("unsafe restore path: {}", path.display()),
+    };
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(invalid());
+    }
+    let mut ancestor = path;
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(mut resolved) => {
+                for name in missing.iter().rev() {
+                    resolved.push(name);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(ancestor) {
+                    Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(other) => return Err(other.into()),
+                    Ok(_) => return Err(invalid()),
+                }
+                missing.push(ancestor.file_name().ok_or_else(invalid)?.to_os_string());
+                ancestor = ancestor.parent().ok_or_else(invalid)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn restore_path_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
 /// Restores a recycle-bin entry: copies its snapshotted files back to their original
 /// target paths, reinstates the owning mod as `active`, and removes the entry (its
 /// job is done — the 15-day window doesn't apply to something already restored).
@@ -177,8 +228,34 @@ pub fn restore_with_optional_game_root(
 
     crate::providers::ensure_game_root_available(&snapshot_game_root)?;
 
-    let mut stmt =
-        conn.prepare("SELECT id, target_path FROM installed_mod_file WHERE installed_mod_id = ?1")?;
+    let invalid_layout = || CoreError::UnsupportedFormat {
+        reason: format!("recycle bin entry {entry_id} has unsafe or overlapping restore storage"),
+    };
+    if !std::fs::symlink_metadata(&snapshot_root)?
+        .file_type()
+        .is_dir()
+        || !std::fs::metadata(&snapshot_game_root)?.is_dir()
+    {
+        return Err(invalid_layout());
+    }
+    let resolved_game = restore_path_key(&resolved_restore_path(&snapshot_game_root)?);
+    let resolved_snapshot = restore_path_key(&resolved_restore_path(&snapshot_root)?);
+    let resolved_backup = restore_path_key(&resolved_restore_path(backup_root)?);
+    if resolved_backup.starts_with(&resolved_snapshot)
+        || resolved_snapshot.starts_with(&resolved_backup)
+    {
+        return Err(invalid_layout());
+    }
+    match std::fs::symlink_metadata(backup_root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err(invalid_layout()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, target_path FROM installed_mod_file WHERE installed_mod_id = ?1 ORDER BY id",
+    )?;
     let files: Vec<(i64, String)> = stmt
         .query_map([mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
@@ -218,6 +295,8 @@ pub fn restore_with_optional_game_root(
     // New entries record the exact file set; legacy entries conservatively require all
     // current file rows to have snapshots rather than consuming a possibly incomplete bin.
     let mut restore_files = Vec::with_capacity(expected_file_ids.len());
+    let mut target_keys = std::collections::HashSet::new();
+    let mut source_keys = std::collections::HashSet::new();
     for (file_id, target_path) in &files {
         if !expected_file_ids.contains(file_id) {
             continue;
@@ -230,16 +309,53 @@ pub fn restore_with_optional_game_root(
                 ),
             }
         })?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid_layout());
+        }
+        let target_key = restore_path_key(&resolved_restore_path(&target)?);
+        if !target_key.starts_with(&resolved_game)
+            || target_key.starts_with(&resolved_snapshot)
+            || !target_keys.insert(target_key)
+        {
+            return Err(invalid_layout());
+        }
+        match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                hash_file(&target)?;
+            }
+            Ok(_) => return Err(invalid_layout()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let snapshot_file = snapshot_root.join(relative);
-        if !snapshot_file.is_file() {
+        if !std::fs::symlink_metadata(&snapshot_file)?
+            .file_type()
+            .is_file()
+        {
             return Err(CoreError::UnsupportedFormat {
                 reason: format!(
                     "recycle bin entry {entry_id} is missing snapshot for {target_path}"
                 ),
             });
         }
+        let source_key = restore_path_key(&resolved_restore_path(&snapshot_file)?);
+        if !source_key.starts_with(&resolved_snapshot) || !source_keys.insert(source_key) {
+            return Err(invalid_layout());
+        }
+        hash_file(&snapshot_file)?;
         protected_files::check_write(&target)?;
         restore_files.push((*file_id, target, snapshot_file));
+    }
+    if !target_keys.is_disjoint(&source_keys)
+        || target_keys
+            .iter()
+            .any(|target| resolved_backup.starts_with(target))
+    {
+        return Err(invalid_layout());
     }
 
     // OpenAI-Codex: Check the complete write set before directories, backups, or
@@ -260,23 +376,50 @@ pub fn restore_with_optional_game_root(
         }
     }
 
+    // OpenAI-Codex: Complete every backup before changing the first game target.
+    // Keep partial backups on error. create_new plus the retained handle prevents
+    // overwriting an existing candidate; it does not make target writes atomic.
+    let mut backups = std::collections::HashMap::new();
+    for (file_id, target, _) in &restore_files {
+        let new_backup_path = if target.try_exists()? {
+            std::fs::create_dir_all(backup_root)?;
+            let mut selected = None;
+            for attempt in 0..64 {
+                let path = backup_root.join(format!("restore-{entry_id}-{file_id}-{attempt}.bak"));
+                let key = restore_path_key(&resolved_restore_path(&path)?);
+                if key.starts_with(&resolved_snapshot)
+                    || target_keys.contains(&key)
+                    || source_keys.contains(&key)
+                {
+                    continue;
+                }
+                let mut output = match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                let mut input = std::fs::File::open(target)?;
+                std::io::copy(&mut input, &mut output)?;
+                output.sync_all()?;
+                selected = Some(path);
+                break;
+            }
+            Some(selected.ok_or_else(|| CoreError::UnsupportedFormat { reason: format!("no unused restore backup candidate for file {file_id}; existing recovery data was preserved") })?)
+        } else {
+            None
+        };
+        backups.insert(*file_id, new_backup_path);
+    }
+
     for (file_id, target, snapshot_file) in restore_files {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        // The file's original `backup_path` was already consumed by `uninstall`
-        // (moved back onto `target`). Re-backup whatever is there now — the restored
-        // pre-mod original, or nothing — before overwriting it with the mod's file,
-        // so a future re-uninstall can restore correctly again.
-        let new_backup_path = if target.exists() {
-            std::fs::create_dir_all(backup_root)?;
-            let backup_path = backup_root.join(format!("restore-{file_id}.bak"));
-            std::fs::copy(&target, &backup_path)?;
-            Some(backup_path)
-        } else {
-            None
-        };
+        let new_backup_path = backups.remove(&file_id).flatten();
 
         std::fs::copy(&snapshot_file, &target)?;
         let hash = hash_file(&target)?;
@@ -347,6 +490,315 @@ pub fn sweep_expired(conn: &Connection) -> CoreResult<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Unsafe plans must fail without touching targets or the entry.
+    #[test]
+    fn unsafe_restore_paths_are_rejected_before_writes() {
+        for invalid in [
+            "parent",
+            "empty",
+            "outside",
+            "duplicate",
+            "snapshot-target",
+            "backup-snapshot",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+                &conn,
+                &root,
+                &dir.path().join("recycle"),
+                "mod.asi",
+                15,
+            );
+            let snapshot =
+                PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+            std::fs::write(root.join("mod.asi"), b"current original").unwrap();
+            let outside = dir.path().join("outside.asi");
+            std::fs::write(&outside, b"outside data").unwrap();
+            let bad_target = match invalid {
+                "parent" => Some(root.join("../outside.asi")),
+                "empty" => Some(root.clone()),
+                "outside" => Some(outside.clone()),
+                _ => None,
+            };
+            if let Some(path) = bad_target {
+                conn.execute(
+                    "UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2",
+                    rusqlite::params![path.to_string_lossy(), id],
+                )
+                .unwrap();
+            }
+            if invalid == "duplicate" {
+                conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, root.join("mod.asi").to_string_lossy()]).unwrap();
+            }
+            if invalid == "snapshot-target" {
+                conn.execute(
+                    "UPDATE recycle_bin_entry SET mod_package_snapshot_path = ?1 WHERE id = ?2",
+                    rusqlite::params![root.to_string_lossy(), entry],
+                )
+                .unwrap();
+            }
+            let backups = if invalid == "backup-snapshot" {
+                snapshot.join("backups")
+            } else {
+                dir.path().join("backups")
+            };
+            assert!(
+                restore(&mut conn, entry, &root, &backups).is_err(),
+                "{invalid}"
+            );
+            assert_eq!(
+                std::fs::read(root.join("mod.asi")).unwrap(),
+                b"current original"
+            );
+            assert_eq!(std::fs::read(outside).unwrap(), b"outside data");
+            assert_eq!(
+                std::fs::read(snapshot.join("mod.asi")).unwrap(),
+                b"snapshotted content"
+            );
+            assert!(!backups.exists());
+            assert_eq!(list(&conn).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn restore_keeps_existing_backup_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &root,
+            &dir.path().join("recycle"),
+            "mod.asi",
+            15,
+        );
+        let file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let backups = dir.path().join("backups");
+        std::fs::create_dir(&backups).unwrap();
+        let old = backups.join(format!("restore-{file_id}.bak"));
+        let collision = backups.join(format!("restore-{entry}-{file_id}-0.bak"));
+        std::fs::write(&old, b"old recovery data").unwrap();
+        std::fs::write(&collision, b"earlier attempt").unwrap();
+        std::fs::write(root.join("mod.asi"), b"current original").unwrap();
+        restore(&mut conn, entry, &root, &backups).unwrap();
+        assert_eq!(std::fs::read(old).unwrap(), b"old recovery data");
+        assert_eq!(std::fs::read(&collision).unwrap(), b"earlier attempt");
+        let recorded: String = conn
+            .query_row(
+                "SELECT backup_path FROM installed_mod_file WHERE id = ?1",
+                [file_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(Path::new(&recorded), collision.as_path());
+        assert_eq!(std::fs::read(recorded).unwrap(), b"current original");
+        assert_eq!(
+            std::fs::read(root.join("mod.asi")).unwrap(),
+            b"snapshotted content"
+        );
+    }
+
+    #[test]
+    fn later_backup_failure_preserves_all_targets_and_database_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &root,
+            &dir.path().join("recycle"),
+            "first.asi",
+            15,
+        );
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, root.join("second.asi").to_string_lossy()]).unwrap();
+        let later = conn.last_insert_rowid();
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        std::fs::write(snapshot.join("second.asi"), b"second snapshot").unwrap();
+        std::fs::write(root.join("first.asi"), b"first current").unwrap();
+        std::fs::write(root.join("second.asi"), b"second current").unwrap();
+        let backups = dir.path().join("backups");
+        std::fs::create_dir(&backups).unwrap();
+        for attempt in 0..64 {
+            std::fs::write(
+                backups.join(format!("restore-{entry}-{later}-{attempt}.bak")),
+                b"retained recovery data",
+            )
+            .unwrap();
+        }
+        assert!(restore(&mut conn, entry, &root, &backups).is_err());
+        assert_eq!(
+            std::fs::read(root.join("first.asi")).unwrap(),
+            b"first current"
+        );
+        assert_eq!(
+            std::fs::read(root.join("second.asi")).unwrap(),
+            b"second current"
+        );
+        assert_eq!(list(&conn).unwrap().len(), 1);
+        let untouched: i64 = conn.query_row("SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1 AND backup_path IS NULL AND file_hash = 'hash'", [id], |row| row.get(0)).unwrap();
+        assert_eq!(untouched, 2);
+        assert_eq!(
+            std::fs::read(backups.join(format!("restore-{entry}-{later}-0.bak"))).unwrap(),
+            b"retained recovery data"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_rejects_linked_sources_and_escaping_parents() {
+        for invalid in [
+            "source-file",
+            "source-parent",
+            "target-file",
+            "target-parent",
+            "missing-target-parent",
+            "backup-parent",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("game");
+            std::fs::create_dir(&root).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+                &conn,
+                &root,
+                &dir.path().join("recycle"),
+                "mod.asi",
+                15,
+            );
+            let snapshot =
+                PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+            let outside = dir.path().join("outside");
+            std::fs::create_dir(&outside).unwrap();
+            let outside_file = outside.join("mod.asi");
+            std::fs::write(&outside_file, b"outside data").unwrap();
+            std::fs::write(root.join("mod.asi"), b"current original").unwrap();
+            let mut backups = dir.path().join("backups");
+            match invalid {
+                "backup-parent" => {
+                    let alias = dir.path().join("backup-alias");
+                    std::os::unix::fs::symlink(&snapshot, &alias).unwrap();
+                    backups = alias.join("backups");
+                }
+                "source-file" => {
+                    std::fs::rename(snapshot.join("mod.asi"), snapshot.join("saved.asi")).unwrap();
+                    std::os::unix::fs::symlink(&outside_file, snapshot.join("mod.asi")).unwrap();
+                }
+                "target-file" => {
+                    std::fs::rename(root.join("mod.asi"), root.join("saved.asi")).unwrap();
+                    std::os::unix::fs::symlink(&outside_file, root.join("mod.asi")).unwrap();
+                }
+                _ => {
+                    let relative = if invalid == "missing-target-parent" {
+                        "linked/missing/mod.asi"
+                    } else {
+                        "linked/mod.asi"
+                    };
+                    conn.execute("UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2", rusqlite::params![root.join(relative).to_string_lossy(), id]).unwrap();
+                    if invalid == "source-parent" {
+                        std::os::unix::fs::symlink(&outside, snapshot.join("linked")).unwrap();
+                    } else {
+                        std::fs::create_dir_all(snapshot.join(relative).parent().unwrap()).unwrap();
+                        std::fs::write(snapshot.join(relative), b"linked snapshot").unwrap();
+                        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+                    }
+                }
+            }
+            assert!(
+                restore(&mut conn, entry, &root, &backups).is_err(),
+                "{invalid}"
+            );
+            assert_eq!(std::fs::read(&outside_file).unwrap(), b"outside data");
+            assert!(!backups.exists());
+            assert!(snapshot.exists());
+            assert_eq!(list(&conn).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn restore_creates_missing_target_descendants_inside_an_existing_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &root,
+            &dir.path().join("recycle"),
+            "mod.asi",
+            15,
+        );
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        let relative = Path::new("missing").join("nested").join("mod.asi");
+        std::fs::create_dir_all(snapshot.join(&relative).parent().unwrap()).unwrap();
+        std::fs::rename(snapshot.join("mod.asi"), snapshot.join(&relative)).unwrap();
+        conn.execute(
+            "UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2",
+            rusqlite::params![root.join(&relative).to_string_lossy(), id],
+        )
+        .unwrap();
+        let backups = dir.path().join("backups");
+        restore(&mut conn, entry, &root, &backups).unwrap();
+        assert_eq!(
+            std::fs::read(root.join(relative)).unwrap(),
+            b"snapshotted content"
+        );
+        assert!(!backups.exists());
+        assert!(list(&conn).unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_later_snapshot_preserves_all_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (id, entry) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &root,
+            &dir.path().join("recycle"),
+            "first.asi",
+            15,
+        );
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, root.join("second.asi").to_string_lossy()]).unwrap();
+        let snapshot = PathBuf::from(load_entry(&conn, entry).unwrap().mod_package_snapshot_path);
+        let second = snapshot.join("second.asi");
+        std::fs::write(&second, b"second snapshot").unwrap();
+        std::fs::write(root.join("first.asi"), b"first current").unwrap();
+        std::fs::write(root.join("second.asi"), b"second current").unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&second)
+            .unwrap();
+        locked.try_lock().unwrap();
+        let backups = dir.path().join("backups");
+        let result = restore(&mut conn, entry, &root, &backups);
+        locked.unlock().unwrap();
+        assert!(result.is_err());
+        assert!(!backups.exists());
+        assert_eq!(
+            std::fs::read(root.join("first.asi")).unwrap(),
+            b"first current"
+        );
+        assert_eq!(
+            std::fs::read(root.join("second.asi")).unwrap(),
+            b"second current"
+        );
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
 
     // OpenAI-Codex: A conflict anywhere must stop the entire restore before writes.
     fn assert_active_owner_blocks_restore(conflicting_name: &str, owner_spelling: &str) {
