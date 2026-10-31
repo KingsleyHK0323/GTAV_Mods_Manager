@@ -36,6 +36,17 @@ Legacy core restore APIs still restore files and remove the restored entry, but 
 
 Download installers only from [GitHub Releases](https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases) and verify the SHA-256 checksum file attached to each release. See [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md).
 
+### Windows replacement probe preparation
+
+<!-- OpenAI-Codex -->
+The Windows-only integration probes in `crates/gtavmm-core/tests/windows_replace_metadata_probe.rs` are ignored by ordinary tests. They are source preparation, not a production DLC replacement or evidence that ACL preservation is solved. The new Windows test dependency still requires formal remote `Cargo.lock` resolution; this preparation is incomplete and has not been compiled or executed.
+
+The manual-only `windows-metadata-probe-resolve.yml` workflow resolves dependencies on GitHub-hosted Windows without building or running the probes. Dispatch requires an exact reviewed `Source_Code` commit SHA, and the workflow must first be published on the repository's default branch. It permits only the reviewed core dependency edge to change, checks the resulting lock with `--locked`, and uploads only `Cargo.lock` and its revision/SHA-256 digest to the repository's Actions artifacts for three days. A downloaded result still requires review before adoption. It uses Python 3.12's standard-library TOML parser; no Python packages are installed. Preparing this workflow does not authorize dispatch, publication, artifact transfer, or a probe run. The existing CI workflow is unchanged.
+
+An independently approved probe run must set `GTAVMM_METADATA_PROBE_APPROVED=yes`, identify itself as GitHub-hosted Windows, and provide `GTAVMM_METADATA_PROBE_ROOT` as the direct child `gtavmm-metadata-probe-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>` of `RUNNER_TEMP`. These environment checks prevent accidental execution, not malicious environment spoofing or filesystem races. Each case creates a new exclusive directory and never cleans it automatically. Hosted job teardown may discard these files; preserving recovery evidence before teardown needs a separately approved collection plan.
+
+Before replacement, the probes require full security-descriptor reads, including SACL access. Unavailable access is an error, never a skipped success; privileges are not enabled automatically. The success case protects only its newly created target's existing non-null DACL, sets distinct creation times, and creates distinct alternate streams. Both cases retain target/replacement/backup evidence and emit only comparison results, relative fixture names and error codes. No game files, app settings or database are used. Descriptor byte equality is a conservative observation, not semantic equivalence or complete proof: distinct owners/groups/SACLs, encryption, compression, staged fault injection, Windows errors 1175/1176/1177, and power-loss behavior remain uncovered. Production ACL and recovery stop conditions remain in force even if these initial probes pass.
+
 — Kingsley
 
 <!-- OpenAI-Codex -->

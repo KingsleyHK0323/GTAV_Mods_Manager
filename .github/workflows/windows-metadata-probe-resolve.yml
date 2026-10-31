@@ -1,0 +1,91 @@
+# OpenAI-Codex
+# Preparation only: dispatch and artifact transfer need separate approval.
+name: Resolve Windows metadata probe lockfile
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed Source_Code commit SHA (40 lowercase hex characters)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    if: github.repository == 'SpaceSquare640/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      APPROVED_SHA: ${{ inputs.approved_sha }}
+      DISPATCH_SHA: ${{ github.sha }}
+    steps:
+      - name: Validate reviewed revision
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows') {
+            throw 'GitHub-hosted Windows is required.'
+          }
+          if ($env:APPROVED_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:APPROVED_SHA -cne $env:DISPATCH_SHA) {
+            throw 'Dispatch must match the exact reviewed Source_Code revision.'
+          }
+
+      - name: Checkout reviewed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_sha }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up standard-library TOML parser
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve without building or running probes
+        shell: python
+        run: |
+          import hashlib
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+
+          lock = Path('Cargo.lock')
+          before = tomllib.loads(lock.read_text(encoding='utf-8'))
+          subprocess.run(['cargo', 'metadata', '--format-version', '1'],
+                         stdout=subprocess.DEVNULL, check=True)
+          subprocess.run(['cargo', 'metadata', '--format-version', '1', '--locked'],
+                         stdout=subprocess.DEVNULL, check=True)
+          after = tomllib.loads(lock.read_text(encoding='utf-8'))
+          core = [p for p in before['package'] if p['name'] == 'gtavmm-core']
+          if len(core) != 1:
+              raise RuntimeError('Expected exactly one core package.')
+          expected = sorted(set(core[0]['dependencies']) | {'windows-sys 0.61.2'})
+          core[0]['dependencies'] = expected
+          if before != after:
+              raise RuntimeError('Unexpected lockfile change beyond the reviewed core dependency edge.')
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          if any(path != 'Cargo.lock' for path in changed):
+              raise RuntimeError('Resolver changed an unexpected tracked file.')
+          output = Path(os.environ['RUNNER_TEMP']) / 'gtavmm-probe-lock-artifact'
+          output.mkdir(exist_ok=False)
+          data = lock.read_bytes()
+          (output / 'Cargo.lock').write_bytes(data)
+          digest = hashlib.sha256(data).hexdigest()
+          summary = f"revision={os.environ['APPROVED_SHA']}\nsha256={digest}\n"
+          (output / 'resolution.sha256').write_text(summary, encoding='utf-8')
+
+      - name: Upload only resolved lockfile and revision digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-probe-lock-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/gtavmm-probe-lock-artifact/Cargo.lock
+            ${{ runner.temp }}/gtavmm-probe-lock-artifact/resolution.sha256
+          if-no-files-found: error
+          retention-days: 3

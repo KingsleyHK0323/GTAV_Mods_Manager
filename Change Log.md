@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+### Added
+
+- Prepare ignored Windows-only replacement metadata/sharing probes and a manual-only remote dependency resolver, without changing production DLC writes or ordinary CI. The probes require explicit hosted-Windows scratch approval and full security readability, retain recovery files, and report incomplete coverage. The Windows test dependency awaits formal `Cargo.lock` resolution; no compilation, experiment, dispatch, or artifact transfer has been performed. <!-- OpenAI-Codex -->
+
 ### Changed
 
 - Marked FiveM client and GTA V Enhanced provider resolution as under development while focusing on Legacy; other mode entry points still require restrictions.
