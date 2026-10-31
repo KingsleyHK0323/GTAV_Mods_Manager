@@ -461,10 +461,19 @@ impl Fixture {
 
     fn prepare_contrasting_metadata(&self) -> Result<(), ProbeError> {
         // Read full security BEFORE changing fixture ACLs, streams or timestamps.
-        let target = security_file(&self.target, WRITE_DAC | FILE_WRITE_ATTRIBUTES)?;
-        let replacement = security_file(&self.replacement, FILE_WRITE_ATTRIBUTES)?;
-        let descriptor = SecurityAllocation::read(&target)?;
-        let _replacement_descriptor = SecurityAllocation::read(&replacement)?;
+        let target = security_file(
+            &self.target,
+            WRITE_DAC | FILE_WRITE_ATTRIBUTES,
+            "prepare_target_open",
+        )?;
+        let replacement = security_file(
+            &self.replacement,
+            FILE_WRITE_ATTRIBUTES,
+            "prepare_replacement_open",
+        )?;
+        let descriptor = SecurityAllocation::read(&target, "prepare_target_get_security_info")?;
+        let _replacement_descriptor =
+            SecurityAllocation::read(&replacement, "prepare_replacement_get_security_info")?;
         let mut present = 0;
         let mut defaulted = 0;
         let mut dacl = null_mut();
@@ -478,6 +487,7 @@ impl Fixture {
         ensure(present != 0 && !dacl.is_null(), "nonnull_fixture_dacl")?;
         // SAFETY: only our newly created ordinary file is modified. The non-null
         // DACL is borrowed from the still-live descriptor, never an error fallback.
+        println!("probe=fixture phase=protect_target_dacl api=SetSecurityInfo event=before");
         let status = unsafe {
             SetSecurityInfo(
                 target.as_raw_handle(),
@@ -489,13 +499,14 @@ impl Fixture {
                 null(),
             )
         };
+        println!("probe=fixture phase=protect_target_dacl api=SetSecurityInfo event=after os_code={status}");
         if status != 0 {
             return Err(failure(
                 "protect_fixture_dacl",
                 io::Error::from_raw_os_error(status as i32),
             ));
         }
-        let protected = SecurityAllocation::read(&target)?;
+        let protected = SecurityAllocation::read(&target, "protected_target_get_security_info")?;
         let mut control = 0;
         let mut revision = 0;
         // SAFETY: protected owns the current descriptor, outputs remain live.
@@ -507,10 +518,19 @@ impl Fixture {
             control & SE_DACL_PROTECTED != 0,
             "fixture_dacl_is_protected",
         )?;
+        println!("probe=fixture phase=target_dacl_protected event=complete");
+        println!("probe=fixture phase=target_creation_time api=SetFileTime event=before");
         set_creation_time(&target, 132_537_600_000_000_000)?;
+        println!("probe=fixture phase=target_creation_time event=complete");
+        println!("probe=fixture phase=replacement_creation_time api=SetFileTime event=before");
         set_creation_time(&replacement, 132_538_464_000_000_000)?;
+        println!("probe=fixture phase=replacement_creation_time event=complete");
+        println!("probe=fixture phase=target_original_ads event=before");
         create_payload(&stream_path(&self.target, "original"), OLD_STREAM)?;
+        println!("probe=fixture phase=target_original_ads event=complete");
+        println!("probe=fixture phase=replacement_ads event=before");
         create_payload(&stream_path(&self.replacement, "replacement"), NEW_STREAM)?;
+        println!("probe=fixture phase=replacement_ads event=complete");
         Ok(())
     }
 
@@ -587,19 +607,34 @@ fn read_stream(path: &Path, stream: &str) -> Result<Vec<u8>, ProbeError> {
     fs::read(stream_path(path, stream)).map_err(|e| failure("read_ads", e))
 }
 
-fn security_file(path: &Path, extra_access: u32) -> Result<File, ProbeError> {
-    OpenOptions::new()
-        .access_mode(READ_CONTROL | ACCESS_SYSTEM_SECURITY | FILE_READ_ATTRIBUTES | extra_access)
+fn security_file(path: &Path, extra_access: u32, stage: &'static str) -> Result<File, ProbeError> {
+    let access = READ_CONTROL | ACCESS_SYSTEM_SECURITY | FILE_READ_ATTRIBUTES | extra_access;
+    println!("probe=security phase={stage} api=OpenOptions_open event=before access_mask={access}");
+    let result = OpenOptions::new()
+        .access_mode(access)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .open(path)
-        .map_err(|e| failure("full_security_unverifiable", e))
+        .open(path);
+    match result {
+        Ok(file) => {
+            println!("probe=security phase={stage} api=OpenOptions_open event=after os_code=0");
+            Ok(file)
+        }
+        Err(error) => {
+            println!(
+                "probe=security phase={stage} api=OpenOptions_open event=after os_code={:?}",
+                error.raw_os_error()
+            );
+            Err(failure(stage, error))
+        }
+    }
 }
 
 struct SecurityAllocation(PSECURITY_DESCRIPTOR);
 
 impl SecurityAllocation {
-    fn read(file: &File) -> Result<Self, ProbeError> {
+    fn read(file: &File, stage: &'static str) -> Result<Self, ProbeError> {
         let mut pointer = null_mut();
+        println!("probe=security phase={stage} api=GetSecurityInfo event=before security_information={BACKUP_SECURITY_INFORMATION}");
         // SAFETY: borrowed File owns its live handle; output pointer is initialized.
         let status = unsafe {
             GetSecurityInfo(
@@ -614,13 +649,15 @@ impl SecurityAllocation {
             )
         };
         if status != 0 {
-            return Err(failure(
-                "full_security_unverifiable",
-                io::Error::from_raw_os_error(status as i32),
-            ));
+            println!(
+                "probe=security phase={stage} api=GetSecurityInfo event=after os_code={status}"
+            );
+            return Err(failure(stage, io::Error::from_raw_os_error(status as i32)));
         }
         ensure(!pointer.is_null(), "security_descriptor_present")?;
         let descriptor = Self(pointer);
+        // Own the allocation before reporting success, including on output panic.
+        println!("probe=security phase={stage} api=GetSecurityInfo event=after os_code=0");
         // SAFETY: successful GetSecurityInfo returned this live LocalAlloc buffer.
         ensure(
             unsafe { IsValidSecurityDescriptor(descriptor.0) } != 0,
@@ -693,9 +730,13 @@ impl Observation {
     }
 }
 
-fn observe(path: &Path) -> Result<Observation, ProbeError> {
-    let file = security_file(path, 0)?;
-    let descriptor = SecurityAllocation::read(&file)?;
+fn observe(
+    path: &Path,
+    open_stage: &'static str,
+    read_stage: &'static str,
+) -> Result<Observation, ProbeError> {
+    let file = security_file(path, 0, open_stage)?;
+    let descriptor = SecurityAllocation::read(&file, read_stage)?;
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: File and initialized correctly sized output remain live.
     boolean_result(
@@ -735,8 +776,16 @@ fn prepare_preservation_observations(
     fixture: &Fixture,
 ) -> Result<(Observation, Observation), ProbeError> {
     fixture.prepare_contrasting_metadata()?;
-    let original = observe(&fixture.target)?;
-    let replacement = observe(&fixture.replacement)?;
+    let original = observe(
+        &fixture.target,
+        "pre_target_open",
+        "pre_target_get_security_info",
+    )?;
+    let replacement = observe(
+        &fixture.replacement,
+        "pre_replacement_open",
+        "pre_replacement_get_security_info",
+    )?;
     ensure(
         original.security != replacement.security,
         "security_contrast",
@@ -755,8 +804,16 @@ fn verify_preservation(
     replacement: Observation,
     case: &'static str,
 ) -> Result<(), ProbeError> {
-    let restored = observe(&fixture.target)?;
-    let backup = observe(&fixture.backup)?;
+    let restored = observe(
+        &fixture.target,
+        "post_target_open",
+        "post_target_get_security_info",
+    )?;
+    let backup = observe(
+        &fixture.backup,
+        "post_backup_open",
+        "post_backup_get_security_info",
+    )?;
     ensure(
         fs::read(&fixture.target).map_err(|e| failure("target_bytes", e))? == NEW_BYTES,
         "replacement_bytes",
@@ -856,8 +913,16 @@ fn preservation_after_restore_observations(
 fn denied_delete_observations() -> Result<(), ProbeError> {
     let fixture = Fixture::create("deny-delete")?;
     // Full-security readability is required before attempting any replacement.
-    let original = observe(&fixture.target)?;
-    let replacement = observe(&fixture.replacement)?;
+    let original = observe(
+        &fixture.target,
+        "sharing_pre_target_open",
+        "sharing_pre_target_get_security_info",
+    )?;
+    let replacement = observe(
+        &fixture.replacement,
+        "sharing_pre_replacement_open",
+        "sharing_pre_replacement_get_security_info",
+    )?;
     let blocker = OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
@@ -888,11 +953,21 @@ fn denied_delete_observations() -> Result<(), ProbeError> {
         "replacement_retained",
     )?;
     ensure(
-        observe(&fixture.target)?.stable_metadata_eq(&original),
+        observe(
+            &fixture.target,
+            "sharing_post_target_open",
+            "sharing_post_target_get_security_info",
+        )?
+        .stable_metadata_eq(&original),
         "original_metadata_retained",
     )?;
     ensure(
-        observe(&fixture.replacement)?.stable_metadata_eq(&replacement),
+        observe(
+            &fixture.replacement,
+            "sharing_post_replacement_open",
+            "sharing_post_replacement_get_security_info",
+        )?
+        .stable_metadata_eq(&replacement),
         "replacement_metadata_retained",
     )?;
     ensure(
