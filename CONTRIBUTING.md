@@ -62,7 +62,7 @@ of (not a replacement for) the PolyForm license's notice-preservation requiremen
 
 ## Reporting issues
 
-Open an issue on [this repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager/issues).
+Open an issue on [this repository](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/issues).
 There's no separate security-disclosure process yet — for anything sensitive, say so
 in the issue and we'll figure out a private channel.
 

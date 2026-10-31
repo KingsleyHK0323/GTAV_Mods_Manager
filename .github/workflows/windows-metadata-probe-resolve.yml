@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   resolve:
-    if: github.repository == 'SpaceSquare640/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
+    if: github.repository == 'KingsleyHK0323/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
     runs-on: windows-latest
     timeout-minutes: 20
     env:

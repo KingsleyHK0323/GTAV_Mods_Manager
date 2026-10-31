@@ -9,9 +9,11 @@
 
 ### Added
 
-- Prepare ignored Windows-only replacement metadata/sharing probes and a manual-only remote dependency resolver, without changing production DLC writes or ordinary CI. The probes require explicit hosted-Windows scratch approval and full security readability, retain recovery files, and report incomplete coverage. Remote CI for `afecba8` passed all-targets compilation and Clippy on Windows and Ubuntu; Ubuntu tests passed, while Windows retained the two existing DLC replacement failures. Adopt the independently reviewed `Cargo.lock` from remote resolver run 41185646022, adding only the core `windows-sys 0.61.2` dependency edge. Native experiments remain unexecuted; the adopted lockfile awaits subsequent CI verification. <!-- OpenAI-Codex -->
+- Prepare ignored Windows-only replacement metadata/sharing probes and a manual-only remote dependency resolver, without changing production DLC writes or ordinary CI. The probes require explicit hosted-Windows scratch approval and full security readability, retain recovery files, and report incomplete coverage. Remote CI for `afecba8` passed all-targets compilation and Clippy on Windows and Ubuntu; Ubuntu tests passed, while Windows retained the two existing DLC replacement failures. Adopt the independently reviewed `Cargo.lock` from remote resolver run 41185646022, adding only the core `windows-sys 0.61.2` dependency edge. Post-adoption CI for `fb306b9` also passed all-targets compilation and Clippy on both platforms; Ubuntu tests passed and the same two Windows DLC tests failed. Native experiments remain unexecuted. <!-- OpenAI-Codex -->
 
 ### Changed
+
+- Update the resolver repository guard, update-check endpoint, issue-draft URL and regression expectation, package repository metadata, and repository documentation links for the move to `KingsleyHK0323/GTAV_Mods_Manager`. Preserve the existing Pages URL, author metadata, local Git remote, and workflow approval/SHA restrictions. <!-- OpenAI-Codex -->
 
 - Marked FiveM client and GTA V Enhanced provider resolution as under development while focusing on Legacy; other mode entry points still require restrictions.
 - Extended pending-mode restrictions to existing mod lifecycle actions, profile switching, recycle-bin restoration, full-backup operations, FiveM server tools and conversion, and CLI mode selection. Preserved stored data and pending-mode recycle-bin snapshots; UI changes are deferred.

@@ -38,7 +38,7 @@ tied to unlocking functionality.
 ## 4. Official distribution channel
 
 The only official source for this software is
-[GitHub Releases on this repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases).
+[GitHub Releases on this repository](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/releases).
 We make no guarantee about the safety, integrity, or behavior of copies obtained from
 any other source (third-party mirrors, file-sharing sites, etc.) and accept no
 responsibility for any loss or damage resulting from using such copies. Each release
@@ -99,4 +99,6 @@ principles.
 ## Contact
 
 Questions about these terms: open an issue on
-[this repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager/issues).
+[this repository](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/issues).
+
+<!-- OpenAI-Codex -->

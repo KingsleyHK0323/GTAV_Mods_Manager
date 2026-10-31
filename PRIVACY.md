@@ -95,7 +95,7 @@ the current behavior and its "Last updated" date will change.
 ## Contact
 
 Questions about this policy: open an issue on
-[this repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager/issues).
+[this repository](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/issues).
 
 — Kingsley
 

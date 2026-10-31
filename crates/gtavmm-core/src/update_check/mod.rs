@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Checks GitHub Releases for a newer published version than the running one.
 //!
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, CoreResult};
 
 const RELEASES_API_URL: &str =
-    "https://api.github.com/repos/SpaceSquare640/GTAV_Mods_Manager/releases/latest";
+    "https://api.github.com/repos/KingsleyHK0323/GTAV_Mods_Manager/releases/latest";
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {

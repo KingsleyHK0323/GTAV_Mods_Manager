@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
 
 //! Builds a pre-filled GitHub Issue draft for crash/error reporting — per
 //! `PRIVACY.md`, this is opt-in and never submits anything automatically: it only
@@ -10,7 +11,7 @@
 //! leak a username), and includes only app version, OS, and the error text — no
 //! machine identifiers.
 
-const REPO_URL: &str = "https://github.com/SpaceSquare640/GTAV_Mods_Manager";
+const REPO_URL: &str = "https://github.com/KingsleyHK0323/GTAV_Mods_Manager";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrashReportDraft {
@@ -112,7 +113,7 @@ mod tests {
         let draft = build("0.1.0", "windows", "error: file not found\nsecond line");
         assert!(draft
             .github_issue_url
-            .starts_with("https://github.com/SpaceSquare640/GTAV_Mods_Manager/issues/new?title="));
+            .starts_with("https://github.com/KingsleyHK0323/GTAV_Mods_Manager/issues/new?title="));
         assert!(!draft.github_issue_url.contains(' '));
         assert!(!draft.github_issue_url.contains('\n'));
         assert!(draft.github_issue_url.contains("labels=crash-report"));
