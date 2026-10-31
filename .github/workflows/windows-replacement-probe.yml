@@ -132,7 +132,11 @@ jobs:
                           lines.append(line)
                   observation = f'probe={observation_name} observed=true'
                   query_matrix_verified = None
+                  # OpenAI-Codex: independent observation, never overrides the original query.
+                  kernel_backup_verified = None
                   if observation_name == 'security-query':
+                      kernel_backup_verified = (
+                          'probe=kernel_backup_result success=true full_security_proof=false' in lines)
                       query_matrix_verified = (
                           'probe=query_matrix completed=true backup_succeeded=true full_security_proof=false' in lines
                           and all(f'probe=query_result phase={phase} success=true full_security_proof=false' in lines
@@ -145,11 +149,13 @@ jobs:
                       and any(line.startswith('security_privilege_restored=true') for line in lines)
                       and any(line.startswith(observation) for line in lines)
                       and replace_privilege_verified is not False
-                      and query_matrix_verified is not False)
+                      and query_matrix_verified is not False
+                      and kernel_backup_verified is not False)
                   report['cases'].append({'name': case, 'passed': passed, 'observations': lines,
                                           'exit_code': result.returncode,
                                           'replace_privilege_verified': replace_privilege_verified,
-                                          'query_matrix_verified': query_matrix_verified})
+                                          'query_matrix_verified': query_matrix_verified,
+                                          'kernel_backup_verified': kernel_backup_verified})
                   save()
                   if not passed:
                       raise RuntimeError('Experiment failed or was unverifiable; remaining cases stopped.')

@@ -19,14 +19,14 @@ use windows_sys::Win32::Security::Authorization::{
     GetSecurityInfo, SetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    AdjustTokenPrivileges, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-    GetSecurityDescriptorGroup, GetSecurityDescriptorLength, GetSecurityDescriptorOwner,
-    GetSecurityDescriptorSacl, GetTokenInformation, IsValidSecurityDescriptor,
-    LookupPrivilegeValueW, TokenPrivileges, BACKUP_SECURITY_INFORMATION, DACL_SECURITY_INFORMATION,
-    GROUP_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION,
-    SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE, TOKEN_ADJUST_PRIVILEGES,
-    TOKEN_PRIVILEGES, TOKEN_QUERY,
+    AdjustTokenPrivileges, GetKernelObjectSecurity, GetSecurityDescriptorControl,
+    GetSecurityDescriptorDacl, GetSecurityDescriptorGroup, GetSecurityDescriptorLength,
+    GetSecurityDescriptorOwner, GetSecurityDescriptorSacl, GetTokenInformation,
+    IsValidSecurityDescriptor, LookupPrivilegeValueW, TokenPrivileges, BACKUP_SECURITY_INFORMATION,
+    DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES,
+    OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    SACL_SECURITY_INFORMATION, SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, ReplaceFileW, SetFileTime, BY_HANDLE_FILE_INFORMATION,
@@ -829,6 +829,58 @@ fn replacement_observes_security_and_metadata_preservation() -> Result<(), Probe
     with_security_privilege(|_| preservation_observations())
 }
 
+// OpenAI-Codex: caller-owned storage must never enter SecurityAllocation/LocalFree.
+fn kernel_backup_query(file: &File) -> Result<(), ProbeError> {
+    const CAPACITY: u32 = 1_048_576;
+    let mut storage = vec![0u64; CAPACITY as usize / std::mem::size_of::<u64>()];
+    let pointer = storage.as_mut_ptr().cast();
+    let mut needed = 0;
+    println!("probe=kernel_backup api=GetKernelObjectSecurity event=before security_information=65536 capacity={CAPACITY}");
+    // SAFETY: File owns the live handle; initialized, aligned storage has CAPACITY
+    // writable bytes and remains alive through every descriptor inspection.
+    let result = unsafe {
+        GetKernelObjectSecurity(
+            file.as_raw_handle(),
+            BACKUP_SECURITY_INFORMATION,
+            pointer,
+            CAPACITY,
+            &mut needed,
+        )
+    };
+    // Capture failure immediately; success does not define the last-error value.
+    let code = if result == 0 {
+        Some(unsafe { GetLastError() })
+    } else {
+        None
+    };
+    println!("probe=kernel_backup api=GetKernelObjectSecurity event=after success={} os_code={code:?} needed={needed}", result != 0);
+    if let Some(code) = code {
+        return Err(failure(
+            "kernel_backup",
+            io::Error::from_raw_os_error(code as i32),
+        ));
+    }
+    ensure((20..=CAPACITY).contains(&needed), "kernel_backup_needed")?;
+    // SAFETY: successful native API supplied a self-relative descriptor in our
+    // bounded buffer. This trusts the OS output contract, not external bytes.
+    ensure(
+        unsafe { IsValidSecurityDescriptor(pointer) } != 0,
+        "kernel_backup_valid",
+    )?;
+    let mut control = 0;
+    let mut revision = 0;
+    boolean_result(
+        unsafe { GetSecurityDescriptorControl(pointer, &mut control, &mut revision) },
+        "kernel_backup_control",
+    )?;
+    ensure(control & SE_SELF_RELATIVE != 0, "kernel_backup_relative")?;
+    // SAFETY: descriptor validity was checked before requesting its length.
+    let length = unsafe { GetSecurityDescriptorLength(pointer) };
+    ensure((20..=needed).contains(&length), "kernel_backup_length")?;
+    println!("probe=kernel_backup validated=true self_relative=true length={length} full_security_proof=false");
+    Ok(())
+}
+
 fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), ProbeError> {
     let fixture = Fixture::create("security-query")?;
     // Match the earlier failing prepare-target handle's exact requested rights.
@@ -872,6 +924,21 @@ fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), Pr
                 if first_failure.is_none() {
                     first_failure = Some(error);
                 }
+            }
+        }
+    }
+    // OpenAI-Codex: one additional fixed query, never a fallback or retry.
+    ensure(
+        privilege_attributes(&privilege.token, privilege.luid)? & SE_PRIVILEGE_ENABLED != 0,
+        "kernel_backup_privilege_enabled",
+    )?;
+    println!("probe=query_context phase=kernel_backup security_privilege_enabled=true");
+    match kernel_backup_query(&target) {
+        Ok(()) => println!("probe=kernel_backup_result success=true full_security_proof=false"),
+        Err(error) => {
+            println!("probe=kernel_backup_result success=false stage={} os_code={:?} full_security_proof=false", error.stage, error.code);
+            if first_failure.is_none() {
+                first_failure = Some(error);
             }
         }
     }
