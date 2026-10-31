@@ -9,7 +9,7 @@
 
 ### Added
 
-- Prepare ignored Windows-only replacement metadata/sharing probes and a manual-only remote dependency resolver, without changing production DLC writes or ordinary CI. The probes require explicit hosted-Windows scratch approval and full security readability, retain recovery files, and report incomplete coverage. The Windows test dependency awaits formal `Cargo.lock` resolution; no compilation, experiment, dispatch, or artifact transfer has been performed. <!-- OpenAI-Codex -->
+- Prepare ignored Windows-only replacement metadata/sharing probes and a manual-only remote dependency resolver, without changing production DLC writes or ordinary CI. The probes require explicit hosted-Windows scratch approval and full security readability, retain recovery files, and report incomplete coverage. Remote CI for `afecba8` passed all-targets compilation and Clippy on Windows and Ubuntu; Ubuntu tests passed, while Windows retained the two existing DLC replacement failures. Adopt the independently reviewed `Cargo.lock` from remote resolver run 41185646022, adding only the core `windows-sys 0.61.2` dependency edge. Native experiments remain unexecuted; the adopted lockfile awaits subsequent CI verification. <!-- OpenAI-Codex -->
 
 ### Changed
 
