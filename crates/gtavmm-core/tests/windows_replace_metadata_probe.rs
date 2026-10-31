@@ -296,7 +296,9 @@ impl Drop for SecurityPrivilege {
     }
 }
 
-fn with_security_privilege(body: fn() -> Result<(), ProbeError>) -> Result<(), ProbeError> {
+fn with_security_privilege(
+    body: fn(&mut SecurityPrivilege) -> Result<(), ProbeError>,
+) -> Result<(), ProbeError> {
     let outcome = with_security_privilege_impl(body);
     if let Err(error) = &outcome {
         eprintln!(
@@ -307,7 +309,9 @@ fn with_security_privilege(body: fn() -> Result<(), ProbeError>) -> Result<(), P
     outcome
 }
 
-fn with_security_privilege_impl(body: fn() -> Result<(), ProbeError>) -> Result<(), ProbeError> {
+fn with_security_privilege_impl(
+    body: fn(&mut SecurityPrivilege) -> Result<(), ProbeError>,
+) -> Result<(), ProbeError> {
     // Validate all hosted/approval/path gates BEFORE opening or adjusting a token.
     let _root = approved_scratch_root()?;
     let _serial = PRIVILEGE_SERIAL.lock().map_err(|_| ProbeError {
@@ -323,13 +327,16 @@ fn with_security_privilege_impl(body: fn() -> Result<(), ProbeError>) -> Result<
     let mut privilege = SecurityPrivilege::open(allow)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         privilege.enable(allow)?;
-        body()
+        body(&mut privilege)
     }));
     // Explicit restoration runs for successful cases, ordinary errors and panics.
     if let Err(error) = privilege.restore_verified() {
         RESTORE_FAILED.store(true, Ordering::SeqCst);
         if let Ok(Err(original)) = &result {
-            eprintln!("probe_original_failure {original}");
+            eprintln!(
+                "probe=original-failure stage={} os_code={:?}",
+                original.stage, original.code
+            );
         }
         return Err(error);
     }
@@ -712,11 +719,21 @@ fn observe(path: &Path) -> Result<Observation, ProbeError> {
 #[test]
 #[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
 fn replacement_observes_security_and_metadata_preservation() -> Result<(), ProbeError> {
-    with_security_privilege(preservation_observations)
+    with_security_privilege(|_| preservation_observations())
 }
 
 fn preservation_observations() -> Result<(), ProbeError> {
     let fixture = Fixture::create("preservation")?;
+    let (original, replacement) = prepare_preservation_observations(&fixture)?;
+    let result = fixture.replace();
+    fixture.report_paths();
+    result?;
+    verify_preservation(&fixture, original, replacement, "preservation")
+}
+
+fn prepare_preservation_observations(
+    fixture: &Fixture,
+) -> Result<(Observation, Observation), ProbeError> {
     fixture.prepare_contrasting_metadata()?;
     let original = observe(&fixture.target)?;
     let replacement = observe(&fixture.replacement)?;
@@ -728,9 +745,16 @@ fn preservation_observations() -> Result<(), ProbeError> {
         original.creation_time != replacement.creation_time,
         "creation_contrast",
     )?;
-    let result = fixture.replace();
-    fixture.report_paths();
-    result?;
+    // observe() owns and closes its handles before returning these snapshots.
+    Ok((original, replacement))
+}
+
+fn verify_preservation(
+    fixture: &Fixture,
+    original: Observation,
+    replacement: Observation,
+    case: &'static str,
+) -> Result<(), ProbeError> {
     let restored = observe(&fixture.target)?;
     let backup = observe(&fixture.backup)?;
     ensure(
@@ -776,7 +800,7 @@ fn preservation_observations() -> Result<(), ProbeError> {
         read_stream(&fixture.target, "replacement")? == NEW_STREAM,
         "replacement_ads",
     )?;
-    println!("probe=preservation observed=true coverage=partial full_security_proof=false");
+    println!("probe={case} observed=true coverage=partial full_security_proof=false");
     println!(
         "attributes_equal={} last_write_equal={} last_access_equal={}",
         restored.attributes == original.attributes,
@@ -790,7 +814,43 @@ fn preservation_observations() -> Result<(), ProbeError> {
 #[test]
 #[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
 fn denied_delete_sharing_preserves_all_recovery_files() -> Result<(), ProbeError> {
-    with_security_privilege(denied_delete_observations)
+    with_security_privilege(|_| denied_delete_observations())
+}
+
+#[test]
+#[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
+fn replacement_preserves_metadata_after_security_privilege_is_restored() -> Result<(), ProbeError> {
+    with_security_privilege(preservation_after_restore_observations)
+}
+
+fn preservation_after_restore_observations(
+    privilege: &mut SecurityPrivilege,
+) -> Result<(), ProbeError> {
+    // Restoring an initially enabled token would not model the unenabled case.
+    // Refuse before fixture changes instead of silently changing that baseline.
+    ensure(
+        privilege.initial & SE_PRIVILEGE_ENABLED == 0,
+        "initial_security_privilege_must_be_disabled",
+    )?;
+    let fixture = Fixture::create("restored-before-replace")?;
+    let (original, replacement) = prepare_preservation_observations(&fixture)?;
+    if let Err(error) = privilege.restore_verified() {
+        RESTORE_FAILED.store(true, Ordering::SeqCst);
+        return Err(error);
+    }
+    let enabled =
+        privilege_attributes(&privilege.token, privilege.luid)? & SE_PRIVILEGE_ENABLED != 0;
+    ensure(!enabled, "security_privilege_disabled_before_replace")?;
+    println!("security_privilege_at_replace_enabled=false");
+    // No ACCESS_SYSTEM_SECURITY observation handles remain open across replacement.
+    // Only the observation phase below re-enables this existing privilege.
+    let result = fixture.replace();
+    fixture.report_paths();
+    result?;
+    let allow =
+        env::var("GTAVMM_METADATA_PROBE_SECURITY_PRIVILEGE_APPROVED").as_deref() == Ok("yes");
+    privilege.enable(allow)?;
+    verify_preservation(&fixture, original, replacement, "restored-before-replace")
 }
 
 fn denied_delete_observations() -> Result<(), ProbeError> {

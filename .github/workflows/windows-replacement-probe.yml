@@ -62,7 +62,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Compile only the probe and run exact cases in separate serial processes
+      - name: Compile only the probe and run exact comparison cases in separate serial processes
         id: experiment
         shell: python
         run: |
@@ -84,8 +84,10 @@ jobs:
                     'full_security_proof': False, 'fixture_cleanup': 'none',
                     'fixture_lifetime': 'hosted job teardown', 'stage': 'compile'}
           cases = [
-              'replacement_observes_security_and_metadata_preservation',
-              'denied_delete_sharing_preserves_all_recovery_files',
+              ('replacement_preserves_metadata_after_security_privilege_is_restored',
+               'restored-before-replace'),
+              ('replacement_observes_security_and_metadata_preservation', 'preservation'),
+              ('denied_delete_sharing_preserves_all_recovery_files', 'deny-delete'),
           ]
           def save():
               (output / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
@@ -113,7 +115,7 @@ jobs:
                   'GTAVMM_METADATA_PROBE_SECURITY_PRIVILEGE_APPROVED': 'yes',
                   'GTAVMM_METADATA_PROBE_ROOT': str(scratch),
               })
-              for case in cases:
+              for case, observation_name in cases:
                   result = subprocess.run([
                       executables[0], '--exact', case, '--ignored', '--nocapture',
                       '--test-threads=1',
@@ -127,14 +129,17 @@ jobs:
                               and line.startswith(('probe=', 'fixture=', 'security_privilege_',
                                                    'attributes_equal=', 'uncovered='))):
                           lines.append(line)
-                  observation = ('probe=preservation observed=true' if case == cases[0]
-                                 else 'probe=deny-delete observed=true')
+                  observation = f'probe={observation_name} observed=true'
+                  replace_privilege_verified = (observation_name != 'restored-before-replace'
+                      or 'security_privilege_at_replace_enabled=false' in lines)
                   passed = (result.returncode == 0 and re.search(
                       r'test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout) is not None
                       and any(line.startswith('security_privilege_restored=true') for line in lines)
-                      and any(line.startswith(observation) for line in lines))
+                      and any(line.startswith(observation) for line in lines)
+                      and replace_privilege_verified)
                   report['cases'].append({'name': case, 'passed': passed, 'observations': lines,
-                                          'exit_code': result.returncode})
+                                          'exit_code': result.returncode,
+                                          'replace_privilege_verified': replace_privilege_verified})
                   save()
                   if not passed:
                       raise RuntimeError('Experiment failed or was unverifiable; remaining cases stopped.')
@@ -143,7 +148,7 @@ jobs:
               # Only known synthetic fixture paths are inspected; never walk user
               # trees or copy security descriptors. Files remain on the remote host.
               report['fixture_files'] = []
-              for case in ('preservation', 'deny-delete'):
+              for case in ('restored-before-replace', 'preservation', 'deny-delete'):
                   for name in ('target.bin', 'replacement.bin', 'backup.bin'):
                       path = scratch / case / name
                       relative = f'{case}/{name}'
