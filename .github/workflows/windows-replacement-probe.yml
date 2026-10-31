@@ -84,6 +84,7 @@ jobs:
                     'full_security_proof': False, 'fixture_cleanup': 'none',
                     'fixture_lifetime': 'hosted job teardown', 'stage': 'compile'}
           cases = [
+              ('security_query_distinguishes_general_sacl_and_backup', 'security-query'),
               ('replacement_preserves_metadata_after_security_privilege_is_restored',
                'restored-before-replace'),
               ('replacement_observes_security_and_metadata_preservation', 'preservation'),
@@ -130,16 +131,25 @@ jobs:
                                                    'attributes_equal=', 'uncovered='))):
                           lines.append(line)
                   observation = f'probe={observation_name} observed=true'
-                  replace_privilege_verified = (observation_name != 'restored-before-replace'
-                      or 'security_privilege_at_replace_enabled=false' in lines)
+                  query_matrix_verified = None
+                  if observation_name == 'security-query':
+                      query_matrix_verified = (
+                          'probe=query_matrix completed=true backup_succeeded=true full_security_proof=false' in lines
+                          and all(f'probe=query_result phase={phase} success=true full_security_proof=false' in lines
+                                  for phase in ('query_general', 'query_sacl', 'query_backup')))
+                  replace_privilege_verified = (None if observation_name == 'security-query' else
+                      (observation_name != 'restored-before-replace'
+                       or 'security_privilege_at_replace_enabled=false' in lines))
                   passed = (result.returncode == 0 and re.search(
                       r'test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout) is not None
                       and any(line.startswith('security_privilege_restored=true') for line in lines)
                       and any(line.startswith(observation) for line in lines)
-                      and replace_privilege_verified)
+                      and replace_privilege_verified is not False
+                      and query_matrix_verified is not False)
                   report['cases'].append({'name': case, 'passed': passed, 'observations': lines,
                                           'exit_code': result.returncode,
-                                          'replace_privilege_verified': replace_privilege_verified})
+                                          'replace_privilege_verified': replace_privilege_verified,
+                                          'query_matrix_verified': query_matrix_verified})
                   save()
                   if not passed:
                       raise RuntimeError('Experiment failed or was unverifiable; remaining cases stopped.')
@@ -148,7 +158,7 @@ jobs:
               # Only known synthetic fixture paths are inspected; never walk user
               # trees or copy security descriptors. Files remain on the remote host.
               report['fixture_files'] = []
-              for case in ('restored-before-replace', 'preservation', 'deny-delete'):
+              for case in ('security-query', 'restored-before-replace', 'preservation', 'deny-delete'):
                   for name in ('target.bin', 'replacement.bin', 'backup.bin'):
                       path = scratch / case / name
                       relative = f'{case}/{name}'

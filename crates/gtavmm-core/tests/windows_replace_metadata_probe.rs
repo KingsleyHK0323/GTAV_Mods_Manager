@@ -20,9 +20,11 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     AdjustTokenPrivileges, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-    GetSecurityDescriptorLength, GetTokenInformation, IsValidSecurityDescriptor,
+    GetSecurityDescriptorGroup, GetSecurityDescriptorLength, GetSecurityDescriptorOwner,
+    GetSecurityDescriptorSacl, GetTokenInformation, IsValidSecurityDescriptor,
     LookupPrivilegeValueW, TokenPrivileges, BACKUP_SECURITY_INFORMATION, DACL_SECURITY_INFORMATION,
-    LUID_AND_ATTRIBUTES, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    GROUP_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION,
     SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE, TOKEN_ADJUST_PRIVILEGES,
     TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
@@ -633,14 +635,18 @@ struct SecurityAllocation(PSECURITY_DESCRIPTOR);
 
 impl SecurityAllocation {
     fn read(file: &File, stage: &'static str) -> Result<Self, ProbeError> {
+        Self::query(file, stage, BACKUP_SECURITY_INFORMATION)
+    }
+
+    fn query(file: &File, stage: &'static str, information: u32) -> Result<Self, ProbeError> {
         let mut pointer = null_mut();
-        println!("probe=security phase={stage} api=GetSecurityInfo event=before security_information={BACKUP_SECURITY_INFORMATION}");
+        println!("probe=security phase={stage} api=GetSecurityInfo event=before security_information={information}");
         // SAFETY: borrowed File owns its live handle; output pointer is initialized.
         let status = unsafe {
             GetSecurityInfo(
                 file.as_raw_handle(),
                 SE_FILE_OBJECT,
-                BACKUP_SECURITY_INFORMATION,
+                information,
                 null_mut(),
                 null_mut(),
                 null_mut(),
@@ -659,11 +665,65 @@ impl SecurityAllocation {
         // Own the allocation before reporting success, including on output panic.
         println!("probe=security phase={stage} api=GetSecurityInfo event=after os_code=0");
         // SAFETY: successful GetSecurityInfo returned this live LocalAlloc buffer.
-        ensure(
-            unsafe { IsValidSecurityDescriptor(descriptor.0) } != 0,
-            "valid_security_descriptor",
-        )?;
+        let valid = unsafe { IsValidSecurityDescriptor(descriptor.0) } != 0;
+        println!("probe=query_descriptor phase={stage} valid={valid}");
+        ensure(valid, "valid_security_descriptor")?;
         Ok(descriptor)
+    }
+
+    fn report_requested_parts(
+        &self,
+        information: u32,
+        stage: &'static str,
+    ) -> Result<(), ProbeError> {
+        let all = information & BACKUP_SECURITY_INFORMATION != 0;
+        let owner_requested = all || information & OWNER_SECURITY_INFORMATION != 0;
+        let group_requested = all || information & GROUP_SECURITY_INFORMATION != 0;
+        let dacl_requested = all || information & DACL_SECURITY_INFORMATION != 0;
+        let sacl_requested = all || information & SACL_SECURITY_INFORMATION != 0;
+        let mut owner = null_mut();
+        let mut group = null_mut();
+        let mut dacl = null_mut();
+        let mut sacl = null_mut();
+        let mut defaulted = 0;
+        let mut dacl_present = 0;
+        let mut sacl_present = 0;
+        // SAFETY: self owns a validated live descriptor. Each requested getter
+        // receives correctly typed output storage, never an unrequested pointer.
+        if owner_requested {
+            boolean_result(
+                unsafe { GetSecurityDescriptorOwner(self.0, &mut owner, &mut defaulted) },
+                "query_parts_owner",
+            )?;
+        }
+        if group_requested {
+            boolean_result(
+                unsafe { GetSecurityDescriptorGroup(self.0, &mut group, &mut defaulted) },
+                "query_parts_group",
+            )?;
+        }
+        if dacl_requested {
+            boolean_result(
+                unsafe {
+                    GetSecurityDescriptorDacl(self.0, &mut dacl_present, &mut dacl, &mut defaulted)
+                },
+                "query_parts_dacl",
+            )?;
+        }
+        if sacl_requested {
+            boolean_result(
+                unsafe {
+                    GetSecurityDescriptorSacl(self.0, &mut sacl_present, &mut sacl, &mut defaulted)
+                },
+                "query_parts_sacl",
+            )?;
+        }
+        // Absent and null ACLs are observations, not fabricated empty ACLs or a
+        // reason to allow replacement. No pointer or SID bytes are emitted.
+        println!("probe=query_parts phase={stage} descriptor_valid=true owner_requested={owner_requested} owner_present={} group_requested={group_requested} group_present={} dacl_requested={dacl_requested} dacl_present={} dacl_null={} sacl_requested={sacl_requested} sacl_present={} sacl_null={}",
+            !owner.is_null(), !group.is_null(), dacl_present != 0, dacl_present != 0 && dacl.is_null(),
+            sacl_present != 0, sacl_present != 0 && sacl.is_null());
+        Ok(())
     }
 
     fn bytes(&self) -> Result<Vec<u8>, ProbeError> {
@@ -759,8 +819,71 @@ fn observe(
 
 #[test]
 #[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
+fn security_query_distinguishes_general_sacl_and_backup() -> Result<(), ProbeError> {
+    with_security_privilege(query_matrix_observations)
+}
+
+#[test]
+#[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
 fn replacement_observes_security_and_metadata_preservation() -> Result<(), ProbeError> {
     with_security_privilege(|_| preservation_observations())
+}
+
+fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), ProbeError> {
+    let fixture = Fixture::create("security-query")?;
+    // Match the earlier failing prepare-target handle's exact requested rights.
+    // Do not call prepare_contrasting_metadata: this case never changes ACLs,
+    // timestamps or streams, and never calls ReplaceFileW.
+    let target = security_file(
+        &fixture.target,
+        WRITE_DAC | FILE_WRITE_ATTRIBUTES,
+        "query_target_open",
+    )?;
+    let queries = [
+        (
+            "query_general",
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        ),
+        ("query_sacl", SACL_SECURITY_INFORMATION),
+        ("query_backup", BACKUP_SECURITY_INFORMATION),
+    ];
+    let mut first_failure = None;
+    let mut backup_succeeded = false;
+    for (stage, information) in queries {
+        // Every request uses this same File and process token; no enable/restore
+        // or fixture mutation is performed between the three bounded requests.
+        ensure(
+            privilege_attributes(&privilege.token, privilege.luid)? & SE_PRIVILEGE_ENABLED != 0,
+            "query_matrix_privilege_enabled",
+        )?;
+        println!("probe=query_context phase={stage} security_privilege_enabled=true");
+        let outcome = SecurityAllocation::query(&target, stage, information)
+            .and_then(|descriptor| descriptor.report_requested_parts(information, stage));
+        if information == BACKUP_SECURITY_INFORMATION {
+            backup_succeeded = outcome.is_ok();
+        }
+        match outcome {
+            Ok(()) => {
+                println!("probe=query_result phase={stage} success=true full_security_proof=false")
+            }
+            Err(error) => {
+                println!("probe=query_result phase={stage} success=false stage={} os_code={:?} full_security_proof=false",
+                    error.stage, error.code);
+                if first_failure.is_none() {
+                    first_failure = Some(error);
+                }
+            }
+        }
+    }
+    println!("probe=query_matrix completed=true backup_succeeded={backup_succeeded} full_security_proof=false");
+    // Nonzero statuses are collected only inside this finite diagnostic matrix.
+    // Any failed request invalidates this case and stops subsequent workflow cases.
+    if let Some(error) = first_failure {
+        return Err(error);
+    }
+    ensure(backup_succeeded, "query_matrix_backup_required")?;
+    println!("probe=security-query observed=true coverage=query_only full_security_proof=false");
+    Ok(())
 }
 
 fn preservation_observations() -> Result<(), ProbeError> {
