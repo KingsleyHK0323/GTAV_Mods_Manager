@@ -7,17 +7,24 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, PathBuf};
 use std::ptr::{null, null_mut};
-use windows_sys::Win32::Foundation::{LocalFree, ERROR_SHARING_VIOLATION, FILETIME};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use windows_sys::Win32::Foundation::{
+    GetLastError, LocalFree, SetLastError, ERROR_SHARING_VIOLATION, FILETIME, LUID,
+};
 use windows_sys::Win32::Security::Authorization::{
     GetSecurityInfo, SetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorLength,
-    IsValidSecurityDescriptor, BACKUP_SECURITY_INFORMATION, DACL_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SE_SELF_RELATIVE,
+    AdjustTokenPrivileges, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+    GetSecurityDescriptorLength, GetTokenInformation, IsValidSecurityDescriptor,
+    LookupPrivilegeValueW, TokenPrivileges, BACKUP_SECURITY_INFORMATION, DACL_SECURITY_INFORMATION,
+    LUID_AND_ATTRIBUTES, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE, TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, ReplaceFileW, SetFileTime, BY_HANDLE_FILE_INFORMATION,
@@ -25,6 +32,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_SYSTEM_SECURITY;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const OLD_BYTES: &[u8] = b"original fixture payload";
 const NEW_BYTES: &[u8] = b"replacement fixture payload";
@@ -71,6 +79,269 @@ fn boolean_result(value: i32, stage: &'static str) -> Result<(), ProbeError> {
     }
 }
 
+static PRIVILEGE_SERIAL: Mutex<()> = Mutex::new(());
+static RESTORE_FAILED: AtomicBool = AtomicBool::new(false);
+
+fn same_luid(left: LUID, right: LUID) -> bool {
+    left.LowPart == right.LowPart && left.HighPart == right.HighPart
+}
+
+fn privilege_attributes(token: &OwnedHandle, luid: LUID) -> Result<u32, ProbeError> {
+    // Initialized u64 storage provides alignment for the native trailing array.
+    // A token exceeding this fixed bound is refused rather than partially read.
+    let mut words = vec![0u64; 8192];
+    let capacity = std::mem::size_of_val(words.as_slice());
+    let mut returned = 0;
+    // SAFETY: token remains owned, buffer has capacity bytes and native alignment.
+    boolean_result(
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenPrivileges,
+                words.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut returned,
+            )
+        },
+        "query_security_privilege",
+    )?;
+    let length = returned as usize;
+    let offset = std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges);
+    ensure(
+        length >= offset && length <= capacity,
+        "privilege_buffer_length",
+    )?;
+    // SAFETY: length contains the native count field; words are initialized/aligned.
+    let count = unsafe { *words.as_ptr().cast::<u32>() } as usize;
+    ensure(
+        count <= (length - offset) / std::mem::size_of::<LUID_AND_ATTRIBUTES>(),
+        "privilege_array_length",
+    )?;
+    // SAFETY: the count/offset were checked against the actual returned buffer.
+    let entries = unsafe {
+        std::slice::from_raw_parts(
+            words
+                .as_ptr()
+                .cast::<u8>()
+                .add(offset)
+                .cast::<LUID_AND_ATTRIBUTES>(),
+            count,
+        )
+    };
+    entries
+        .iter()
+        .find(|entry| same_luid(entry.Luid, luid))
+        .map(|entry| entry.Attributes)
+        .ok_or(ProbeError {
+            stage: "security_privilege_absent",
+            code: None,
+        })
+}
+
+struct SecurityPrivilege {
+    token: OwnedHandle,
+    luid: LUID,
+    initial: u32,
+    dirty: bool,
+}
+
+impl SecurityPrivilege {
+    fn open(allow_adjustment: bool) -> Result<Self, ProbeError> {
+        let mut handle = null_mut();
+        let access = TOKEN_QUERY
+            | if allow_adjustment {
+                TOKEN_ADJUST_PRIVILEGES
+            } else {
+                0
+            };
+        // SAFETY: output handle is initialized; pseudo process handle is borrowed.
+        boolean_result(
+            unsafe { OpenProcessToken(GetCurrentProcess(), access, &mut handle) },
+            "open_test_process_token",
+        )?;
+        ensure(!handle.is_null(), "token_handle_present")?;
+        // SAFETY: successful OpenProcessToken transfers one owned, closable handle.
+        let token = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let mut luid = LUID::default();
+        // SAFETY: literal is NUL-terminated; the LUID output lives through the call.
+        boolean_result(
+            unsafe {
+                LookupPrivilegeValueW(
+                    null(),
+                    windows_sys::core::w!("SeSecurityPrivilege"),
+                    &mut luid,
+                )
+            },
+            "lookup_security_privilege",
+        )?;
+        let initial = privilege_attributes(&token, luid)?;
+        println!(
+            "security_privilege_present=true initially_enabled={}",
+            initial & SE_PRIVILEGE_ENABLED != 0
+        );
+        Ok(Self {
+            token,
+            luid,
+            initial,
+            dirty: false,
+        })
+    }
+
+    fn enable(&mut self, allow_adjustment: bool) -> Result<(), ProbeError> {
+        if self.initial & SE_PRIVILEGE_ENABLED != 0 {
+            return Ok(());
+        }
+        ensure(
+            allow_adjustment,
+            "security_privilege_explicit_opt_in_required",
+        )?;
+        let request = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: self.luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let mut previous = TOKEN_PRIVILEGES::default();
+        let mut returned = 0;
+        // Arm restoration before an API can change the process-wide token.
+        self.dirty = true;
+        // SAFETY: all native buffers have the generated type and correct size.
+        // GetLastError is captured immediately, including success/NOT_ALL_ASSIGNED.
+        let (result, code) = unsafe {
+            SetLastError(0);
+            let result = AdjustTokenPrivileges(
+                self.token.as_raw_handle(),
+                0,
+                &request,
+                std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                &mut previous,
+                &mut returned,
+            );
+            (result, GetLastError())
+        };
+        if result == 0 || code != 0 {
+            return Err(failure(
+                "enable_security_privilege",
+                io::Error::from_raw_os_error(code as i32),
+            ));
+        }
+        ensure(
+            previous.PrivilegeCount == 1
+                && same_luid(previous.Privileges[0].Luid, self.luid)
+                && previous.Privileges[0].Attributes == self.initial,
+            "previous_privilege_state",
+        )?;
+        // Use the actual previous state returned by the successful adjustment.
+        self.initial = previous.Privileges[0].Attributes;
+        ensure(
+            privilege_attributes(&self.token, self.luid)? & SE_PRIVILEGE_ENABLED != 0,
+            "security_privilege_enabled_verified",
+        )?;
+        println!("security_privilege_adjusted=true");
+        Ok(())
+    }
+
+    fn restore_verified(&mut self) -> Result<(), ProbeError> {
+        let changed = self.dirty;
+        if changed {
+            let request = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: self.luid,
+                    Attributes: self.initial & SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            // SAFETY: valid owned token; restore only this privilege's enabled bit.
+            let (result, code) = unsafe {
+                SetLastError(0);
+                let result = AdjustTokenPrivileges(
+                    self.token.as_raw_handle(),
+                    0,
+                    &request,
+                    0,
+                    null_mut(),
+                    null_mut(),
+                );
+                (result, GetLastError())
+            };
+            if result == 0 || code != 0 {
+                return Err(failure(
+                    "restore_security_privilege",
+                    io::Error::from_raw_os_error(code as i32),
+                ));
+            }
+        }
+        ensure(
+            privilege_attributes(&self.token, self.luid)? & SE_PRIVILEGE_ENABLED
+                == self.initial & SE_PRIVILEGE_ENABLED,
+            "security_privilege_restore_verified",
+        )?;
+        self.dirty = false;
+        println!("security_privilege_restored=true changed={changed}");
+        Ok(())
+    }
+}
+
+impl Drop for SecurityPrivilege {
+    fn drop(&mut self) {
+        if self.dirty {
+            // Fallback only. A failed explicit restoration already invalidated the
+            // experiment, even if this attempt succeeds during stack unwinding.
+            RESTORE_FAILED.store(true, Ordering::SeqCst);
+            if let Err(error) = self.restore_verified() {
+                eprintln!("security_privilege_fallback_restore_failed {error}");
+            }
+        }
+    }
+}
+
+fn with_security_privilege(body: fn() -> Result<(), ProbeError>) -> Result<(), ProbeError> {
+    let outcome = with_security_privilege_impl(body);
+    if let Err(error) = &outcome {
+        eprintln!(
+            "probe=failure stage={} os_code={:?}",
+            error.stage, error.code
+        );
+    }
+    outcome
+}
+
+fn with_security_privilege_impl(body: fn() -> Result<(), ProbeError>) -> Result<(), ProbeError> {
+    // Validate all hosted/approval/path gates BEFORE opening or adjusting a token.
+    let _root = approved_scratch_root()?;
+    let _serial = PRIVILEGE_SERIAL.lock().map_err(|_| ProbeError {
+        stage: "privilege_serialization",
+        code: None,
+    })?;
+    ensure(
+        !RESTORE_FAILED.load(Ordering::SeqCst),
+        "previous_restore_failure",
+    )?;
+    let allow =
+        env::var("GTAVMM_METADATA_PROBE_SECURITY_PRIVILEGE_APPROVED").as_deref() == Ok("yes");
+    let mut privilege = SecurityPrivilege::open(allow)?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        privilege.enable(allow)?;
+        body()
+    }));
+    // Explicit restoration runs for successful cases, ordinary errors and panics.
+    if let Err(error) = privilege.restore_verified() {
+        RESTORE_FAILED.store(true, Ordering::SeqCst);
+        if let Ok(Err(original)) = &result {
+            eprintln!("probe_original_failure {original}");
+        }
+        return Err(error);
+    }
+    match result {
+        Ok(outcome) => outcome,
+        Err(panic) => {
+            eprintln!("probe=panic security_privilege_restore_verified=true");
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
 fn ordinary_directory(path: &Path) -> Result<(), ProbeError> {
     // Reject linked/reparse ancestors before trusting an explicitly supplied root.
     for ancestor in path.ancestors() {
@@ -91,70 +362,75 @@ struct Fixture {
     case: &'static str,
 }
 
+fn approved_scratch_root() -> Result<PathBuf, ProbeError> {
+    ensure(
+        env::var("GTAVMM_METADATA_PROBE_APPROVED").as_deref() == Ok("yes"),
+        "explicit_opt_in",
+    )?;
+    ensure(
+        env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+            && env::var("RUNNER_ENVIRONMENT").as_deref() == Ok("github-hosted")
+            && env::var("RUNNER_OS").as_deref() == Ok("Windows"),
+        "hosted_windows_only",
+    )?;
+    let run = env::var("GITHUB_RUN_ID").map_err(|_| ProbeError {
+        stage: "run_id",
+        code: None,
+    })?;
+    let attempt = env::var("GITHUB_RUN_ATTEMPT").map_err(|_| ProbeError {
+        stage: "run_attempt",
+        code: None,
+    })?;
+    ensure(
+        !run.is_empty()
+            && run.bytes().all(|b| b.is_ascii_digit())
+            && !attempt.is_empty()
+            && attempt.bytes().all(|b| b.is_ascii_digit()),
+        "numeric_run_identity",
+    )?;
+    let temp = env::var_os("RUNNER_TEMP")
+        .map(PathBuf::from)
+        .ok_or(ProbeError {
+            stage: "runner_temp",
+            code: None,
+        })?;
+    ensure(temp.is_absolute(), "absolute_runner_temp")?;
+    ordinary_directory(&temp)?;
+    let temp = fs::canonicalize(temp).map_err(|e| failure("canonical_runner_temp", e))?;
+    let root = env::var_os("GTAVMM_METADATA_PROBE_ROOT")
+        .map(PathBuf::from)
+        .ok_or(ProbeError {
+            stage: "scratch_root",
+            code: None,
+        })?;
+    ensure(
+        root.is_absolute()
+            && !root
+                .components()
+                .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+        "absolute_scratch_root",
+    )?;
+    // Canonicalize only the existing parent, never follow an existing fixture.
+    let parent = root.parent().ok_or(ProbeError {
+        stage: "scratch_parent",
+        code: None,
+    })?;
+    ordinary_directory(parent)?;
+    ensure(
+        fs::canonicalize(parent).map_err(|e| failure("canonical_scratch_parent", e))? == temp,
+        "scratch_direct_child",
+    )?;
+    let name = format!("gtavmm-metadata-probe-{run}-{attempt}");
+    ensure(
+        root.file_name() == Some(std::ffi::OsStr::new(&name)),
+        "dedicated_scratch_name",
+    )?;
+    Ok(root)
+}
+
 impl Fixture {
     fn create(case: &'static str) -> Result<Self, ProbeError> {
-        ensure(
-            env::var("GTAVMM_METADATA_PROBE_APPROVED").as_deref() == Ok("yes"),
-            "explicit_opt_in",
-        )?;
-        ensure(
-            env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
-                && env::var("RUNNER_ENVIRONMENT").as_deref() == Ok("github-hosted")
-                && env::var("RUNNER_OS").as_deref() == Ok("Windows"),
-            "hosted_windows_only",
-        )?;
-        let run = env::var("GITHUB_RUN_ID").map_err(|_| ProbeError {
-            stage: "run_id",
-            code: None,
-        })?;
-        let attempt = env::var("GITHUB_RUN_ATTEMPT").map_err(|_| ProbeError {
-            stage: "run_attempt",
-            code: None,
-        })?;
-        ensure(
-            !run.is_empty()
-                && run.bytes().all(|b| b.is_ascii_digit())
-                && !attempt.is_empty()
-                && attempt.bytes().all(|b| b.is_ascii_digit()),
-            "numeric_run_identity",
-        )?;
-        let temp = env::var_os("RUNNER_TEMP")
-            .map(PathBuf::from)
-            .ok_or(ProbeError {
-                stage: "runner_temp",
-                code: None,
-            })?;
-        ensure(temp.is_absolute(), "absolute_runner_temp")?;
-        ordinary_directory(&temp)?;
-        let temp = fs::canonicalize(temp).map_err(|e| failure("canonical_runner_temp", e))?;
-        let root = env::var_os("GTAVMM_METADATA_PROBE_ROOT")
-            .map(PathBuf::from)
-            .ok_or(ProbeError {
-                stage: "scratch_root",
-                code: None,
-            })?;
-        ensure(
-            root.is_absolute()
-                && !root
-                    .components()
-                    .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
-            "absolute_scratch_root",
-        )?;
-        // Canonicalize only the existing parent, never follow an existing fixture.
-        let parent = root.parent().ok_or(ProbeError {
-            stage: "scratch_parent",
-            code: None,
-        })?;
-        ordinary_directory(parent)?;
-        ensure(
-            fs::canonicalize(parent).map_err(|e| failure("canonical_scratch_parent", e))? == temp,
-            "scratch_direct_child",
-        )?;
-        let name = format!("gtavmm-metadata-probe-{run}-{attempt}");
-        ensure(
-            root.file_name() == Some(std::ffi::OsStr::new(&name)),
-            "dedicated_scratch_name",
-        )?;
+        let root = approved_scratch_root()?;
         match fs::create_dir(&root) {
             Ok(()) => (),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -436,6 +712,10 @@ fn observe(path: &Path) -> Result<Observation, ProbeError> {
 #[test]
 #[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
 fn replacement_observes_security_and_metadata_preservation() -> Result<(), ProbeError> {
+    with_security_privilege(preservation_observations)
+}
+
+fn preservation_observations() -> Result<(), ProbeError> {
     let fixture = Fixture::create("preservation")?;
     fixture.prepare_contrasting_metadata()?;
     let original = observe(&fixture.target)?;
@@ -510,6 +790,10 @@ fn replacement_observes_security_and_metadata_preservation() -> Result<(), Probe
 #[test]
 #[ignore = "Requires separately approved GitHub-hosted Windows scratch experiment"]
 fn denied_delete_sharing_preserves_all_recovery_files() -> Result<(), ProbeError> {
+    with_security_privilege(denied_delete_observations)
+}
+
+fn denied_delete_observations() -> Result<(), ProbeError> {
     let fixture = Fixture::create("deny-delete")?;
     // Full-security readability is required before attempting any replacement.
     let original = observe(&fixture.target)?;

@@ -1,0 +1,175 @@
+# OpenAI-Codex
+# Source preparation only. Dispatch, remote compilation, privilege adjustment,
+# fixture mutation and report upload require separate, explicit approval.
+name: Isolated Windows replacement probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed Source_Code commit SHA
+        required: true
+        type: string
+      allow_existing_security_privilege:
+        description: Approve temporary existing SeSecurityPrivilege adjustment in each remote test process
+        required: true
+        default: false
+        type: boolean
+      allow_fixture_changes:
+        description: Approve scratch-only replacement, DACL protection, timestamps, ADS and sanitized report upload
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository == 'KingsleyHK0323/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      APPROVED_SHA: ${{ inputs.approved_sha }}
+      DISPATCH_SHA: ${{ github.sha }}
+      PRIVILEGE_APPROVAL: ${{ inputs.allow_existing_security_privilege }}
+      FIXTURE_APPROVAL: ${{ inputs.allow_fixture_changes }}
+    steps:
+      - name: Validate exact revision and explicit approvals
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows') {
+            throw 'GitHub-hosted Windows is required.'
+          }
+          if ($env:APPROVED_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:APPROVED_SHA -cne $env:DISPATCH_SHA) {
+            throw 'Dispatch does not match the reviewed revision.'
+          }
+          if ($env:PRIVILEGE_APPROVAL -cne 'true' -or $env:FIXTURE_APPROVAL -cne 'true') {
+            throw 'Both experiment approvals are required.'
+          }
+
+      - name: Checkout reviewed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_sha }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up report writer
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile only the probe and run exact cases in separate serial processes
+        id: experiment
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+
+          identity = f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          scratch = Path(os.environ['RUNNER_TEMP']) / f'gtavmm-metadata-probe-{identity}'
+          output = Path(os.environ['RUNNER_TEMP']) / f'gtavmm-replacement-report-{identity}'
+          if scratch.exists() or scratch.is_symlink():
+              raise RuntimeError('Scratch already exists; refusing reuse.')
+          output.mkdir(exist_ok=False)
+          report = {'revision': os.environ['APPROVED_SHA'], 'cases': [],
+                    'full_security_proof': False, 'fixture_cleanup': 'none',
+                    'fixture_lifetime': 'hosted job teardown', 'stage': 'compile'}
+          cases = [
+              'replacement_observes_security_and_metadata_preservation',
+              'denied_delete_sharing_preserves_all_recovery_files',
+          ]
+          def save():
+              (output / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          try:
+              build = subprocess.run([
+                  'cargo', 'test', '-p', 'gtavmm-core', '--test',
+                  'windows_replace_metadata_probe', '--locked', '--no-run',
+                  '--message-format=json',
+              ], stdout=subprocess.PIPE, text=True, encoding='utf-8')
+              if build.returncode != 0:
+                  raise RuntimeError('Probe compilation failed; no experiments executed.')
+              executables = []
+              for line in build.stdout.splitlines():
+                  message = json.loads(line)
+                  if (message.get('reason') == 'compiler-artifact'
+                          and message.get('target', {}).get('name') == 'windows_replace_metadata_probe'
+                          and message.get('executable')):
+                      executables.append(message['executable'])
+              if len(executables) != 1:
+                  raise RuntimeError('Expected exactly one probe test executable.')
+              report['stage'] = 'experiments'
+              environment = os.environ.copy()
+              environment.update({
+                  'GTAVMM_METADATA_PROBE_APPROVED': 'yes',
+                  'GTAVMM_METADATA_PROBE_SECURITY_PRIVILEGE_APPROVED': 'yes',
+                  'GTAVMM_METADATA_PROBE_ROOT': str(scratch),
+              })
+              for case in cases:
+                  result = subprocess.run([
+                      executables[0], '--exact', case, '--ignored', '--nocapture',
+                      '--test-threads=1',
+                  ], env=environment, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                  # Only fixed-format probe observations are retained. No raw
+                  # process output, descriptors, SIDs or absolute paths are uploaded.
+                  lines = []
+                  for line in (result.stdout + '\n' + result.stderr).splitlines():
+                      line = line.removeprefix(f'test {case} ... ')
+                      if (re.fullmatch(r'[A-Za-z0-9_=.,? ()/-]+', line)
+                              and line.startswith(('probe=', 'fixture=', 'security_privilege_',
+                                                   'attributes_equal=', 'uncovered='))):
+                          lines.append(line)
+                  observation = ('probe=preservation observed=true' if case == cases[0]
+                                 else 'probe=deny-delete observed=true')
+                  passed = (result.returncode == 0 and re.search(
+                      r'test result: ok\. 1 passed; 0 failed; 0 ignored;', result.stdout) is not None
+                      and any(line.startswith('security_privilege_restored=true') for line in lines)
+                      and any(line.startswith(observation) for line in lines))
+                  report['cases'].append({'name': case, 'passed': passed, 'observations': lines,
+                                          'exit_code': result.returncode})
+                  save()
+                  if not passed:
+                      raise RuntimeError('Experiment failed or was unverifiable; remaining cases stopped.')
+              report['stage'] = 'completed'
+          finally:
+              # Only known synthetic fixture paths are inspected; never walk user
+              # trees or copy security descriptors. Files remain on the remote host.
+              report['fixture_files'] = []
+              for case in ('preservation', 'deny-delete'):
+                  for name in ('target.bin', 'replacement.bin', 'backup.bin'):
+                      path = scratch / case / name
+                      relative = f'{case}/{name}'
+                      try:
+                          for ancestor in (scratch, scratch / case):
+                              attrs = ancestor.lstat().st_file_attributes
+                              if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                                  raise RuntimeError('Linked fixture ancestry; observation refused.')
+                          info = path.lstat()
+                          if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                  or info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                                  or info.st_size > 1048576):
+                              raise RuntimeError('Unsafe fixture file; observation refused.')
+                          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                          report['fixture_files'].append({'path': relative, 'sha256': digest})
+                      except FileNotFoundError:
+                          report['fixture_files'].append({'path': relative, 'missing': True})
+                      except (OSError, RuntimeError):
+                          report['fixture_files'].append({'path': relative, 'unverifiable': True})
+              save()
+
+      - name: Upload sanitized observations only
+        if: ${{ !cancelled() && steps.experiment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-replacement-observations-${{ github.sha }}
+          path: ${{ runner.temp }}/gtavmm-replacement-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+          if-no-files-found: error
+          retention-days: 3

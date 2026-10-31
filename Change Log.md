@@ -9,6 +9,8 @@
 
 ### Added
 
+- Prepare an explicitly opted-in, remote-test-only wrapper for an existing `SeSecurityPrivilege`, with bounded token queries, exact adjustment error checks, serialized access and explicit verified restoration on success, failure or panic. Add a separate manual native probe workflow with exact revision/approval gates, locked probe-only compilation, separate serial case processes and sanitized reports. Only the existing Windows Threading binding feature is enabled; production DLC writes and the two failing regression tests remain unchanged. This preparation has not been compiled or executed, and does not establish complete ACL preservation. <!-- OpenAI-Codex -->
+
 - Prepare ignored Windows-only replacement metadata/sharing probes and a manual-only remote dependency resolver, without changing production DLC writes or ordinary CI. The probes require explicit hosted-Windows scratch approval and full security readability, retain recovery files, and report incomplete coverage. Remote CI for `afecba8` passed all-targets compilation and Clippy on Windows and Ubuntu; Ubuntu tests passed, while Windows retained the two existing DLC replacement failures. Adopt the independently reviewed `Cargo.lock` from remote resolver run 41185646022, adding only the core `windows-sys 0.61.2` dependency edge. Post-adoption CI for `fb306b9` also passed all-targets compilation and Clippy on both platforms; Ubuntu tests passed and the same two Windows DLC tests failed. Native experiments remain unexecuted. <!-- OpenAI-Codex -->
 
 ### Changed

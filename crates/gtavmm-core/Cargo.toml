@@ -45,7 +45,7 @@ assert_fs = "1"
 predicates = "3"
 rars = { workspace = true, features = ["write"] }
 
-# OpenAI-Codex: Isolated ignored probes only; lockfile resolution is pending.
+# OpenAI-Codex: Isolated ignored probes only; no production token adjustment.
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
@@ -53,4 +53,5 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_SystemServices",
+    "Win32_System_Threading",
 ] }
