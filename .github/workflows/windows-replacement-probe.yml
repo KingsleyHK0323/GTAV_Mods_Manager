@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload sanitized observations only
         if: ${{ !cancelled() && steps.experiment.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-replacement-observations-${{ github.sha }}
           path: ${{ runner.temp }}/gtavmm-replacement-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
