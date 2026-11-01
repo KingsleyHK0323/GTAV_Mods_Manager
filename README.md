@@ -13,7 +13,7 @@ Copyright © Kingsley.
 
 - Traditional Chinese and English pages with Starlight search and navigation.
 - A browser-only demo for filtering, selecting, and changing sample mod states, with a session activity summary. It does not access GTA V folders or persist demo changes or history.
-- Bilingual product documentation for getting started, mod installation, mod translation, installed mod management, downloads, privacy, supported modes, safety, and licenses.
+- Bilingual product documentation for getting started, mod installation, mod translation, installed mod management, downloads, privacy, supported modes, safety, and licenses, including current mode restrictions and recovery and data-flow limits.
 - Light and dark themes, system theme behavior, keyboard-accessible controls, and increased-contrast styles.
 - GitHub Actions workflow that builds, verifies bilingual SEO output, and deploys the site from the website branch on GitHub-hosted runners.
 
@@ -44,5 +44,5 @@ These terms make this project source-available under noncommercial licenses.
 
 ## Project links
 
-- [GTAV Mods Manager repository](https://github.com/SpaceSquare640/GTAV_Mods_Manager)
+- [GTAV Mods Manager repository](https://github.com/KingsleyHK0323/GTAV_Mods_Manager)
 - [Changelog](./Change%20Log.md)

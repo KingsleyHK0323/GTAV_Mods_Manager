@@ -6,7 +6,7 @@ description: Download desktop installers from GitHub Releases and check their SH
 {/* OpenAI-Codex */}
 {/* OpenAI-Codex_Responsible: Website */}
 
-Download desktop installers only from [GitHub Releases](https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases). Use the versions and files listed on the Releases page.
+Download desktop installers only from [GitHub Releases](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/releases). The desktop app is still in development; use the versions and files actually listed on the Releases page.
 
 ## Installers and checksum files
 
@@ -25,11 +25,13 @@ Get-FileHash -LiteralPath 'path-to-installer.msi' -Algorithm SHA256
 
 Compare the output `Hash` value with the entry for the same filename in `SHA256SUMS-windows.txt`. Replace the example path with the path to your downloaded installer.
 
-On Linux, put the installer and its checksum file in the same folder, then run:
+On Linux, put the checksum file and every installer it lists in the same folder, then run:
 
 ```bash
 sha256sum -c SHA256SUMS-linux.txt
 ```
+
+If you downloaded only one installer, calculate its hash with `sha256sum -- 'path-to-installer.deb'` and compare it with the entry for that filename in the checksum file. Checking the full list with missing files reports failures for those files.
 
 ## Windows install notice
 

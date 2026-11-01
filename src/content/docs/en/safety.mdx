@@ -6,7 +6,9 @@ description: Learn how installs back up files, roll back failures, protect files
 {/* OpenAI-Codex */}
 {/* OpenAI-Codex_Responsible: Website */}
 
-The install pipeline checks for conflicts, backs up existing files that will be overwritten, then writes and verifies the planned files. If an install fails, the app reverses the recorded file actions. Database records are committed only after a successful install.
+For desktop app installs, the pipeline checks for conflicts and backs up existing files before overwriting them. It checks that planned targets exist after writing and records their hashes; this is not a comparison against the source files. The CLI can disable automatic backup, leaving overwritten originals without an install backup.
+
+If an install fails, the app attempts to reverse recorded file actions. Later filesystem or database errors, or concurrent changes, can still require manual recovery; complete rollback is not guaranteed. Keep your own backup of important game data.
 
 ## Protected files
 
@@ -16,14 +18,15 @@ The app protects these game launchers, Rockstar files, and anti-cheat files. Fil
 - **Rockstar files:** `GTAVLanguageSelect.exe`, `RockstarService.exe`, `RockstarSteamHelper.exe`
 - **Anti-cheat files:** `BattlEye.exe`, `Beclient.dll`, `Beclient_x64.dll`, `GTA5_Enhanced_BE.exe`, `BEService_x64.exe`
 
-The core also treats the `.exe` extension as protected, so the install pipeline rejects writes to executable files.
+The install pipeline also treats the `.exe` extension as protected and rejects writes targeting executable files.
 
 ## Conflict handling
 
 - An install targeting a protected file is rejected without an override option.
 - A conflict with a file owned by another active mod requires the user to explicitly allow the overwrite.
+- Existing regular targets without a recorded active owner normally require explicit confirmation. A reinstall can exempt only its own just-restored original when its content matches the backup recorded before uninstall; changed files and conflicts with other active mods still require confirmation.
 - Large path overlap with one active mod is suggested as a possible update. This is a suggestion, not a guarantee that both packages are the same mod.
 
 ## Recycle bin
 
-Recycle-bin entries are retained for 15 days. Expired entries are swept when the desktop app starts.
+Recycle-bin entries expire after 15 days. The app requests cleanup from its mod-page tools, which may happen more than once; the CLI attempts cleanup before commands. Entries whose owner or storage cannot be verified are retained, so expiration does not guarantee deletion.

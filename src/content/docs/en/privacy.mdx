@@ -16,12 +16,18 @@ An update check contacts GitHub Releases only when you request it from Settings 
 
 You can also request a release lookup from a mod's details. For an eligible GitHub source, the request includes the repository owner and name to retrieve public release information. It does not send the mod name, notes, install path, local files, or credentials.
 
-## Optional AI translation
+## Optional AI features
 
 AI is off by default. Text is sent to the provider you choose only after you enable and use an AI feature. Cloud requests may incur fees under the provider's terms. Review the selected content first; translation input is not de-identified and may contain paths or other sensitive text.
 
-For INI / XML translation, the selected file's text is sent. For DLL translation, extracted candidate strings are sent; the DLL binary is not. API keys are stored in the operating system's credential store, not in the app's SQLite database or plaintext settings.
+For INI / XML AI translation, the selected file's text is sent. When you request an AI translation draft for a DLL, extracted candidate strings are sent; the DLL binary is not. API keys are stored in the operating system's credential store, not in the app's SQLite database or plaintext settings.
+
+When you request AI diagnosis, the desktop app sends the text you paste into the diagnosis field. The CLI can instead read a file you specify or standard input. The current user's home-directory path is replaced with `<home>` before sending, but other identifying or sensitive text may remain.
+
+## Crash report drafts
+
+The CLI can print a pre-filled GitHub Issue draft URL containing the app version, operating system, and error text. Creating or printing the URL makes no network request. Opening it sends the pre-filled title and report text to GitHub; an issue is published only if you review and submit it. Replacing the home-directory path does not remove all sensitive information.
 
 ## Full privacy policy
 
-Read the [full PRIVACY.md](https://github.com/SpaceSquare640/GTAV_Mods_Manager/blob/Source_Code/PRIVACY.md) for the documented data and network flows.
+Read the [full PRIVACY.md](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/blob/Source_Code/PRIVACY.md) for the documented data and network flows.

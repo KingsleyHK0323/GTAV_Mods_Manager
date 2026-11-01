@@ -11,12 +11,12 @@ The desktop app can generate translations for mods. The original file is always 
 ## What is supported
 
 - **INI / XML config files:** a translation draft is saved as a new file next to the original. The structure is validated before writing; if the AI changes sections, keys, or XML structure, the draft is rejected.
-- **.NET DLL embedded strings:** IL-only, unsigned assemblies only. The result is written to a new file and the original DLL is not overwritten. DLL translation has not been fully verified in-game, so test it yourself.
+- **.NET DLL embedded strings:** IL-only assemblies without an Authenticode certificate. You can enter translations manually without AI or edit AI-generated drafts. The result is written to a new file and the original DLL is not overwritten. DLL translation has not been fully verified in-game, so test it yourself.
 
 ## AI and privacy
 
 - AI is optional and off by default. You enable it and choose the provider.
-- With a cloud provider, the selected file's text (for a DLL, the extracted strings) is sent directly to that provider. Fees may apply under its terms, and personal information is not removed. With local Ollama, requests go only to the service on your computer.
+- When you request AI translation from a cloud provider, the selected file's text (for a DLL, the extracted strings) is sent directly to that provider. Fees may apply under its terms, and personal information is not removed. With local Ollama, the app sends its request to the service on your computer; this does not describe the service's separate network behavior.
 - API keys are stored in the operating system's credential store.
 
 ## Before you use a result

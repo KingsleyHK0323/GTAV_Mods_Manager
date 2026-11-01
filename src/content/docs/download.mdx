@@ -6,7 +6,7 @@ description: 從 GitHub Releases 下載桌面版安裝檔並核對 SHA-256 校�
 {/* OpenAI-Codex */}
 {/* OpenAI-Codex_Responsible: Website */}
 
-請只從 [GitHub Releases](https://github.com/SpaceSquare640/GTAV_Mods_Manager/releases) 下載桌面版安裝檔。可用版本與檔案以 Releases 頁面列出的內容為準。
+請只從 [GitHub Releases](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/releases) 下載桌面版安裝檔。桌面版仍在開發中，可用版本與檔案以 Releases 頁面實際列出的內容為準。
 
 ## 安裝檔與校驗檔
 
@@ -25,12 +25,15 @@ Get-FileHash -LiteralPath 'path-to-installer.msi' -Algorithm SHA256
 
 將輸出的 `Hash` 值與 `SHA256SUMS-windows.txt` 中相同檔名的校驗值比對。請把範例路徑替換成你下載的安裝檔路徑。
 
-在 Linux 中，將安裝檔與校驗檔放在同一個資料夾後執行：
+在 Linux 中，將校驗檔及其列出的所有安裝檔放在同一個資料夾後執行：
 
 ```bash
 sha256sum -c SHA256SUMS-linux.txt
 ```
 
+如果只下載其中一個安裝檔，可執行 `sha256sum -- 'path-to-installer.deb'`，再與校驗檔中相同檔名的校驗值比對。若對完整清單執行檢查，但有列出的檔案未下載，這些缺少的檔案會回報失敗。
+
 ## Windows 安裝提示
 
-安裝檔目前未簽章。Windows SmartScreen 可能在首次執行時顯示警告。下載前請確認來源為 GitHub Releases，並先核對該平台的 SHA-256 校驗值。
+安裝檔目前未簽章。Windows SmartScreen 可能在首次執行時顯示警告。請確認下載來源為 GitHub Releases，並在開啟安裝檔前核對該平台的 SHA-256 校驗值。
+
