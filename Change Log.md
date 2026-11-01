@@ -5,6 +5,7 @@
 
 ## Unreleased
 
+- Align the GitHub Pages origin and repository links with the current owner, and verify complete social preview image URLs in SEO checks.
 - Refresh bilingual guidance on supported modes, safety, privacy, downloads, DLL translation, and desktop app licensing.
 - Clarify that the core rejects executable file targets during installation.
 - Add paired Traditional Chinese and English documentation for downloads, privacy, supported modes, safety, and licensing.

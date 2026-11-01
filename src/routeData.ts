@@ -2,7 +2,7 @@
 // OpenAI-Codex_Responsible: Website
 import { defineRouteMiddleware } from '@astrojs/starlight/route-data';
 
-const site = import.meta.env.SITE ?? 'https://spacesquare640.github.io';
+const site = import.meta.env.SITE ?? 'https://kingsleyhk0323.github.io';
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const managedProperties = new Set([
 	'og:title',

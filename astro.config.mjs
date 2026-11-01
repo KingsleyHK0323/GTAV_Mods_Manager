@@ -5,7 +5,7 @@ import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 
-const site = 'https://spacesquare640.github.io';
+const site = 'https://kingsleyhk0323.github.io';
 const base = '/GTAV_Mods_Manager';
 const socialPreview = new URL(`${base}/assets/social-preview.jpg`, site).href;
 
@@ -43,7 +43,7 @@ export default defineConfig({
 				{
 					icon: 'github',
 					label: 'GitHub',
-					href: 'https://github.com/SpaceSquare640/GTAV_Mods_Manager',
+					href: 'https://github.com/KingsleyHK0323/GTAV_Mods_Manager',
 				},
 			],
 			sidebar: [

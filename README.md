@@ -5,7 +5,7 @@
 
 Version `0.2.0` is the current Astro and Starlight website draft for GTAV Mods Manager. It brings the product overview, an interactive sample-data demo, and bilingual documentation into one responsive site.
 
-> **Visit the website:** [Open the GTAV Mods Manager website](https://spacesquare640.github.io/GTAV_Mods_Manager/)
+> **Visit the website:** [Open the GTAV Mods Manager website](https://kingsleyhk0323.github.io/GTAV_Mods_Manager/)
 
 Copyright © Kingsley.
 

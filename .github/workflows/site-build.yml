@@ -45,7 +45,7 @@ jobs:
           import assert from 'node:assert/strict';
           import { readFile, readdir } from 'node:fs/promises';
 
-          const base = 'https://spacesquare640.github.io/GTAV_Mods_Manager';
+          const base = 'https://kingsleyhk0323.github.io/GTAV_Mods_Manager';
           const routes = ['', 'demo', 'quick-start', 'installing-mods', 'language-conversion', 'managing-mods', 'download', 'supported-modes', 'safety', 'privacy', 'licenses', 'faq'];
           const cases = routes.flatMap((slug) => {
             const path = slug ? `/${slug}/` : '/';
@@ -78,11 +78,13 @@ jobs:
             assert.equal(canonical?.attrs.href, page.url, `${page.file} canonical URL`);
             assert.equal(tags.filter((item) => item.tag === 'link' && item.attrs.rel === 'canonical').length, 1, `${page.file} canonical count`);
             assert.equal(findTag(tags, 'meta', 'property', 'og:url')?.attrs.content, page.url, `${page.file} Open Graph URL`);
+            assert.equal(findTag(tags, 'meta', 'property', 'og:image')?.attrs.content, `${base}/assets/social-preview.jpg`, `${page.file} Open Graph image URL`);
             assert.ok(findTag(tags, 'meta', 'name', 'description')?.attrs.content, `${page.file} description`);
             assert.ok(findTag(tags, 'meta', 'property', 'og:title')?.attrs.content, `${page.file} Open Graph title`);
             assert.ok(findTag(tags, 'meta', 'property', 'og:description')?.attrs.content, `${page.file} Open Graph description`);
             assert.ok(findTag(tags, 'meta', 'name', 'twitter:title')?.attrs.content, `${page.file} Twitter title`);
             assert.ok(findTag(tags, 'meta', 'name', 'twitter:description')?.attrs.content, `${page.file} Twitter description`);
+            assert.equal(findTag(tags, 'meta', 'name', 'twitter:image')?.attrs.content, `${base}/assets/social-preview.jpg`, `${page.file} Twitter image URL`);
             assert.equal(findTag(tags, 'link', 'hreflang', 'zh-TW')?.attrs.href, page.lang === 'zh-TW' ? page.url : page.paired, `${page.file} Traditional Chinese alternate`);
             assert.equal(findTag(tags, 'link', 'hreflang', 'en')?.attrs.href, page.lang === 'en' ? page.url : page.paired, `${page.file} English alternate`);
             assert.equal(findTag(tags, 'link', 'rel', 'shortcut icon')?.attrs.href, '/GTAV_Mods_Manager/assets/app-icon.jpg', `${page.file} favicon base path`);
