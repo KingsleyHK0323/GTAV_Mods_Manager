@@ -414,6 +414,7 @@ fn list_tasks_in_snapshot(
             .iter()
             .any(|(_, r, p)| r == &root_key && p == &pack_key);
         let root = Path::new(&display);
+        let resolved_root = safe_resolved(root).ok();
         let trusted = root.is_dir()
             && safe_resolved(root)
                 .and_then(|p| lexical_key(&p))
@@ -429,6 +430,14 @@ fn list_tasks_in_snapshot(
                 .as_ref()
                 .and_then(|p| lexical_key(Path::new(p)).ok())
                 .is_some_and(|p| p.starts_with(&format!("{root_key}/")));
+            // OpenAI-Codex: Legacy rows can retain a different Windows path spelling.
+            // Compare resolved identities and pass a resolved pair to the scanner.
+            let resolved_target = path.as_ref().and_then(|p| safe_resolved(Path::new(p)).ok());
+            let target_here = target_here
+                || resolved_target
+                    .as_ref()
+                    .and_then(|p| lexical_key(p).ok())
+                    .is_some_and(|p| p.starts_with(&format!("{root_key}/")));
             if !same_root && !target_here {
                 continue;
             }
@@ -436,7 +445,13 @@ fn list_tasks_in_snapshot(
                 uncertain = true;
                 continue;
             };
-            match pack_names_for_paths(root, &[PathBuf::from(path)]) {
+            let packs = match (&resolved_root, &resolved_target) {
+                (Some(root), Some(target)) => {
+                    pack_names_for_paths(root, std::slice::from_ref(target))
+                }
+                _ => pack_names_for_paths(root, &[PathBuf::from(path)]),
+            };
+            match packs {
                 Ok(packs)
                     if packs
                         .iter()
@@ -645,6 +660,46 @@ mod tests {
         let task = &list_tasks(&conn, None).unwrap()[0];
         assert_eq!(task.owner_mod_ids, vec![id]);
         assert_eq!(task.recommendation, "review");
+    }
+
+    // OpenAI-Codex: Preserve ownership under both raw/canonical path pairings.
+    fn assert_legacy_owner_path_pairing(canonical_owner: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(dir.path()).unwrap();
+        let (event_root, owner_root) = if canonical_owner {
+            (dir.path(), canonical.as_path())
+        } else {
+            (canonical.as_path(), dir.path())
+        };
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let id = owner(&conn, owner_root, "Car", "active", "legacy-sp");
+        conn.execute("UPDATE installed_mod SET install_path='' WHERE id=?1", [id])
+            .unwrap();
+        let token = begin_tasks(
+            &mut conn,
+            event_root,
+            &["Car".into()],
+            ManualDlcOperation::Uninstall,
+            Some(id),
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        settle_tasks(&tx, &token).unwrap();
+        tx.commit().unwrap();
+        let tasks = list_tasks(&conn, Some(event_root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].owner_mod_ids, vec![id]);
+        assert_eq!(tasks[0].recommendation, "review");
+    }
+
+    #[test]
+    fn legacy_owner_raw_target_matches_canonical_event_root() {
+        assert_legacy_owner_path_pairing(false);
+    }
+
+    #[test]
+    fn legacy_owner_canonical_target_matches_raw_event_root() {
+        assert_legacy_owner_path_pairing(true);
     }
 
     #[cfg(windows)]
