@@ -153,7 +153,7 @@ jobs:
           NODE
 
       - name: Upload Windows installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installers-windows
           path: ${{ runner.temp }}/release-assets
@@ -233,7 +233,7 @@ jobs:
           NODE
 
       - name: Upload Linux installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installers-linux
           path: ${{ runner.temp }}/release-assets

@@ -81,7 +81,7 @@ jobs:
           (output / 'resolution.sha256').write_text(summary, encoding='utf-8')
 
       - name: Upload only resolved lockfile and revision digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-probe-lock-${{ github.sha }}
           path: |
