@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex
+// OpenAI-Codex_dlc_deep_audit
 
 //! Core business logic for GTAV Mods Manager: game detection, mod install/uninstall,
 //! conflict detection, recycle bin, and settings. No UI or CLI dependencies.
@@ -12,6 +14,7 @@ pub mod components;
 pub mod conflict;
 pub mod crash_report;
 pub mod db;
+pub mod dlc_manual;
 pub mod dll_translation;
 pub mod error;
 pub mod fivem;

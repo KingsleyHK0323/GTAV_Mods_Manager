@@ -295,6 +295,31 @@ fn resolve_page_target(
     Ok((game_root, provider))
 }
 
+// OpenAI-Codex_atomic_review: Resolve the current Legacy workspace, then include both Legacy modes.
+pub fn list_manual_dlc_tasks_impl(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: &str,
+) -> Result<Vec<gtavmm_core::dlc_manual::ManualDlcTask>, String> {
+    if !matches!(mode, "legacy-sp" | "legacy-lspdfr") {
+        return Err(
+            "Manual DLC tasks are available only for Legacy SP and Legacy LSPDFR.".to_string(),
+        );
+    }
+    let (root, _) = resolve_page_target(conn, game_path, mode)?;
+    gtavmm_core::dlc_manual::list_tasks(conn, Some(&root)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_manual_dlc_tasks(
+    state: tauri::State<'_, crate::AppState>,
+    game_path: Option<String>,
+    mode: String,
+) -> Result<Vec<gtavmm_core::dlc_manual::ManualDlcTask>, String> {
+    let conn = state.conn.lock().map_err(|error| error.to_string())?;
+    list_manual_dlc_tasks_impl(&conn, game_path.as_deref(), &mode)
+}
+
 /// Read-only preview of what installing `path` would do — no files written, nothing
 /// recorded in the database. Mirrors the CLI's `inspect` command.
 pub fn inspect_mod_impl(
@@ -2319,6 +2344,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("GTA5.exe"), b"").unwrap();
         dir
+    }
+
+    // OpenAI-Codex_atomic_review: Both Legacy pages share the same physical DLC work.
+    #[test]
+    fn manual_dlc_tasks_share_root_and_reject_unavailable_modes_or_query_errors() {
+        let root = fake_game_root();
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        gtavmm_core::dlc_manual::begin_tasks(
+            &mut conn,
+            root.path(),
+            &["ManualCar".to_string()],
+            gtavmm_core::dlc_manual::ManualDlcOperation::Install,
+            None,
+        )
+        .unwrap();
+        let path = Some(root.path().to_str().unwrap());
+        let sp = list_manual_dlc_tasks_impl(&conn, path, "legacy-sp").unwrap();
+        let lspdfr = list_manual_dlc_tasks_impl(&conn, path, "legacy-lspdfr").unwrap();
+        assert_eq!(sp.len(), 1);
+        assert_eq!(sp[0].id, lspdfr[0].id);
+        assert!(sp[0].unresolved);
+        for mode in ["fivem-client", "enhanced-sp", "enhanced-lspdfr", "unknown"] {
+            assert!(list_manual_dlc_tasks_impl(&conn, path, mode).is_err());
+        }
+        let empty = Connection::open_in_memory().unwrap();
+        assert!(list_manual_dlc_tasks_impl(&empty, path, "legacy-sp").is_err());
     }
 
     // OpenAI-Codex: Keep a distinct marker for edition-mismatch regression cases.

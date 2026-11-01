@@ -37,6 +37,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_mods,
+            // OpenAI-Codex_atomic_review: Surface pending manual DLC work to the workspace.
+            commands::list_manual_dlc_tasks,
             commands::set_mod_mode,
             commands::detect_game,
             commands::inspect_mod,

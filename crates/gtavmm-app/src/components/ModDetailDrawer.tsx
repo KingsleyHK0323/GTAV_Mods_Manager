@@ -6,6 +6,7 @@ import type { InstalledMod, ModSourceCheckResult, PageMode } from "../types";
 
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_manual_dlc_ui
 
 /** Every page a mod can be moved to, in sidebar order. */
 const PAGE_MODES: PageMode[] = [
@@ -64,10 +65,14 @@ export function ModDetailDrawer({
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   const sourceCheckGeneration = useRef(0);
+  const seededModId = useRef<number | null>(null);
 
   // Re-seed the fields whenever a different mod is opened, otherwise the
   // previous mod's notes would linger in the inputs.
   useEffect(() => {
+    // Refreshing a failed operation must not clear its error or unsaved fields.
+    if (mod && seededModId.current === mod.id) return;
+    seededModId.current = mod?.id ?? null;
     sourceCheckGeneration.current += 1;
     setSourceChecking(false);
     setSourceCheckResult(null);
@@ -100,12 +105,13 @@ export function ModDetailDrawer({
     setError(null);
     try {
       await action();
-      onChanged();
       if (kind === "uninstall") onClose();
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(null);
+      // A failed reinstall can still have committed an uninstall and its reminder.
+      onChanged();
     }
   }
 

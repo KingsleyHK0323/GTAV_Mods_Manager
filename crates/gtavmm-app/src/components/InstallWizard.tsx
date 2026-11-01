@@ -1,4 +1,5 @@
 // OpenAI-Codex
+// OpenAI-Codex_manual_dlc_ui
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -8,7 +9,7 @@ import { formatLabel, type InstallOutcome, type ModPlan, type PageMode, type Sca
 interface InstallWizardProps {
   open: boolean;
   onClose: () => void;
-  /** Called after a successful install so the caller can refresh its mod list. */
+  /** Reloads files and reminders after any completed install attempt. */
   onInstalled: () => void;
   /**
    * Which page is installing. The backend derives the provider from it and
@@ -114,10 +115,11 @@ export function InstallWizard({
       });
       setOutcome(result);
       setStep("done");
-      if ("Success" in result) onInstalled();
     } catch (e) {
       setError(String(e));
       setStep("error");
+    } finally {
+      onInstalled();
     }
   }
 
@@ -202,6 +204,9 @@ export function InstallWizard({
               <p>
                 {t("installWizard.success", { count: outcome.Success.files_written })}
               </p>
+              {plan && typeof plan.format === "object" && "AddOnPack" in plan.format && (
+                <p>{t("manualDlc.install_notice")}</p>
+              )}
             </>
           )}
 

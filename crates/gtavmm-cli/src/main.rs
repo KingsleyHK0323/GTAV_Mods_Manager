@@ -58,6 +58,8 @@ enum Command {
     DetectGame,
     /// List installed mods.
     ListMods,
+    /// List durable manual DLC tasks; optionally filter with the global --game-path.
+    DlcTasks,
     /// Keyword search across installed mods' name/notes/link (v0.8+; not natural
     /// language understanding — see `mod_search` module docs).
     Search { query: String },
@@ -346,6 +348,32 @@ fn resolve_provider(
     )?)
 }
 
+// OpenAI-Codex_atomic_review: Lookup failures remain visible independently of operation errors.
+fn print_manual_dlc_tasks(
+    conn: &rusqlite::Connection,
+    root: Option<&std::path::Path>,
+) -> Result<()> {
+    let tasks = gtavmm_core::dlc_manual::list_tasks(conn, root)?;
+    if tasks.is_empty() {
+        println!("No pending manual DLC tasks.");
+    }
+    for task in tasks {
+        println!(
+            "DLC task #{}: {} [{}] {} — {}",
+            task.id, task.pack_name, task.operation, task.recommendation, task.root_path
+        );
+        println!("  Suggested XML item: {}", task.item_xml);
+    }
+    println!("DLC tasks are reminders; registration in the game has not been verified.");
+    Ok(())
+}
+
+fn report_manual_dlc_tasks(conn: &rusqlite::Connection) {
+    if let Err(error) = print_manual_dlc_tasks(conn, None) {
+        eprintln!("Could not query manual DLC tasks: {error}");
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(err) = run(cli) {
@@ -452,6 +480,9 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::DlcTasks => {
+            print_manual_dlc_tasks(&conn, cli.game_path.as_deref())?;
+        }
         Command::Install {
             path,
             name,
@@ -479,7 +510,7 @@ fn run(cli: Cli) -> Result<()> {
                 override_foreign_conflicts: yes,
             };
 
-            match gtavmm_core::install::install(
+            let operation = gtavmm_core::install::install(
                 &mut conn,
                 &name,
                 &plan,
@@ -487,7 +518,9 @@ fn run(cli: Cli) -> Result<()> {
                 &backup_root,
                 options,
                 input_path,
-            )? {
+            );
+            report_manual_dlc_tasks(&conn);
+            match operation? {
                 gtavmm_core::install::InstallOutcome::Success {
                     installed_mod_id,
                     files_written,
@@ -529,13 +562,15 @@ fn run(cli: Cli) -> Result<()> {
             let recycle_root = db_path.parent().unwrap().join("recycle_bin");
             // OpenAI-Codex: Match enable/disable storage; never use the OS recycle bin.
             let staging_root = db_path.parent().unwrap().join("staging");
-            gtavmm_core::uninstall::uninstall_with_staging(
+            let operation = gtavmm_core::uninstall::uninstall_with_staging(
                 &mut conn,
                 id,
                 &game_root,
                 &recycle_root,
                 &staging_root,
-            )?;
+            );
+            report_manual_dlc_tasks(&conn);
+            operation?;
             println!("Uninstalled mod #{id} (recoverable from the recycle bin for 15 days).");
         }
         Command::Reinstall {
@@ -552,7 +587,7 @@ fn run(cli: Cli) -> Result<()> {
                 .join("backups")
                 .join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
             let staging_root = db_path.parent().unwrap().join("staging");
-            match gtavmm_core::install::reinstall_with_staging(
+            let operation = gtavmm_core::install::reinstall_with_staging(
                 &mut conn,
                 id,
                 std::path::Path::new(&source_path),
@@ -566,7 +601,9 @@ fn run(cli: Cli) -> Result<()> {
                     ..Default::default()
                 },
                 &staging_root,
-            )? {
+            );
+            report_manual_dlc_tasks(&conn);
+            match operation? {
                 gtavmm_core::install::InstallOutcome::Success {
                     installed_mod_id,
                     files_written,
@@ -636,14 +673,16 @@ fn run(cli: Cli) -> Result<()> {
             RecycleBinAction::Restore { id } => {
                 let (game_root, _) = require_game_root(&cli.game_path)?;
                 let backup_root = db_path.parent().unwrap().join("backups");
-                gtavmm_core::recycle_bin::restore_with_recycle_root(
+                let operation = gtavmm_core::recycle_bin::restore_with_recycle_root(
                     &mut conn,
                     id,
                     Some(&game_root),
                     &backup_root,
                     &cleanup_recycle_root,
                     &cleanup_staging_root,
-                )?;
+                );
+                report_manual_dlc_tasks(&conn);
+                operation?;
                 println!("Restored recycle bin entry #{id}.");
             }
         },
@@ -987,8 +1026,27 @@ fn run(cli: Cli) -> Result<()> {
                 );
                 println!();
                 for r in results {
+                    match &r.manual_dlc_tasks {
+                        Ok(tasks) => {
+                            for task in tasks {
+                                println!(
+                                    "  [{}] DLC task #{}: {} [{}] {}",
+                                    r.index,
+                                    task.id,
+                                    task.pack_name,
+                                    task.operation,
+                                    task.recommendation
+                                );
+                                println!("    Suggested XML item: {}", task.item_xml);
+                            }
+                        }
+                        Err(error) => eprintln!("  [{}] DLC task lookup failed: {error}", r.index),
+                    }
                     match r.result {
-                        Ok(()) => println!("  [{}] ok", r.index),
+                        Ok(()) => println!(
+                            "  [{}] action completed; game registration is not verified",
+                            r.index
+                        ),
                         Err(e) => println!("  [{}] failed: {e}", r.index),
                     }
                 }

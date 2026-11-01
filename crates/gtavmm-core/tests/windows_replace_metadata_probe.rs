@@ -930,6 +930,44 @@ impl SecurityPartsSnapshot {
         })
     }
 
+    // OpenAI-Codex: observations only; never change the equality predicate below.
+    fn report_general_comparison(&self, baseline: &Self) {
+        println!("probe=general_fields revision_equal={} owner_present={} baseline_owner_present={} owner_equal={} group_present={} baseline_group_present={} group_equal={}",
+            self.revision == baseline.revision, self.owner.is_some(), baseline.owner.is_some(),
+            self.owner == baseline.owner, self.group.is_some(), baseline.group.is_some(), self.group == baseline.group);
+        println!(
+            "probe=general_controls mask=5391 kernel={} baseline={} differing={}",
+            self.control & 0x150f,
+            baseline.control & 0x150f,
+            (self.control ^ baseline.control) & 0x150f
+        );
+        for (name, mask) in [
+            ("owner_defaulted", 0x0001),
+            ("group_defaulted", 0x0002),
+            ("dacl_present", 0x0004),
+            ("dacl_defaulted", 0x0008),
+            ("dacl_auto_inherit_req", 0x0100),
+            ("dacl_auto_inherited", 0x0400),
+            ("dacl_protected", 0x1000),
+        ] {
+            println!(
+                "probe=general_control field={name} equal={}",
+                self.control & mask == baseline.control & mask
+            );
+        }
+        match (&self.dacl, &baseline.dacl) {
+            (Some(kernel), Some(original)) => {
+                println!("probe=general_dacl snapshots_available=true presence_equal={} defaulted_equal={} content_equal={} kernel_present={} baseline_present={} kernel_null={} baseline_null={}",
+                    kernel.present == original.present, kernel.defaulted == original.defaulted,
+                    kernel.bytes == original.bytes, kernel.present, original.present,
+                    kernel.present && kernel.bytes.is_none(), original.present && original.bytes.is_none());
+            }
+            _ => println!("probe=general_dacl snapshots_available=false"),
+        }
+        // Complete means observations were emitted, not that their values agree.
+        println!("probe=general_comparison reported=true full_security_proof=false");
+    }
+
     fn general_eq(&self, baseline: &Self) -> bool {
         // OWNER/GROUP_DEFAULTED, DACL_PRESENT/DEFAULTED, and the DACL
         // AUTO_INHERIT_REQ/AUTO_INHERITED/PROTECTED control bits only.
@@ -1100,6 +1138,11 @@ fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), Pr
     }
     let kernel_outcome = kernel_query.and_then(|snapshot| {
         let available = general_baseline.is_some() && sacl_baseline.is_some();
+        if let Some(baseline) = &general_baseline {
+            snapshot.report_general_comparison(baseline);
+        } else {
+            println!("probe=general_comparison reported=false full_security_proof=false");
+        }
         let general_equal = general_baseline.as_ref().is_some_and(|baseline| snapshot.general_eq(baseline));
         let sacl_equal = sacl_baseline.as_ref().is_some_and(|baseline| snapshot.sacl_eq(baseline));
         println!("probe=kernel_consistency baselines_available={available} general_equal={general_equal} sacl_equal={sacl_equal} full_security_proof=false");

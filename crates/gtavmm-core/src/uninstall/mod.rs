@@ -10,14 +10,16 @@
 //! a snapshot of the deployed files to the recycle bin (snapshot-at-uninstall-time,
 //! not at-install-time — see the MVP spec's recycle-bin tradeoff writeup) instead of
 //! purging immediately. Add-on packs (detected by an `update/x64/dlcpacks/<name>/`
-//! target path segment — see `mod_analyzer::dlc`) also get their `dlclist.xml` entry
-//! removed.
+//! target layout) produce durable manual-registration work. This module never
+//! changes `dlclist.xml`.
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::dlc_manual::{self, ManualDlcOperation, ManualDlcOperationToken};
 use crate::error::{CoreError, CoreResult};
+#[cfg(test)]
 use crate::mod_analyzer::dlc;
 use crate::protected_files;
 use crate::recycle_bin::RETENTION_DAYS;
@@ -58,33 +60,23 @@ fn mod_status(conn: &Connection, mod_id: i64) -> CoreResult<Option<String>> {
     })
 }
 
-/// Extracts the add-on pack name from a target path if it sits under
-/// `.../dlcpacks/<name>/...`, mirroring how `mod_analyzer::classify_add_on_pack`
-/// constructs the target in the first place. We don't persist a dedicated "is this an
-/// add-on" column — it's fully derivable from the path, so we derive it here rather
-/// than adding schema just for this.
-fn dlc_pack_name_from_target(path: &Path) -> Option<String> {
-    let mut components = path.components().peekable();
-    while let Some(component) = components.next() {
-        if component.as_os_str().eq_ignore_ascii_case("dlcpacks") {
-            return components
-                .peek()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned());
-        }
-    }
-    None
-}
-
 /// Removes `installed_mod_id`: deletes its deployed files (restoring anything they
-/// overwrote), snapshots them into the recycle bin, deregisters any add-on pack
-/// entries, and records the event. `game_root` is needed to locate `dlclist.xml`.
+/// overwrote), snapshots them into the recycle bin, and records the event and any
+/// manual DLC registration work without editing XML.
 pub fn uninstall(
     conn: &mut Connection,
     installed_mod_id: i64,
     game_root: &Path,
     recycle_bin_root: &Path,
 ) -> CoreResult<()> {
-    uninstall_impl(conn, installed_mod_id, game_root, recycle_bin_root, None)
+    uninstall_impl(
+        conn,
+        installed_mod_id,
+        game_root,
+        recycle_bin_root,
+        None,
+        None,
+    )
 }
 
 /// OpenAI-Codex: Uses explicit managed storage for disabled payload snapshots.
@@ -101,6 +93,26 @@ pub fn uninstall_with_staging(
         game_root,
         recycle_bin_root,
         Some(staging_root),
+        None,
+    )
+}
+
+/// OpenAI-Codex: The outer reinstall owns settlement of its compound intent.
+pub(crate) fn uninstall_for_reinstall(
+    conn: &mut Connection,
+    installed_mod_id: i64,
+    game_root: &Path,
+    recycle_bin_root: &Path,
+    staging_root: Option<&Path>,
+    operation: &ManualDlcOperationToken,
+) -> CoreResult<()> {
+    uninstall_impl(
+        conn,
+        installed_mod_id,
+        game_root,
+        recycle_bin_root,
+        staging_root,
+        Some(operation),
     )
 }
 
@@ -110,6 +122,7 @@ fn uninstall_impl(
     game_root: &Path,
     recycle_bin_root: &Path,
     staging_root: Option<&Path>,
+    shared_operation: Option<&ManualDlcOperationToken>,
 ) -> CoreResult<()> {
     // OpenAI-Codex: Reject pending workspaces before snapshots or file changes.
     crate::providers::ensure_installed_mod_available(conn, installed_mod_id)?;
@@ -202,6 +215,18 @@ fn uninstall_impl(
                     .to_string(),
             });
         }
+        let owned_operation = if shared_operation.is_none() {
+            let packs = dlc_manual::pack_names_for_mod(conn, installed_mod_id, game_root)?;
+            Some(dlc_manual::begin_tasks(
+                conn,
+                game_root,
+                &packs,
+                ManualDlcOperation::Uninstall,
+                Some(installed_mod_id),
+            )?)
+        } else {
+            None
+        };
         let entry_dir = recycle_bin_root.join(format!(
             "{installed_mod_id}-{}",
             chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
@@ -226,6 +251,9 @@ fn uninstall_impl(
             [installed_mod_id],
         )?;
         transaction.execute("INSERT INTO install_event (installed_mod_id, event_type, success) VALUES (?1, 'uninstall', 1)", [installed_mod_id])?;
+        if let Some(operation) = &owned_operation {
+            dlc_manual::settle_tasks(&transaction, operation)?;
+        }
         transaction.commit()?;
         return Ok(());
     }
@@ -297,6 +325,20 @@ fn uninstall_impl(
         }
     }
 
+    // OpenAI-Codex: Commit intent before any snapshot, removal, or restored backup.
+    let owned_operation = if shared_operation.is_none() {
+        let packs = dlc_manual::pack_names_for_mod(conn, installed_mod_id, game_root)?;
+        Some(dlc_manual::begin_tasks(
+            conn,
+            game_root,
+            &packs,
+            ManualDlcOperation::Uninstall,
+            Some(installed_mod_id),
+        )?)
+    } else {
+        None
+    };
+
     // Pass 2: snapshot deployed files into the recycle bin, then delete/restore.
     let entry_dir_name = format!(
         "{installed_mod_id}-{}",
@@ -306,13 +348,8 @@ fn uninstall_impl(
     std::fs::create_dir_all(&entry_dir)?;
     let mut snapshotted_file_ids = Vec::new();
 
-    let mut pack_names = std::collections::HashSet::new();
-
     for (file, relative) in files.iter().zip(&snapshot_relatives) {
         let target = PathBuf::from(&file.target_path);
-        if let Some(name) = dlc_pack_name_from_target(&target) {
-            pack_names.insert(name);
-        }
 
         if target.exists() {
             let snapshot_path = entry_dir.join(relative);
@@ -330,13 +367,6 @@ fn uninstall_impl(
                 crate::util::move_file(&backup_path, &target)?;
             }
         }
-    }
-
-    for pack_name in &pack_names {
-        // Best-effort: an uninstall shouldn't hard-fail just because dlclist.xml was
-        // since deleted or already lacks the entry — the files are already gone,
-        // which is the primary thing that matters.
-        let _ = dlc::remove_entry(&dlc::dlclist_path(game_root), pack_name);
     }
 
     let deleted_at = chrono::Utc::now();
@@ -364,6 +394,9 @@ fn uninstall_impl(
         "INSERT INTO install_event (installed_mod_id, event_type, success) VALUES (?1, 'uninstall', 1)",
         [installed_mod_id],
     )?;
+    if let Some(operation) = &owned_operation {
+        dlc_manual::settle_tasks(&db_tx, operation)?;
+    }
     db_tx.commit()?;
 
     Ok(())
@@ -936,8 +969,59 @@ mod tests {
         assert_eq!((expires_at - deleted_at).num_days(), RETENTION_DAYS);
     }
 
+    // OpenAI-Codex: Both uninstall branches must leave XML edits to the user.
+    fn assert_manual_dlc_uninstall_preserves_xml(disabled: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        let relative = "mods/update/x64/dlcpacks/ManualCar/dlc.rpf";
+        let target = root.join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"synthetic pack").unwrap();
+        let xml = dlc::dlclist_path(&root);
+        let original = b"<Paths><Item>dlcpacks:\\ManualCar\\</Item></Paths>";
+        std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+        std::fs::write(&xml, original).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let mod_id = setup_installed_mod(&conn, &root, relative, None);
+        conn.execute(
+            "UPDATE installed_mod SET install_path = ?1, source_type = 'folder' WHERE id = ?2",
+            rusqlite::params![root.to_string_lossy(), mod_id],
+        )
+        .unwrap();
+        let staging = dir.path().join("staging");
+        if disabled {
+            crate::state::disable(&conn, mod_id, &staging).unwrap();
+        }
+        uninstall_with_staging(
+            &mut conn,
+            mod_id,
+            &root,
+            &dir.path().join("recycle"),
+            &staging,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&xml).unwrap(), original);
+        assert!(!target.exists());
+        let (intents, settled): (i64, i64) = conn.query_row(
+                "SELECT COALESCE(SUM(phase = 'intent'), 0), COALESCE(SUM(phase = 'settled'), 0) \
+                 FROM manual_dlc_event WHERE pack_display = 'ManualCar' AND operation = 'uninstall'",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).unwrap();
+        assert_eq!((intents, settled), (1, 1));
+    }
+
     #[test]
-    fn uninstalling_add_on_pack_removes_dlclist_entry() {
+    fn manual_dlc_active_uninstall_preserves_xml_and_records_work() {
+        assert_manual_dlc_uninstall_preserves_xml(false);
+    }
+
+    #[test]
+    fn manual_dlc_disabled_uninstall_preserves_xml_and_records_work() {
+        assert_manual_dlc_uninstall_preserves_xml(true);
+    }
+
+    #[test]
+    fn uninstalling_add_on_pack_defers_dlclist_entry_removal() {
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         let dlclist_path = dlc::dlclist_path(&game_root);
@@ -967,7 +1051,10 @@ mod tests {
 
         uninstall(&mut conn, mod_id, &game_root, &dir.path().join("recycle")).unwrap();
 
-        assert!(!dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+        assert!(dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+        let tasks = dlc_manual::list_tasks(&conn, Some(&game_root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].recommendation, "check_removal");
     }
 
     #[test]

@@ -8,8 +8,10 @@
 ## Unreleased
 
 ### Added
+- Prepare field-level general security comparison observations and a separate diagnostic-coverage report flag. Emit only presence/equality booleans and masked control values; preserve equality predicates, native query count, original failures and all pass gates. No production or dependency changes. This diagnostic revision has not been compiled or executed. <!-- OpenAI-Codex -->
 
-- Prepare an in-memory component-consistency check between the existing general/SACL baselines and the kernel BACKUP result, with bounded component extraction, absent/null ACL distinctions and a separate report marker. No additional native security queries, production changes or raw security-data output. Original failures remain authoritative. This consistency check has not been compiled or executed. <!-- OpenAI-Codex -->
+
+- Prepare an in-memory component-consistency check between the existing general/SACL baselines and the kernel BACKUP result, with bounded component extraction, absent/null ACL distinctions and a separate report marker. No additional native security queries, production changes or raw security-data output. Original failures remain authoritative. The approved 8cc5f47 experiment compiled and observed general mismatch/SACL agreement, verified restoration and preserved the original BACKUP error 5; later cases stopped. <!-- OpenAI-Codex -->
 
 - Prepare one additional same-handle BACKUP query through `GetKernelObjectSecurity`, using an initialized aligned 1 MiB caller-owned buffer, immediate failure capture and bounded self-relative descriptor validation without sizing, resizing or retries. Report its result independently; retain every original query failure and the full-security stop condition. No production, dependency or fixture-scope changes. The approved eade950 experiment compiled and observed kernel BACKUP success (valid self-relative descriptor, 140 bytes) versus GetSecurityInfo BACKUP error 5; privilege restoration was verified and subsequent cases stopped. <!-- OpenAI-Codex -->
 
@@ -111,3 +113,9 @@
 - Revalidated the FiveM Client folder before previewing or installing so a stale saved path cannot recreate a removed client directory.
 - Created INI/XML translation drafts and patched DLL outputs with exclusive file creation, preventing races from overwriting existing drafts, output files, or source DLLs.
 - Disabled the DLL translation UI option that previously allowed in-place overwrite of the original file.
+
+### Semi-automatic DLC registration implementation (validation pending)
+
+- Replace automatic DLC XML registration in the file lifecycle with an additive schema-v15 append-only intent/settlement ledger. Reinstallation shares one intent across old/new packs; failed operations remain reviewable. Display shared-root reminders in Legacy workspaces, CLI operations and AI action results, with independent lookup-error reporting. Add source-first tests for XML preservation, migration/reopening, active/disabled uninstall, restore, compound reinstall and database failures. The dedicated editor and AI XML suggestions remain a later phase. No compilation or runtime validation has been performed for these changes. <!-- OpenAI-Codex -->
+
+- Retire `mod_analyzer::dlc::add_entry`, `add_entry_with_status`, `remove_entry`, and the obsolete missing-file installation error. Remove their nine old writer tests, including the two previously failing Windows replacement cases, while retaining pack discovery and four read-only inspection characterization cases. This is a product-contract retirement, not a repair of the old writer or evidence of passing CI. No tests have been executed. <!-- OpenAI-Codex -->

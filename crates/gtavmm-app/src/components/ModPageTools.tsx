@@ -6,6 +6,7 @@ import { RecycleBinModal } from "./RecycleBinModal";
 import type { ComponentStatus, PageMode, RecycleBinEntry } from "../types";
 
 // OpenAI-Codex: Keep page tools on the configured GTA path and edition.
+// OpenAI-Codex_manual_dlc_ui
 
 interface FullBackupListResult {
   paths: string[];
@@ -30,9 +31,11 @@ interface FullBackupListResult {
 export function ModPageTools({
   variant = "components",
   mode,
+  onChanged,
 }: {
   variant?: "components" | "framework";
   mode: PageMode;
+  onChanged?: () => void;
 }) {
   const { t } = useTranslation();
 
@@ -224,7 +227,10 @@ export function ModPageTools({
         open={recycleModalOpen}
         onClose={() => setRecycleModalOpen(false)}
         entries={recycleEntries ?? []}
-        onRestored={loadRecycleBin}
+        onRestored={() => {
+          loadRecycleBin();
+          onChanged?.();
+        }}
       />
     </div>
   );

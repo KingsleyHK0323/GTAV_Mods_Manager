@@ -167,6 +167,8 @@ pub struct PlanItem {
 pub struct PlanItemResult {
     pub index: usize,
     pub result: CoreResult<()>,
+    // OpenAI-Codex_atomic_review: Keep lookup failure distinct from action failure.
+    pub manual_dlc_tasks: CoreResult<Vec<crate::dlc_manual::ManualDlcTask>>,
 }
 
 /// Paths the executor needs to reach the same functions the CLI/UI already call
@@ -198,9 +200,14 @@ pub fn execute_plan(
     approved_indices
         .iter()
         .filter_map(|&index| plan.get(index).map(|item| (index, item)))
-        .map(|(index, item)| PlanItemResult {
-            index,
-            result: execute_action(conn, &item.action, ctx),
+        .map(|(index, item)| {
+            let result = execute_action(conn, &item.action, ctx);
+            let manual_dlc_tasks = crate::dlc_manual::list_tasks(conn, Some(ctx.game_root));
+            PlanItemResult {
+                index,
+                result,
+                manual_dlc_tasks,
+            }
         })
         .collect()
 }
@@ -383,6 +390,9 @@ mod tests {
         assert_eq!(results[0].index, 0);
         assert!(results[0].result.is_ok());
         assert_eq!(results[1].index, 1);
+        // OpenAI-Codex_atomic_review: Every result reports ledger lookup separately.
+        assert!(results[0].manual_dlc_tasks.is_ok());
+        assert!(results[1].manual_dlc_tasks.is_ok());
         assert!(
             results[1].result.is_err(),
             "unknown mod id must fail, not silently succeed"
@@ -396,6 +406,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "disabled");
+    }
+
+    // OpenAI-Codex_atomic_review: A ledger error must not replace the action error.
+    #[test]
+    fn execute_plan_reports_action_and_ledger_failures_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let (game_root, staging_root, recycle_bin_root, backup_root) = ctx(dir.path());
+        let provider = crate::providers::LegacySpProvider::new(game_root.clone());
+        let mut conn = Connection::open_in_memory().unwrap();
+        let plan = vec![PlanItem {
+            action: Action::UninstallMod { mod_id: 9999 },
+            reason: "test separate errors".to_string(),
+        }];
+        let exec_ctx = ExecutionContext {
+            game_root: &game_root,
+            staging_root: &staging_root,
+            recycle_bin_root: &recycle_bin_root,
+            backup_root: &backup_root,
+            provider: &provider,
+        };
+        let results = execute_plan(&mut conn, &plan, &[0], &exec_ctx);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].result.is_err());
+        assert!(results[0].manual_dlc_tasks.is_err());
     }
 
     #[test]

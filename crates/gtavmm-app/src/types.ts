@@ -19,6 +19,18 @@ export type PageMode =
   | "enhanced-lspdfr"
   | "fivem-client";
 
+// OpenAI-Codex_manual_dlc_ui: A reminder is never proof of XML registration.
+export interface ManualDlcTask {
+  id: number;
+  root_path: string;
+  pack_name: string;
+  item_xml: string;
+  operation: string;
+  recommendation: "review" | "check_present" | "check_removal";
+  owner_mod_ids: number[];
+  unresolved: boolean;
+}
+
 export interface InstalledMod {
   id: number;
   name: string;

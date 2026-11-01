@@ -3,10 +3,14 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import type { RecycleBinEntry } from "../types";
 
+// OpenAI-Codex
+// OpenAI-Codex_manual_dlc_ui
+
 interface RecycleBinModalProps {
   open: boolean;
   onClose: () => void;
   entries: RecycleBinEntry[];
+  /** Refreshes snapshots and reminders after success or a partial failure. */
   onRestored: () => void;
 }
 
@@ -24,11 +28,11 @@ export function RecycleBinModal({ open, onClose, entries, onRestored }: RecycleB
     setError(null);
     try {
       await invoke("restore_recycle_bin_entry", { entryId: id, gamePath: null });
-      onRestored();
     } catch (e) {
       setError(String(e));
     } finally {
       setRestoringId(null);
+      onRestored();
     }
   }
 
@@ -43,6 +47,7 @@ export function RecycleBinModal({ open, onClose, entries, onRestored }: RecycleB
         </div>
         <div className="modal-body">
           {error && <p className="error">{error}</p>}
+          <p>{t("manualDlc.restore_notice")}</p>
           {entries.length === 0 && (
             <div className="rb-empty">
               <span className="glyph">🗑</span>

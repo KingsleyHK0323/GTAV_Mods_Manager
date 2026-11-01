@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_dlc_deep_audit
 
 //! SQLite connection management and schema migration. No cloud/network component —
 //! this is a purely local file, per the project's offline-first, no-first-party-server
@@ -15,7 +16,7 @@ use crate::error::CoreResult;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const PROFILE_SCHEMA_SQL: &str = include_str!("profile_schema.sql");
-const CURRENT_SCHEMA_VERSION: i32 = 14;
+const CURRENT_SCHEMA_VERSION: i32 = 15;
 
 /// Resolves the default database file location under the OS-appropriate app-data
 /// directory (via the `directories` crate), e.g.
@@ -427,6 +428,35 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
         migration?;
         restore_foreign_keys?;
     }
+    if user_version < 15 {
+        // OpenAI-Codex_dlc_deep_audit: additive reminders never rewrite mod data.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS manual_dlc_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id INTEGER NOT NULL CHECK (operation_id > 0),
+                root_key TEXT NOT NULL,
+                root_display TEXT NOT NULL,
+                archive_scope TEXT NOT NULL CHECK (archive_scope = 'dlclist'),
+                pack_key TEXT NOT NULL,
+                pack_display TEXT NOT NULL,
+                operation TEXT NOT NULL CHECK (operation IN ('install','uninstall','restore','reinstall')),
+                phase TEXT NOT NULL CHECK (phase IN ('intent','settled')),
+                installed_mod_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                UNIQUE(operation_id, root_key, archive_scope, pack_key, phase)
+            );
+            CREATE INDEX IF NOT EXISTS idx_manual_dlc_scope
+                ON manual_dlc_event(root_key, archive_scope, pack_key, id);
+            CREATE TRIGGER IF NOT EXISTS manual_dlc_event_no_update
+                BEFORE UPDATE ON manual_dlc_event BEGIN
+                    SELECT RAISE(ABORT, 'manual DLC events are append-only');
+                END;
+            CREATE TRIGGER IF NOT EXISTS manual_dlc_event_no_delete
+                BEFORE DELETE ON manual_dlc_event BEGIN
+                    SELECT RAISE(ABORT, 'manual DLC events are append-only');
+                END;",
+        )?;
+    }
     if user_version < CURRENT_SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     }
@@ -444,6 +474,85 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM user_settings", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "user_settings singleton row should be seeded");
+    }
+
+    // OpenAI-Codex: Source-first coverage; runtime verification is not yet authorized.
+    #[test]
+    fn manual_dlc_v15_migration_preserves_v14_records_and_reopens_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manual-dlc.sqlite3");
+        {
+            // Build only the existing-table subset exercised below, without the
+            // new migration. This must not create the new ledger in advance.
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", true).unwrap();
+            conn.execute_batch(SCHEMA_SQL).unwrap();
+            conn.execute(
+                "INSERT INTO installed_mod (name, source_type, install_path, status) \
+                 VALUES ('Existing pack', 'folder', '/synthetic/game', 'disabled')",
+                [],
+            )
+            .unwrap();
+            let mod_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+                 VALUES (?1, '/synthetic/game/mods/update/x64/dlcpacks/Existing/dlc.rpf', 'original-hash')",
+                [mod_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO install_event (installed_mod_id, event_type, success) \
+                 VALUES (?1, 'disable', 1)",
+                [mod_id],
+            )
+            .unwrap();
+            conn.execute("UPDATE user_settings SET language = 'zh-TW'", [])
+                .unwrap();
+            // The v15 migration must be additive to these v14-compatible tables.
+            conn.pragma_update(None, "user_version", 14).unwrap();
+        }
+        for attempt in 0..2 {
+            let conn = open(&path).unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 15);
+            let (name, status, hash, language): (String, String, String, String) = conn
+                .query_row(
+                    "SELECT m.name, m.status, f.file_hash, s.language \
+                     FROM installed_mod m JOIN installed_mod_file f ON f.installed_mod_id = m.id \
+                     CROSS JOIN user_settings s WHERE m.name = 'Existing pack'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (name.as_str(), status.as_str()),
+                ("Existing pack", "disabled")
+            );
+            assert_eq!(hash, "original-hash");
+            assert_eq!(language, "zh-TW");
+            let history: i64 = conn
+                .query_row("SELECT COUNT(*) FROM install_event", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(history, 1);
+            let events: i64 = conn
+                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(
+                events, attempt,
+                "reopening must preserve existing reminders without inventing work"
+            );
+            if attempt == 0 {
+                conn.execute("INSERT INTO manual_dlc_event(operation_id,root_key,root_display,archive_scope,pack_key,pack_display,operation,phase) VALUES(1,'/synthetic/game','/synthetic/game','dlclist','existing','Existing','install','intent')", []).unwrap();
+            }
+            assert!(conn
+                .execute("UPDATE manual_dlc_event SET phase='settled'", [])
+                .is_err());
+            assert!(conn.execute("DELETE FROM manual_dlc_event", []).is_err());
+        }
     }
 
     /// Inserts a mod row the way a pre-v11 database would have held it: no

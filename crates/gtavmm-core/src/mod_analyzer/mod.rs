@@ -41,9 +41,9 @@ pub enum ModFormat {
     FolderReplacer,
     /// A standalone add-on content pack (add-on vehicle, add-on map, etc. — anything
     /// shipped as its own `dlc.rpf` rather than replacing an existing file). Carries
-    /// the pack name that must be registered in `dlclist.xml` at install time and
-    /// unregistered at uninstall time (see `dlc` module; not done by the classifier
-    /// itself — the install pipeline, milestone 4, owns that side effect).
+    /// the pack name used by the manual registration reminders. File lifecycle
+    /// operations record this work through `dlc_manual`; users review and edit
+    /// their own exported `dlclist.xml` instead of automatic XML registration.
     AddOnPack {
         pack_name: String,
     },

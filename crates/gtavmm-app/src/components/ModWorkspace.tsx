@@ -5,8 +5,12 @@ import { Icon } from "./IconSprite";
 import { InstallWizard } from "./InstallWizard";
 import { ModTable } from "./ModTable";
 import { ModPageTools } from "./ModPageTools";
+import { ManualDlcTasks } from "./ManualDlcTasks";
 import { pickSaveFile } from "../lib/pickers";
 import type { InstallEvent, InstalledMod, PageMode } from "../types";
+
+// OpenAI-Codex
+// OpenAI-Codex_manual_dlc_ui
 
 /** What a stat card can count. */
 export interface StatContext {
@@ -77,6 +81,7 @@ export function ModWorkspace({
   const [category, setCategory] = useState<string>("all");
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [manualDlcRevision, setManualDlcRevision] = useState(0);
 
   const loadMods = useCallback(() => {
     setError(null);
@@ -89,6 +94,11 @@ export function ModWorkspace({
       .then(setEvents)
       .catch(() => setEvents([]));
   }, [pageMode]);
+
+  const reloadAfterOperation = useCallback(() => {
+    loadMods();
+    setManualDlcRevision((revision) => revision + 1);
+  }, [loadMods]);
 
   useEffect(() => {
     loadMods();
@@ -168,7 +178,7 @@ export function ModWorkspace({
       <InstallWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        onInstalled={loadMods}
+        onInstalled={reloadAfterOperation}
         mode={pageMode}
       />
 
@@ -267,7 +277,7 @@ export function ModWorkspace({
             {mods && mods.length > 0 && (
               <ModTable
                 mods={visible}
-                onChanged={loadMods}
+                onChanged={reloadAfterOperation}
                 mode={pageMode}
                 showCategory={Boolean(categories)}
                 bulkStateActions={bulkStateActions}
@@ -275,8 +285,11 @@ export function ModWorkspace({
             )}
           </div>
 
+          {(pageMode === "legacy-sp" || pageMode === "legacy-lspdfr") && (
+            <ManualDlcTasks key={pageMode} mode={pageMode} refreshRevision={manualDlcRevision} />
+          )}
           {tools}
-          <ModPageTools variant={toolsVariant} mode={pageMode} />
+          <ModPageTools variant={toolsVariant} mode={pageMode} onChanged={reloadAfterOperation} />
         </>
       ) : (
         <HistoryPanel events={events} mods={mods} titleKey={titleKey} />

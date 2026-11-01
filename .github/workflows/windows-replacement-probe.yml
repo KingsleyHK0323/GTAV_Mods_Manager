@@ -136,7 +136,11 @@ jobs:
                   kernel_backup_verified = None
                   # OpenAI-Codex: component agreement is additional diagnostic evidence.
                   kernel_consistency_verified = None
+                  # OpenAI-Codex: coverage of field diagnostics is not equality.
+                  general_comparison_reported = None
                   if observation_name == 'security-query':
+                      general_comparison_reported = (
+                          'probe=general_comparison reported=true full_security_proof=false' in lines)
                       kernel_consistency_verified = (
                           'probe=kernel_consistency verified=true full_security_proof=false' in lines)
                       kernel_backup_verified = (
@@ -155,13 +159,15 @@ jobs:
                       and replace_privilege_verified is not False
                       and query_matrix_verified is not False
                       and kernel_backup_verified is not False
-                      and kernel_consistency_verified is not False)
+                      and kernel_consistency_verified is not False
+                      and general_comparison_reported is not False)
                   report['cases'].append({'name': case, 'passed': passed, 'observations': lines,
                                           'exit_code': result.returncode,
                                           'replace_privilege_verified': replace_privilege_verified,
                                           'query_matrix_verified': query_matrix_verified,
                                           'kernel_backup_verified': kernel_backup_verified,
-                                          'kernel_consistency_verified': kernel_consistency_verified})
+                                          'kernel_consistency_verified': kernel_consistency_verified,
+                                          'general_comparison_reported': general_comparison_reported})
                   save()
                   if not passed:
                       raise RuntimeError('Experiment failed or was unverifiable; remaining cases stopped.')

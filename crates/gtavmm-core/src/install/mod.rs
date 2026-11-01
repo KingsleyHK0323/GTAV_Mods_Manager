@@ -10,7 +10,8 @@
 //! in-memory, append-only rollback action log ([`InstallTransaction`]) consumed only
 //! on failure. DB rows for `installed_mod`/`installed_mod_file`/`install_event` are
 //! committed in a single `rusqlite` transaction only on Success, so a failed install
-//! never leaves partial DB rows.
+//! never leaves partial installed-mod rows. Manual DLC intent is deliberately
+//! persisted separately before file changes and remains reviewable on failure.
 //!
 //! Every write in this pipeline goes through `protected_files::check_write` first; a
 //! violation aborts the entire transaction with no partial effect — this cannot be
@@ -21,8 +22,11 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use crate::conflict::{self, ConflictReport};
+use crate::dlc_manual::{self, ManualDlcOperation, ManualDlcOperationToken};
 use crate::error::{CoreError, CoreResult};
-use crate::mod_analyzer::{dlc, ModFormat, ModPlan};
+#[cfg(test)]
+use crate::mod_analyzer::dlc;
+use crate::mod_analyzer::{ModFormat, ModPlan};
 use crate::protected_files;
 use crate::util::hash_file;
 
@@ -32,11 +36,6 @@ pub enum InstallAction {
     FileOverwritten { target: PathBuf, backup: PathBuf },
     /// A file did not exist before; nothing to restore on rollback except deletion.
     FileWritten { target: PathBuf },
-    /// A `dlclist.xml` entry was added; rollback removes it again.
-    DlclistEntryAdded {
-        dlclist_path: PathBuf,
-        pack_name: String,
-    },
 }
 
 #[derive(Debug, Default)]
@@ -61,7 +60,6 @@ impl InstallTransaction {
                 let target = match &action {
                     InstallAction::FileWritten { target }
                     | InstallAction::FileOverwritten { target, .. } => target,
-                    InstallAction::DlclistEntryAdded { dlclist_path, .. } => dlclist_path,
                 };
                 (rollback_target_key(target), action)
             })
@@ -107,17 +105,6 @@ impl InstallTransaction {
                         }
                         crate::util::move_file(&backup, &target)
                     })();
-                    (description, result)
-                }
-                InstallAction::DlclistEntryAdded {
-                    dlclist_path,
-                    pack_name,
-                } => {
-                    let description = format!(
-                        "remove DLC entry {pack_name} from {}",
-                        dlclist_path.display()
-                    );
-                    let result = dlc::remove_entry(&dlclist_path, &pack_name);
                     (description, result)
                 }
             };
@@ -248,6 +235,7 @@ pub fn install(
         options,
         source_path,
         &std::collections::HashMap::new(),
+        None,
     )
 }
 
@@ -261,6 +249,7 @@ fn install_with_expected_restores(
     options: InstallOptions,
     source_path: &Path,
     expected_restores: &std::collections::HashMap<PathBuf, String>,
+    manual_operation: Option<&ManualDlcOperationToken>,
 ) -> CoreResult<InstallOutcome> {
     // OpenAI-Codex: Shared protection for callers that already hold a plan.
     crate::providers::ensure_game_root_available(game_root)?;
@@ -283,6 +272,23 @@ fn install_with_expected_restores(
         return Ok(InstallOutcome::RequiresOverride(report));
     }
 
+    // OpenAI-Codex: Persist manual registration intent before the first file write.
+    let owned_operation;
+    let manual_operation = match manual_operation {
+        Some(operation) => operation,
+        None => {
+            let packs = dlc_manual::pack_names_for_paths(game_root, &targets)?;
+            owned_operation = dlc_manual::begin_tasks(
+                conn,
+                game_root,
+                &packs,
+                ManualDlcOperation::Install,
+                None,
+            )?;
+            &owned_operation
+        }
+    };
+
     // --- Backing_Up + Writing ---
     let mut tx_log = InstallTransaction::default();
     let result = perform_writes(plan, backup_root, options.auto_backup, &mut tx_log);
@@ -293,21 +299,6 @@ fn install_with_expected_restores(
             return Err(rollback_failed_install(conn, tx_log, err));
         }
     };
-
-    // --- Add-on pack registration (part of Writing, still rollback-guarded) ---
-    if let ModFormat::AddOnPack { pack_name } = &plan.format {
-        let dlclist_path = dlc::dlclist_path(game_root);
-        match dlc::add_entry_with_status(&dlclist_path, pack_name) {
-            Ok(true) => tx_log.record(InstallAction::DlclistEntryAdded {
-                dlclist_path,
-                pack_name: pack_name.clone(),
-            }),
-            Ok(false) => {}
-            Err(err) => {
-                return Err(rollback_failed_install(conn, tx_log, err));
-            }
-        }
-    }
 
     // --- Verifying ---
     // (file existence was already confirmed while writing; re-check here as the
@@ -359,6 +350,7 @@ fn install_with_expected_restores(
             "INSERT INTO install_event (installed_mod_id, event_type, success) VALUES (?1, 'install', 1)",
             [installed_mod_id],
         )?;
+        dlc_manual::settle_tasks(&db_tx, manual_operation)?;
         db_tx.commit()?;
         Ok(installed_mod_id)
     })();
@@ -638,17 +630,27 @@ fn reinstall_impl(
                 });
             }
         }
-        if let Some(staging_root) = staging_root {
-            crate::uninstall::uninstall_with_staging(
-                conn,
-                mod_id,
-                game_root,
-                recycle_bin_root,
-                staging_root,
-            )?;
-        } else {
-            crate::uninstall::uninstall(conn, mod_id, game_root, recycle_bin_root)?;
-        }
+    }
+
+    // OpenAI-Codex: One compound intent spans both versions, including partial failure.
+    let mut packs = dlc_manual::pack_names_for_paths(game_root, &targets)?;
+    packs.extend(dlc_manual::pack_names_for_mod(conn, mod_id, game_root)?);
+    let manual_operation = dlc_manual::begin_tasks(
+        conn,
+        game_root,
+        &packs,
+        ManualDlcOperation::Reinstall,
+        Some(mod_id),
+    )?;
+    if status != "uninstalled" {
+        crate::uninstall::uninstall_for_reinstall(
+            conn,
+            mod_id,
+            game_root,
+            recycle_bin_root,
+            staging_root,
+            &manual_operation,
+        )?;
     }
 
     let new_name = format!("{old_name} ({version_label})");
@@ -661,6 +663,7 @@ fn reinstall_impl(
         options,
         new_source_path,
         &expected_restores,
+        Some(&manual_operation),
     )
 }
 
@@ -1195,20 +1198,19 @@ mod tests {
     }
 
     #[test]
-    fn rollback_regression_reports_dlclist_read_failure() {
+    fn rollback_regression_leaves_unreadable_dlclist_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let dlclist_path = dir.path().join("dlclist.xml");
         std::fs::write(&dlclist_path, [0xff]).unwrap();
+        let target = write_source(dir.path(), "new-pack.rpf", b"payload");
         let mut tx = InstallTransaction::default();
-        tx.record(InstallAction::DlclistEntryAdded {
-            dlclist_path,
-            pack_name: "MyAddonCar".to_string(),
+        tx.record(InstallAction::FileWritten {
+            target: target.clone(),
         });
 
-        assert!(
-            tx.rollback().is_err(),
-            "dlclist read failures must be reported"
-        );
+        tx.rollback().unwrap();
+        assert!(!target.exists());
+        assert_eq!(std::fs::read(dlclist_path).unwrap(), [0xff]);
     }
 
     #[test]
@@ -1253,6 +1255,12 @@ mod tests {
         .is_err());
         assert!(!target.exists(), "new mod file must be rolled back");
         assert!(dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+        let tasks = dlc_manual::list_tasks(&conn, Some(&game_root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(
+            tasks[0].unresolved,
+            "DB failure must retain the pre-write intent"
+        );
     }
 
     #[test]
@@ -1299,6 +1307,9 @@ mod tests {
         assert!(contents.contains("</Paths>"));
         assert!(dlc::has_entry(&dlclist_path, "Existing").unwrap());
         assert!(!dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+        let tasks = dlc_manual::list_tasks(&conn, Some(&game_root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].unresolved);
     }
 
     #[cfg(windows)]
@@ -2044,8 +2055,220 @@ mod tests {
         );
     }
 
+    // OpenAI-Codex: One operation spans both versions without settling the uninstall.
+    fn assert_manual_dlc_reinstall(new_pack: &str, fail_new_install: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = crate::providers::LegacySpProvider::new(root.clone());
+        let old_source = dir.path().join("v1/OldCar");
+        std::fs::create_dir_all(&old_source).unwrap();
+        std::fs::write(old_source.join("dlc.rpf"), b"v1 pack").unwrap();
+        let new_source = dir.path().join("v2").join(new_pack);
+        std::fs::create_dir_all(&new_source).unwrap();
+        std::fs::write(new_source.join("dlc.rpf"), b"v2 pack").unwrap();
+        let plan = crate::mod_analyzer::classify(&old_source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let InstallOutcome::Success {
+            installed_mod_id: old_id,
+            ..
+        } = install(
+            &mut conn,
+            "Old pack",
+            &plan,
+            &root,
+            &dir.path().join("backups"),
+            InstallOptions::default(),
+            &old_source,
+        )
+        .unwrap()
+        else {
+            panic!("initial pack must install");
+        };
+        if fail_new_install {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_updated_pack BEFORE INSERT ON installed_mod \
+                BEGIN SELECT RAISE(ABORT, 'new pack DB failure'); END;",
+            )
+            .unwrap();
+        }
+        let result = reinstall(
+            &mut conn,
+            old_id,
+            &new_source,
+            "v2",
+            &provider,
+            &root,
+            &dir.path().join("backups"),
+            &dir.path().join("recycle"),
+            InstallOptions::default(),
+        );
+        if fail_new_install {
+            assert!(result.is_err());
+        } else {
+            assert!(matches!(result.unwrap(), InstallOutcome::Success { .. }));
+            assert_eq!(
+                std::fs::read(
+                    root.join("mods/update/x64/dlcpacks")
+                        .join(new_pack)
+                        .join("dlc.rpf")
+                )
+                .unwrap(),
+                b"v2 pack"
+            );
+        }
+        let tasks = dlc_manual::list_tasks(&conn, Some(&root)).unwrap();
+        let expected_packs = if new_pack == "OldCar" { 1 } else { 2 };
+        assert_eq!(tasks.len(), expected_packs);
+        assert!(tasks.iter().all(|task| task.unresolved == fail_new_install));
+        let (operations, intents, settled): (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(DISTINCT operation_id), COALESCE(SUM(phase = 'intent'), 0), \
+             COALESCE(SUM(phase = 'settled'), 0) FROM manual_dlc_event WHERE operation = 'reinstall'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(operations, 1);
+        assert_eq!(intents, expected_packs as i64);
+        assert_eq!(
+            settled,
+            if fail_new_install {
+                0
+            } else {
+                expected_packs as i64
+            }
+        );
+        let old_status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [old_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_status, "uninstalled");
+        assert!(!dlc::dlclist_path(&root).exists());
+    }
+
     #[test]
-    fn add_on_pack_install_registers_dlclist_entry() {
+    fn manual_dlc_same_pack_reinstall_is_one_task() {
+        assert_manual_dlc_reinstall("OldCar", false);
+    }
+
+    #[test]
+    fn manual_dlc_renamed_pack_reinstall_keeps_both_tasks() {
+        assert_manual_dlc_reinstall("NewCar", false);
+    }
+
+    #[test]
+    fn manual_dlc_failed_reinstall_keeps_the_whole_intent_unsettled() {
+        assert_manual_dlc_reinstall("NewCar", true);
+    }
+
+    // OpenAI-Codex: These source-first cases pin the approved manual-registration contract.
+    fn assert_manual_dlc_install_preserves_xml(with_xml: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let xml = dlc::dlclist_path(&game_root);
+        let original = b"<SMandatoryPacksData><Paths></Paths></SMandatoryPacksData>";
+        if with_xml {
+            std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+            std::fs::write(&xml, original).unwrap();
+        }
+        let source = write_source(dir.path(), "dlc.rpf", b"synthetic pack");
+        let target = game_root.join("mods/update/x64/dlcpacks/ManualCar/dlc.rpf");
+        let plan = ModPlan::new(
+            ModFormat::AddOnPack {
+                pack_name: "ManualCar".into(),
+            },
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+        let db_path = dir.path().join("manual-install.sqlite3");
+        let mut conn = crate::db::open(&db_path).unwrap();
+        let result = install(
+            &mut conn,
+            "Manual car",
+            &plan,
+            &game_root,
+            &dir.path().join("backups"),
+            InstallOptions::default(),
+            &source,
+        )
+        .unwrap();
+        assert!(matches!(result, InstallOutcome::Success { .. }));
+        assert_eq!(std::fs::read(&target).unwrap(), b"synthetic pack");
+        if with_xml {
+            assert_eq!(std::fs::read(&xml).unwrap(), original);
+        } else {
+            assert!(!xml.exists(), "manual registration must not fabricate XML");
+        }
+        drop(conn);
+        let conn = crate::db::open(&db_path).unwrap();
+        let (intents, settled): (i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(phase = 'intent'), 0), COALESCE(SUM(phase = 'settled'), 0) \
+             FROM manual_dlc_event WHERE pack_display = 'ManualCar'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((intents, settled), (1, 1));
+    }
+
+    #[test]
+    fn manual_dlc_install_does_not_require_xml_and_persists_work() {
+        assert_manual_dlc_install_preserves_xml(false);
+    }
+
+    #[test]
+    fn manual_dlc_install_preserves_existing_xml_bytes() {
+        assert_manual_dlc_install_preserves_xml(true);
+    }
+
+    #[test]
+    fn manual_dlc_intent_database_failure_prevents_payload_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = write_source(dir.path(), "dlc.rpf", b"pack");
+        let target = root.join("mods/update/x64/dlcpacks/ManualCar/dlc.rpf");
+        let plan = ModPlan::new(
+            ModFormat::AddOnPack {
+                pack_name: "ManualCar".into(),
+            },
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_manual_intent BEFORE INSERT ON manual_dlc_event \
+            BEGIN SELECT RAISE(ABORT, 'intent DB failure'); END;",
+        )
+        .unwrap();
+        let backups = dir.path().join("backups");
+        assert!(install(
+            &mut conn,
+            "Manual car",
+            &plan,
+            &root,
+            &backups,
+            InstallOptions::default(),
+            &source
+        )
+        .is_err());
+        assert!(!target.exists());
+        assert!(!backups.exists());
+        let mods: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mods, 0);
+    }
+
+    #[test]
+    fn add_on_pack_install_defers_dlclist_registration() {
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         std::fs::create_dir_all(&game_root).unwrap();
@@ -2081,6 +2304,10 @@ mod tests {
         .unwrap();
 
         assert!(matches!(outcome, InstallOutcome::Success { .. }));
-        assert!(dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+        assert!(!dlc::has_entry(&dlclist_path, "MyAddonCar").unwrap());
+        let tasks = dlc_manual::list_tasks(&conn, Some(&game_root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].recommendation, "check_present");
+        assert!(!tasks[0].unresolved);
     }
 }

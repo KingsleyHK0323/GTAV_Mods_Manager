@@ -13,12 +13,15 @@
 //! `backup_path` by restoring it in place — re-establishes a fresh backup of whatever
 //! is currently at each target before overwriting it, so a later re-uninstall can
 //! still correctly restore the pre-mod state.
+//! DLC registration remains manual; restoring files records reminders without
+//! modifying XML or claiming that the game has accepted the restored pack.
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::dlc_manual::{self, ManualDlcOperation};
 use crate::error::{CoreError, CoreResult};
 use crate::protected_files;
 use crate::util::hash_file;
@@ -539,6 +542,16 @@ fn restore_impl(
         }
     }
 
+    // OpenAI-Codex: Only the validated snapshot write set contributes DLC work.
+    let packs = dlc_manual::pack_names_for_paths(&snapshot_game_root, &targets)?;
+    let manual_operation = dlc_manual::begin_tasks(
+        conn,
+        &snapshot_game_root,
+        &packs,
+        ManualDlcOperation::Restore,
+        Some(mod_id),
+    )?;
+
     // OpenAI-Codex: Complete every backup before changing the first game target.
     // Keep partial backups on error. create_new plus the retained handle prevents
     // overwriting an existing candidate; it does not make target writes atomic.
@@ -614,6 +627,7 @@ fn restore_impl(
         [mod_id],
     )?;
     db_tx.execute("DELETE FROM recycle_bin_entry WHERE id = ?1", [entry_id])?;
+    dlc_manual::settle_tasks(&db_tx, &manual_operation)?;
     db_tx.commit()?;
 
     if let Some((recycle_root, staging_root)) = cleanup_roots {
@@ -1583,6 +1597,85 @@ mod tests {
         let entry_id = conn.last_insert_rowid();
 
         (mod_id, entry_id)
+    }
+
+    // OpenAI-Codex: Restoring files does not register a pack in the game's XML.
+    fn assert_manual_dlc_restore_records_work(fail_database: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let (mod_id, entry_id) = setup_uninstalled_mod_with_recycle_entry(
+            &conn,
+            &root,
+            &dir.path().join("recycle"),
+            "dlc.rpf",
+            15,
+        );
+        let relative = "mods/update/x64/dlcpacks/ManualCar/dlc.rpf";
+        let snapshot = PathBuf::from(
+            load_entry(&conn, entry_id)
+                .unwrap()
+                .mod_package_snapshot_path,
+        );
+        std::fs::create_dir_all(snapshot.join(relative).parent().unwrap()).unwrap();
+        std::fs::copy(snapshot.join("dlc.rpf"), snapshot.join(relative)).unwrap();
+        conn.execute(
+            "UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2",
+            rusqlite::params![root.join(relative).to_string_lossy(), mod_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE installed_mod SET install_path = ?1, source_type = 'folder' WHERE id = ?2",
+            rusqlite::params![root.to_string_lossy(), mod_id],
+        )
+        .unwrap();
+        let xml = crate::mod_analyzer::dlc::dlclist_path(&root);
+        let original = b"<Paths></Paths>";
+        std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+        std::fs::write(&xml, original).unwrap();
+        if fail_database {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_manual_restore BEFORE UPDATE OF status ON installed_mod \
+                BEGIN SELECT RAISE(ABORT, 'restore DB failure'); END;",
+            )
+            .unwrap();
+        }
+        let result = restore(&mut conn, entry_id, &root, &dir.path().join("backups"));
+        if fail_database {
+            assert!(result.is_err());
+            assert!(load_entry(&conn, entry_id).is_ok());
+            assert!(snapshot.join(relative).is_file());
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(
+            std::fs::read(root.join(relative)).unwrap(),
+            b"snapshotted content"
+        );
+        assert_eq!(std::fs::read(&xml).unwrap(), original);
+        let (intents, settled): (i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(phase = 'intent'), 0), COALESCE(SUM(phase = 'settled'), 0) \
+             FROM manual_dlc_event WHERE pack_display = 'ManualCar' AND operation = 'restore'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((intents, settled), (1, if fail_database { 0 } else { 1 }));
+        let tasks = dlc_manual::list_tasks(&conn, Some(&root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].unresolved, fail_database);
+    }
+
+    #[test]
+    fn manual_dlc_restore_preserves_xml_and_records_pending_registration() {
+        assert_manual_dlc_restore_records_work(false);
+    }
+
+    #[test]
+    fn manual_dlc_restore_database_failure_retains_intent_and_snapshot() {
+        assert_manual_dlc_restore_records_work(true);
     }
 
     #[test]
