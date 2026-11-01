@@ -829,8 +829,131 @@ fn replacement_observes_security_and_metadata_preservation() -> Result<(), Probe
     with_security_privilege(|_| preservation_observations())
 }
 
+// OpenAI-Codex_dlc_deep_audit: snapshots own bytes only; no descriptor pointers escape their owner.
+#[derive(PartialEq, Eq)]
+struct AclSnapshot {
+    present: bool,
+    defaulted: bool,
+    bytes: Option<Vec<u8>>,
+}
+
+struct SecurityPartsSnapshot {
+    revision: u8,
+    control: u16,
+    owner: Option<Vec<u8>>,
+    group: Option<Vec<u8>>,
+    dacl: Option<AclSnapshot>,
+    sacl: Option<AclSnapshot>,
+}
+
+fn snapshot_span(bytes: &[u8], offset: usize, length: usize) -> Result<&[u8], ProbeError> {
+    let end = offset.checked_add(length).ok_or(ProbeError {
+        stage: "snapshot_span_overflow",
+        code: None,
+    })?;
+    bytes.get(offset..end).ok_or(ProbeError {
+        stage: "snapshot_component_bounds",
+        code: None,
+    })
+}
+
+fn snapshot_component(
+    bytes: &[u8],
+    offset: usize,
+    sid: bool,
+) -> Result<Option<Vec<u8>>, ProbeError> {
+    if offset == 0 {
+        return Ok(None);
+    }
+    ensure(offset >= 20 && offset & 3 == 0, "snapshot_component_offset")?;
+    let header = snapshot_span(bytes, offset, 8)?;
+    let length = if sid {
+        ensure(header[0] == 1 && header[1] <= 15, "snapshot_sid_header")?;
+        8 + usize::from(header[1]) * 4
+    } else {
+        let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
+        ensure(length >= 8, "snapshot_acl_length")?;
+        length
+    };
+    Ok(Some(snapshot_span(bytes, offset, length)?.to_vec()))
+}
+
+impl SecurityPartsSnapshot {
+    fn from_bytes(bytes: &[u8], information: u32) -> Result<Self, ProbeError> {
+        let header = snapshot_span(bytes, 0, 20)?;
+        let control = u16::from_le_bytes([header[2], header[3]]);
+        ensure(control & SE_SELF_RELATIVE != 0, "snapshot_relative")?;
+        let offset = |at: usize| {
+            u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+                as usize
+        };
+        let all = information & BACKUP_SECURITY_INFORMATION != 0;
+        let owner = if all || information & OWNER_SECURITY_INFORMATION != 0 {
+            snapshot_component(bytes, offset(4), true)?
+        } else {
+            None
+        };
+        let group = if all || information & GROUP_SECURITY_INFORMATION != 0 {
+            snapshot_component(bytes, offset(8), true)?
+        } else {
+            None
+        };
+        let acl = |present_mask, defaulted_mask, at| -> Result<AclSnapshot, ProbeError> {
+            let present = control & present_mask != 0;
+            Ok(AclSnapshot {
+                present,
+                defaulted: control & defaulted_mask != 0,
+                // An absent ACL's offset is not meaningful. Present/null remains
+                // distinct from absent because the presence bit is retained.
+                bytes: if present {
+                    snapshot_component(bytes, offset(at), false)?
+                } else {
+                    None
+                },
+            })
+        };
+        Ok(Self {
+            revision: header[0],
+            control,
+            owner,
+            group,
+            dacl: if all || information & DACL_SECURITY_INFORMATION != 0 {
+                Some(acl(0x0004, 0x0008, 16)?)
+            } else {
+                None
+            },
+            sacl: if all || information & SACL_SECURITY_INFORMATION != 0 {
+                Some(acl(0x0010, 0x0020, 12)?)
+            } else {
+                None
+            },
+        })
+    }
+
+    fn general_eq(&self, baseline: &Self) -> bool {
+        // OWNER/GROUP_DEFAULTED, DACL_PRESENT/DEFAULTED, and the DACL
+        // AUTO_INHERIT_REQ/AUTO_INHERITED/PROTECTED control bits only.
+        const GENERAL_CONTROL: u16 = 0x150f;
+        self.revision == baseline.revision
+            && self.owner.is_some()
+            && self.group.is_some()
+            && self.control & GENERAL_CONTROL == baseline.control & GENERAL_CONTROL
+            && self.owner == baseline.owner
+            && self.group == baseline.group
+            && self.dacl == baseline.dacl
+    }
+
+    fn sacl_eq(&self, baseline: &Self) -> bool {
+        // SACL_PRESENT/DEFAULTED/AUTO_INHERIT_REQ/AUTO_INHERITED/PROTECTED.
+        const SACL_CONTROL: u16 = 0x2a30;
+        self.revision == baseline.revision
+            && self.control & SACL_CONTROL == baseline.control & SACL_CONTROL
+            && self.sacl == baseline.sacl
+    }
+}
+
 // OpenAI-Codex: caller-owned storage must never enter SecurityAllocation/LocalFree.
-fn kernel_backup_query(file: &File) -> Result<(), ProbeError> {
+fn kernel_backup_query(file: &File) -> Result<SecurityPartsSnapshot, ProbeError> {
     const CAPACITY: u32 = 1_048_576;
     let mut storage = vec![0u64; CAPACITY as usize / std::mem::size_of::<u64>()];
     let pointer = storage.as_mut_ptr().cast();
@@ -878,7 +1001,10 @@ fn kernel_backup_query(file: &File) -> Result<(), ProbeError> {
     let length = unsafe { GetSecurityDescriptorLength(pointer) };
     ensure((20..=needed).contains(&length), "kernel_backup_length")?;
     println!("probe=kernel_backup validated=true self_relative=true length={length} full_security_proof=false");
-    Ok(())
+    // SAFETY: length is bounded by needed/CAPACITY, and storage remains owned
+    // here. Component offsets/lengths are checked using safe slices before copy.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), length as usize) };
+    SecurityPartsSnapshot::from_bytes(bytes, BACKUP_SECURITY_INFORMATION)
 }
 
 fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), ProbeError> {
@@ -901,16 +1027,40 @@ fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), Pr
     ];
     let mut first_failure = None;
     let mut backup_succeeded = false;
+    let mut general_baseline = None;
+    let mut sacl_baseline = None;
     for (stage, information) in queries {
         // Every request uses this same File and process token; no enable/restore
         // or fixture mutation is performed between the three bounded requests.
-        ensure(
-            privilege_attributes(&privilege.token, privilege.luid)? & SE_PRIVILEGE_ENABLED != 0,
-            "query_matrix_privilege_enabled",
-        )?;
+        let context =
+            privilege_attributes(&privilege.token, privilege.luid).and_then(|attributes| {
+                ensure(
+                    attributes & SE_PRIVILEGE_ENABLED != 0,
+                    "query_matrix_privilege_enabled",
+                )
+            });
+        if let Err(error) = context {
+            println!(
+                "probe=query_context_failure phase={stage} stage={} os_code={:?}",
+                error.stage, error.code
+            );
+            return Err(first_failure.unwrap_or(error));
+        }
         println!("probe=query_context phase={stage} security_privilege_enabled=true");
-        let outcome = SecurityAllocation::query(&target, stage, information)
-            .and_then(|descriptor| descriptor.report_requested_parts(information, stage));
+        let outcome =
+            SecurityAllocation::query(&target, stage, information).and_then(|descriptor| {
+                descriptor.report_requested_parts(information, stage)?;
+                if information != BACKUP_SECURITY_INFORMATION {
+                    let snapshot =
+                        SecurityPartsSnapshot::from_bytes(&descriptor.bytes()?, information)?;
+                    if information == SACL_SECURITY_INFORMATION {
+                        sacl_baseline = Some(snapshot);
+                    } else {
+                        general_baseline = Some(snapshot);
+                    }
+                }
+                Ok(())
+            });
         if information == BACKUP_SECURITY_INFORMATION {
             backup_succeeded = outcome.is_ok();
         }
@@ -928,15 +1078,40 @@ fn query_matrix_observations(privilege: &mut SecurityPrivilege) -> Result<(), Pr
         }
     }
     // OpenAI-Codex: one additional fixed query, never a fallback or retry.
-    ensure(
-        privilege_attributes(&privilege.token, privilege.luid)? & SE_PRIVILEGE_ENABLED != 0,
-        "kernel_backup_privilege_enabled",
-    )?;
+    let privilege_check =
+        privilege_attributes(&privilege.token, privilege.luid).and_then(|attributes| {
+            ensure(
+                attributes & SE_PRIVILEGE_ENABLED != 0,
+                "kernel_backup_privilege_enabled",
+            )
+        });
+    if let Err(error) = privilege_check {
+        println!(
+            "probe=kernel_context_failure stage={} os_code={:?}",
+            error.stage, error.code
+        );
+        return Err(first_failure.unwrap_or(error));
+    }
     println!("probe=query_context phase=kernel_backup security_privilege_enabled=true");
-    match kernel_backup_query(&target) {
-        Ok(()) => println!("probe=kernel_backup_result success=true full_security_proof=false"),
+    let kernel_query = kernel_backup_query(&target);
+    match &kernel_query {
+        Ok(_) => println!("probe=kernel_backup_result success=true full_security_proof=false"),
+        Err(error) => println!("probe=kernel_backup_result success=false stage={} os_code={:?} full_security_proof=false", error.stage, error.code),
+    }
+    let kernel_outcome = kernel_query.and_then(|snapshot| {
+        let available = general_baseline.is_some() && sacl_baseline.is_some();
+        let general_equal = general_baseline.as_ref().is_some_and(|baseline| snapshot.general_eq(baseline));
+        let sacl_equal = sacl_baseline.as_ref().is_some_and(|baseline| snapshot.sacl_eq(baseline));
+        println!("probe=kernel_consistency baselines_available={available} general_equal={general_equal} sacl_equal={sacl_equal} full_security_proof=false");
+        ensure(available, "kernel_consistency_baselines")?;
+        ensure(general_equal && sacl_equal, "kernel_consistency_mismatch")?;
+        println!("probe=kernel_consistency verified=true full_security_proof=false");
+        Ok(())
+    });
+    match kernel_outcome {
+        Ok(()) => (),
         Err(error) => {
-            println!("probe=kernel_backup_result success=false stage={} os_code={:?} full_security_proof=false", error.stage, error.code);
+            println!("probe=kernel_consistency_result success=false stage={} os_code={:?} full_security_proof=false", error.stage, error.code);
             if first_failure.is_none() {
                 first_failure = Some(error);
             }
