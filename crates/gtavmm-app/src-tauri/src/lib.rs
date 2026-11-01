@@ -43,6 +43,9 @@ pub fn run() {
             commands::read_dlclist_document,
             commands::validate_dlclist_draft,
             commands::save_dlclist_copy,
+            // OpenAI-Codex: Explicitly confirmed AI text drafts, with no file writes.
+            commands::prepare_dlclist_ai,
+            commands::suggest_dlclist_ai,
             commands::set_mod_mode,
             commands::detect_game,
             commands::inspect_mod,

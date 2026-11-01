@@ -8,6 +8,7 @@
 ## Unreleased
 
 ### Added
+- Add source for explicitly confirmed DLC-list AI drafts using Ollama Local, Ollama Cloud, Anthropic or OpenAI. Preview the complete request and immutable destination/model snapshot; bound response reads, reject redirects and unrelated XML edits, and require separate user application and save-as-new. Preserve other provider features, original files and manual-registration reminders. New tests are source-first and have not been executed; no live-provider, UI or game acceptance is claimed. <!-- OpenAI-Codex -->
 - Prepare field-level general security comparison observations and a separate diagnostic-coverage report flag. Emit only presence/equality booleans and masked control values; preserve equality predicates, native query count, original failures and all pass gates. No production or dependency changes. This diagnostic revision has not been compiled or executed. <!-- OpenAI-Codex -->
 
 

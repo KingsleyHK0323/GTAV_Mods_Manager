@@ -572,6 +572,18 @@
     "cat_framework": "Framework"
   },
   "dlclistEditor": {
+    "ai_title": "Optional AI draft assistance",
+    "ai_privacy": "Review the destination and complete request before sending. XML and instructions may contain private data and will be sent to the selected provider. No source path, mod database or operation log is attached. AI input/output: 64 KiB XML; instructions: 4 KiB. Requests may incur provider charges. Leaving Tools discards pending results; it does not cancel a request already sent.",
+    "ai_instruction": "What should change in the Paths entries?",
+    "ai_preview": "Prepare request preview (no AI connection)",
+    "ai_destination": "Provider: {{provider}} · Model: {{model}} · Destination: {{endpoint}}",
+    "ai_system": "Complete system instruction to send",
+    "ai_prompt": "Complete user message to send (XML and instructions)",
+    "ai_send": "Confirm and send this request",
+    "ai_result": "AI suggestion (not applied or saved)",
+    "ai_apply": "Apply suggestion to draft, then validate before saving",
+    "ai_changed": "AI settings changed. Review a new request preview.",
+    "busy_ai": "Preparing or processing the AI draft request…",
     "title": "DLC list editor",
     "open_title": "Open an exported DLC list XML",
     "save_title": "Save a new DLC list XML copy",

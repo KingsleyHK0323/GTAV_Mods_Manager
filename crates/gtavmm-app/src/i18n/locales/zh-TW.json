@@ -572,6 +572,18 @@
     "cat_framework": "框架"
   },
   "dlclistEditor": {
+    "ai_title": "選用 AI 草稿協助",
+    "ai_privacy": "送出前請檢查目的地與完整請求。XML 和指令可能含私人資料，將傳送至所選供應商；不會附加來源路徑、模組資料庫或操作記錄。AI 輸入與輸出 XML 上限 64 KiB，指令上限 4 KiB。供應商可能收費。離開工具頁會捨棄待套用結果，但不會取消已送出的請求。",
+    "ai_instruction": "要如何修改 Paths 項目？",
+    "ai_preview": "準備請求預覽（不連線 AI）",
+    "ai_destination": "供應商：{{provider}} · 模型：{{model}} · 目的地：{{endpoint}}",
+    "ai_system": "將傳送的完整系統指令",
+    "ai_prompt": "將傳送的完整使用者訊息（XML 與指令）",
+    "ai_send": "確認並傳送此請求",
+    "ai_result": "AI 建議（尚未套用或儲存）",
+    "ai_apply": "套用至草稿，另存前須重新驗證",
+    "ai_changed": "AI 設定已改變，請重新檢查請求預覽。",
+    "busy_ai": "正在準備或處理 AI 草稿請求…",
     "title": "DLC 清單編輯器",
     "open_title": "開啟已匯出的 DLC 清單 XML",
     "save_title": "另存全新的 DLC 清單 XML 副本",

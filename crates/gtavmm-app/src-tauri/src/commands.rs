@@ -7,7 +7,7 @@
 //! `tauri::State`/error-to-string for the frontend.
 
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 use gtavmm_core::db::models::{InstalledMod, ModStatus};
@@ -1498,6 +1498,100 @@ pub struct DlcEditorAnalysis {
     diff: gtavmm_core::dlclist_editor::DlcEditorDiff,
 }
 
+// OpenAI-Codex: Confirmation contains public request data only, never credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DlcAiPreview {
+    provider: gtavmm_core::ai_assistant::DlcAiProviderSnapshot,
+    user_prompt: String,
+}
+
+#[derive(Serialize)]
+pub struct DlcAiResult {
+    content: String,
+    analysis: DlcEditorAnalysis,
+}
+
+fn prepare_dlclist_ai_impl(
+    settings: &gtavmm_core::ai_assistant::AiSettings,
+    content: &str,
+    instruction: &str,
+) -> Result<DlcAiPreview, String> {
+    Ok(DlcAiPreview {
+        provider: gtavmm_core::ai_assistant::dlc_provider_snapshot(settings)
+            .map_err(|e| e.to_string())?,
+        user_prompt: gtavmm_core::dlclist_editor::build_dlclist_ai_prompt(content, instruction)
+            .map_err(|e| e.to_string())?,
+    })
+}
+
+fn check_dlclist_ai_preview(
+    settings: &gtavmm_core::ai_assistant::AiSettings,
+    content: &str,
+    instruction: &str,
+    expected: &DlcAiPreview,
+) -> Result<DlcAiPreview, String> {
+    let current = prepare_dlclist_ai_impl(settings, content, instruction)?;
+    if current != *expected {
+        return Err("AI settings or input changed. Prepare and review a new preview.".into());
+    }
+    Ok(current)
+}
+
+fn dlclist_ai_result(content: &str, response: String) -> Result<DlcAiResult, String> {
+    let validation = gtavmm_core::dlclist_editor::validate_dlclist_ai_response(content, &response)
+        .map_err(|e| e.to_string())?;
+    let diff = gtavmm_core::dlclist_editor::compare_dlclist(content, &response)
+        .map_err(|e| e.to_string())?;
+    Ok(DlcAiResult {
+        content: response,
+        analysis: DlcEditorAnalysis { validation, diff },
+    })
+}
+
+#[tauri::command]
+pub fn prepare_dlclist_ai(
+    state: tauri::State<crate::AppState>,
+    content: String,
+    instruction: String,
+) -> Result<DlcAiPreview, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "AI settings are unavailable.".to_string())?;
+    let settings = gtavmm_core::ai_assistant::load_settings(&conn)
+        .map_err(|_| "AI settings are unavailable.".to_string())?;
+    prepare_dlclist_ai_impl(&settings, &content, &instruction)
+}
+
+#[tauri::command]
+pub async fn suggest_dlclist_ai(
+    state: tauri::State<'_, crate::AppState>,
+    content: String,
+    instruction: String,
+    expected: DlcAiPreview,
+) -> Result<DlcAiResult, String> {
+    let confirmed = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| "AI settings are unavailable.".to_string())?;
+        let settings = gtavmm_core::ai_assistant::load_settings(&conn)
+            .map_err(|_| "AI settings are unavailable.".to_string())?;
+        check_dlclist_ai_preview(&settings, &content, &instruction, &expected)?
+    };
+    // The immutable confirmed destination survives setting changes; no DB lock crosses HTTP.
+    tauri::async_runtime::spawn_blocking(move || {
+        let response = gtavmm_core::ai_assistant::call_dlclist_provider(
+            &confirmed.provider,
+            &confirmed.user_prompt,
+        )
+        .map_err(|e| e.to_string())?;
+        dlclist_ai_result(&content, response)
+    })
+    .await
+    .map_err(|_| "AI draft request could not complete.".to_string())?
+}
+
 fn dlclist_path_checks(path: &str, existing: bool) -> Result<std::path::PathBuf, String> {
     use std::path::{Component, Path};
     let path = Path::new(path);
@@ -2339,6 +2433,39 @@ pub fn validate_game_path(path: String) -> Result<DetectGameResult, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex: Draft preparation never reads credentials or makes a request.
+    #[test]
+    fn dlc_ai_preview_rejects_changed_inputs_and_settings_without_transport() {
+        let xml = "<SMandatoryPacksData><Paths/></SMandatoryPacksData>";
+        let settings = gtavmm_core::ai_assistant::AiSettings {
+            enabled: true,
+            provider: Some(gtavmm_core::ai_assistant::AiProviderKind::Ollama),
+            ..Default::default()
+        };
+        let preview = prepare_dlclist_ai_impl(&settings, xml, "Add a pack").unwrap();
+        assert!(check_dlclist_ai_preview(&settings, xml, "Add a pack", &preview).is_ok());
+        assert!(check_dlclist_ai_preview(&settings, xml, "Remove a pack", &preview).is_err());
+        let mut changed = settings.clone();
+        changed.ollama_model = Some("different-model".into());
+        assert!(check_dlclist_ai_preview(&changed, xml, "Add a pack", &preview).is_err());
+        changed.enabled = false;
+        assert!(prepare_dlclist_ai_impl(&changed, xml, "Add a pack").is_err());
+        assert!(prepare_dlclist_ai_impl(&settings, "invalid", "Add a pack").is_err());
+        assert!(!preview.user_prompt.contains("source_path"));
+    }
+
+    #[test]
+    fn dlc_ai_result_checks_protected_content_before_returning_analysis() {
+        let xml = "<SMandatoryPacksData flag=\"keep\"><Paths/></SMandatoryPacksData>";
+        assert!(dlclist_ai_result(xml, xml.replace("keep", "changed")).is_err());
+        let result = dlclist_ai_result(
+            xml,
+            xml.replace("<Paths/>", "<Paths><Item>dlcpacks:/demo/</Item></Paths>"),
+        )
+        .unwrap();
+        assert_eq!(result.analysis.diff.added, vec!["dlcpacks:/demo/"]);
+    }
 
     fn create_file_symlink(
         target: &std::path::Path,

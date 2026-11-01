@@ -56,6 +56,22 @@ export interface DlcEditorAnalysis {
   diff: DlcEditorDiff;
 }
 
+// OpenAI-Codex: Public confirmation data excludes credentials and source paths.
+export interface DlcAiPreview {
+  provider: {
+    provider: "ollama" | "ollama_cloud" | "openai" | "anthropic";
+    model: string;
+    endpoint: string;
+    system_prompt: string;
+  };
+  user_prompt: string;
+}
+
+export interface DlcAiResult {
+  content: string;
+  analysis: DlcEditorAnalysis;
+}
+
 export interface InstalledMod {
   id: number;
   name: string;

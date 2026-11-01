@@ -84,7 +84,7 @@ suggestion must clearly state exactly what would be deleted and why, and must be
 something the user explicitly confirms before it happens — never as something already done or \
 safe to do without confirmation.\n";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum AiProviderKind {
     #[serde(rename = "ollama")]
     Ollama,
@@ -159,6 +159,187 @@ pub struct AiSettings {
     pub ollama_model: Option<String>,
     pub cloud_endpoint: Option<String>,
     pub cloud_model: Option<String>,
+}
+
+// OpenAI-Codex_dlc_ai_transport: Confirmed DLC-only transport, separate from legacy calls.
+const DLC_HTTP_BODY_LIMIT: usize = 1024 * 1024;
+const DLC_RESPONSE_TEXT_LIMIT: usize = 64 * 1024;
+const DLC_OLLAMA_ENDPOINT: &str = "http://localhost:11434/api/generate";
+
+/// Public preview of the exact destination, model, and system instruction to confirm.
+/// Contains no credentials. The caller must recheck settings before dispatching it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DlcAiProviderSnapshot {
+    pub provider: AiProviderKind,
+    pub model: String,
+    pub endpoint: String,
+    pub system_prompt: String,
+}
+
+fn dlclist_error(reason: &str) -> CoreError {
+    CoreError::AiAssistant {
+        reason: reason.to_string(),
+    }
+}
+
+/// Builds the DLC preview without accessing the database, credentials, or network.
+pub fn dlc_provider_snapshot(settings: &AiSettings) -> CoreResult<DlcAiProviderSnapshot> {
+    if !settings.enabled {
+        return Err(dlclist_error("AI assistant is disabled."));
+    }
+    let provider = settings
+        .provider
+        .ok_or_else(|| dlclist_error("Select a provider before preparing a DLC draft."))?;
+    let endpoint = match provider {
+        AiProviderKind::Ollama => DLC_OLLAMA_ENDPOINT,
+        AiProviderKind::OllamaCloud => OLLAMA_CLOUD_ENDPOINT,
+        AiProviderKind::OpenAI => OPENAI_ENDPOINT,
+        AiProviderKind::Anthropic => ANTHROPIC_ENDPOINT,
+        _ => {
+            return Err(dlclist_error(
+                "This provider is not supported for DLC drafts.",
+            ))
+        }
+    };
+    let model = if provider == AiProviderKind::Ollama {
+        settings.ollama_model.as_deref().unwrap_or("llama3").trim()
+    } else {
+        required_cloud_model(settings)?
+    };
+    if model.is_empty() || model.chars().any(char::is_control) {
+        return Err(dlclist_error(
+            "Enter a valid model ID before preparing a DLC draft.",
+        ));
+    }
+    Ok(DlcAiProviderSnapshot {
+        provider,
+        model: model.to_string(),
+        endpoint: endpoint.to_string(),
+        system_prompt: SYSTEM_SAFETY_PROMPT.to_string(),
+    })
+}
+
+/// Rejects caller-controlled endpoints or system instructions before any credentials.
+fn build_dlclist_request(
+    snapshot: &DlcAiProviderSnapshot,
+    prompt: &str,
+) -> CoreResult<serde_json::Value> {
+    let canonical = dlc_provider_snapshot(&AiSettings {
+        enabled: true,
+        provider: Some(snapshot.provider),
+        ollama_model: Some(snapshot.model.clone()),
+        cloud_model: Some(snapshot.model.clone()),
+        cloud_endpoint: None,
+    })?;
+    if canonical != *snapshot {
+        return Err(dlclist_error(
+            "DLC provider preview is invalid; prepare it again.",
+        ));
+    }
+    match snapshot.provider {
+        AiProviderKind::Ollama => Ok(build_ollama_request(&snapshot.model, prompt)),
+        AiProviderKind::OllamaCloud => Ok(build_ollama_chat_request(&snapshot.model, prompt)),
+        AiProviderKind::OpenAI => Ok(build_cloud_request(&snapshot.model, prompt)),
+        AiProviderKind::Anthropic => Ok(build_anthropic_request(&snapshot.model, prompt)),
+        _ => Err(dlclist_error(
+            "This provider is not supported for DLC drafts.",
+        )),
+    }
+}
+
+fn read_dlclist_body(
+    reader: impl std::io::Read,
+    expected_length: Option<u64>,
+) -> CoreResult<String> {
+    use std::io::Read;
+    if expected_length.is_some_and(|length| length > DLC_HTTP_BODY_LIMIT as u64) {
+        return Err(dlclist_error(
+            "DLC provider response exceeds the HTTP size limit.",
+        ));
+    }
+    let mut bytes = Vec::new();
+    reader
+        .take(DLC_HTTP_BODY_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| dlclist_error("Could not read the complete DLC provider response."))?;
+    if bytes.len() > DLC_HTTP_BODY_LIMIT {
+        return Err(dlclist_error(
+            "DLC provider response exceeds the HTTP size limit.",
+        ));
+    }
+    if expected_length.is_some_and(|length| length != bytes.len() as u64) {
+        return Err(dlclist_error("DLC provider response length is invalid."));
+    }
+    String::from_utf8(bytes).map_err(|_| dlclist_error("DLC provider response is not valid UTF-8."))
+}
+
+fn parse_dlclist_response(provider: AiProviderKind, body: &str) -> CoreResult<String> {
+    let text = match provider {
+        AiProviderKind::Ollama => parse_ollama_response(body),
+        AiProviderKind::OllamaCloud => parse_ollama_chat_response(body),
+        AiProviderKind::OpenAI => parse_cloud_response(body),
+        AiProviderKind::Anthropic => parse_anthropic_response(body),
+        _ => {
+            return Err(dlclist_error(
+                "This provider is not supported for DLC drafts.",
+            ))
+        }
+    }
+    .map_err(|_| dlclist_error("DLC provider response has an invalid format."))?;
+    if text.len() > DLC_RESPONSE_TEXT_LIMIT {
+        return Err(dlclist_error("DLC provider text exceeds the 64 KiB limit."));
+    }
+    Ok(text)
+}
+
+fn validate_dlclist_status(status: u16) -> CoreResult<()> {
+    if !(200..300).contains(&status) {
+        return Err(dlclist_error(
+            "DLC provider returned an unsuccessful status.",
+        ));
+    }
+    Ok(())
+}
+
+/// Dispatches only the confirmed snapshot; never reloads settings or database context.
+/// Credentials are read here only, after snapshot validation. No redirects or retry loop.
+pub fn call_dlclist_provider(snapshot: &DlcAiProviderSnapshot, prompt: &str) -> CoreResult<String> {
+    let body = build_dlclist_request(snapshot, prompt)?;
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(PROVIDER_REQUEST_TIMEOUT)
+        .build();
+    let mut request = agent.post(&snapshot.endpoint);
+    if snapshot.provider != AiProviderKind::Ollama {
+        let api_key = get_provider_api_key(snapshot.provider)
+            .map_err(|_| dlclist_error("Could not read the selected provider credential."))?;
+        request = if snapshot.provider == AiProviderKind::Anthropic {
+            request
+                .set("x-api-key", &api_key)
+                .set("anthropic-version", ANTHROPIC_API_VERSION)
+        } else {
+            request.set("Authorization", &format!("Bearer {api_key}"))
+        };
+    }
+    let response = request
+        .send_json(body)
+        .map_err(|_| dlclist_error("DLC provider request failed."))?;
+    validate_dlclist_status(response.status())?;
+    // ureq may decode compressed responses, whose wire length is not the decoded length.
+    let expected_length = if response
+        .header("Content-Encoding")
+        .map_or(true, |encoding| encoding.eq_ignore_ascii_case("identity"))
+    {
+        response
+            .header("Content-Length")
+            .map(|length| length.parse::<u64>())
+            .transpose()
+            .map_err(|_| dlclist_error("DLC provider response length is invalid."))?
+    } else {
+        None
+    };
+    let body = read_dlclist_body(response.into_reader(), expected_length)?;
+    parse_dlclist_response(snapshot.provider, &body)
 }
 
 pub fn load_settings(conn: &Connection) -> CoreResult<AiSettings> {
@@ -505,9 +686,8 @@ pub fn diagnose(conn: &Connection, raw_context: &str) -> CoreResult<String> {
 }
 
 /// Sends `prompt` to whichever provider is currently configured (requires [`enable`]
-/// to have been called first). Shared by every AI-assisted feature in this crate
-/// ([`diagnose`], [`crate::translation`]) — there is exactly one place that talks to
-/// Ollama/cloud endpoints, so a provider-handling fix only needs to happen once.
+/// to have been called first). Shared by diagnosis and translation. DLC drafts use
+/// [`call_dlclist_provider`] with a confirmed snapshot and stricter transport limits.
 pub(crate) fn call_provider(conn: &Connection, prompt: &str) -> CoreResult<String> {
     let settings = load_settings(conn)?;
     if !settings.enabled {
@@ -686,6 +866,164 @@ fn call_openai_compatible_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex_dlc_ai_transport: Pure DLC transport contract tests; no live I/O.
+    fn dlc_settings(provider: AiProviderKind) -> AiSettings {
+        AiSettings {
+            enabled: true,
+            provider: Some(provider),
+            cloud_model: Some("confirmed-model".to_string()),
+            ..AiSettings::default()
+        }
+    }
+
+    #[test]
+    fn dlc_snapshots_and_requests_match_all_four_preview_routes() {
+        for (provider, endpoint) in [
+            (
+                AiProviderKind::Ollama,
+                "http://localhost:11434/api/generate",
+            ),
+            (AiProviderKind::OllamaCloud, OLLAMA_CLOUD_ENDPOINT),
+            (AiProviderKind::OpenAI, OPENAI_ENDPOINT),
+            (AiProviderKind::Anthropic, ANTHROPIC_ENDPOINT),
+        ] {
+            let snapshot = dlc_provider_snapshot(&dlc_settings(provider)).unwrap();
+            assert_eq!(snapshot.endpoint, endpoint);
+            assert_eq!(snapshot.system_prompt, SYSTEM_SAFETY_PROMPT);
+            assert_eq!(
+                snapshot.model,
+                if provider == AiProviderKind::Ollama {
+                    "llama3"
+                } else {
+                    "confirmed-model"
+                }
+            );
+            let body = build_dlclist_request(&snapshot, "exact user prompt").unwrap();
+            assert_eq!(body["model"], snapshot.model);
+            if provider == AiProviderKind::Ollama {
+                assert_eq!(body["system"], snapshot.system_prompt);
+                assert_eq!(body["prompt"], "exact user prompt");
+            } else if provider == AiProviderKind::Anthropic {
+                assert_eq!(body["system"], snapshot.system_prompt);
+                assert_eq!(body["messages"][0]["content"], "exact user prompt");
+            } else {
+                assert_eq!(body["messages"][0]["content"], snapshot.system_prompt);
+                assert_eq!(body["messages"][1]["content"], "exact user prompt");
+            }
+            let encoded = serde_json::to_string(&snapshot).unwrap();
+            assert_eq!(
+                serde_json::from_str::<DlcAiProviderSnapshot>(&encoded).unwrap(),
+                snapshot
+            );
+        }
+    }
+
+    #[test]
+    fn dlc_snapshot_rejects_disabled_missing_model_and_unsupported_providers() {
+        assert!(dlc_provider_snapshot(&AiSettings::default()).is_err());
+        let mut settings = dlc_settings(AiProviderKind::OpenAI);
+        settings.cloud_model = Some("  ".into());
+        assert!(dlc_provider_snapshot(&settings).is_err());
+        settings.provider = None;
+        assert!(dlc_provider_snapshot(&settings).is_err());
+        for provider in [
+            AiProviderKind::Cloud,
+            AiProviderKind::DeepSeek,
+            AiProviderKind::OpenRouter,
+            AiProviderKind::GoogleAI,
+            AiProviderKind::Nvidia,
+        ] {
+            assert!(dlc_provider_snapshot(&dlc_settings(provider)).is_err());
+        }
+    }
+
+    #[test]
+    fn dlc_snapshot_tampering_is_rejected_before_transport() {
+        let snapshot = dlc_provider_snapshot(&dlc_settings(AiProviderKind::OpenAI)).unwrap();
+        for field in 0..4 {
+            let mut changed = snapshot.clone();
+            match field {
+                0 => changed.endpoint = "https://example.invalid/steal".into(),
+                1 => changed.system_prompt.push_str(" changed"),
+                2 => changed.model = " ".into(),
+                _ => changed.provider = AiProviderKind::Cloud,
+            }
+            assert!(build_dlclist_request(&changed, "private prompt").is_err());
+            // Invalid snapshots return before credential access or HTTP construction.
+            assert!(call_dlclist_provider(&changed, "private prompt").is_err());
+        }
+    }
+
+    #[test]
+    fn dlc_http_reader_enforces_actual_byte_boundary_without_length_header() {
+        let exact = vec![b' '; DLC_HTTP_BODY_LIMIT];
+        assert_eq!(
+            read_dlclist_body(exact.as_slice(), None).unwrap().len(),
+            DLC_HTTP_BODY_LIMIT
+        );
+        let over = vec![b' '; DLC_HTTP_BODY_LIMIT + 1];
+        assert!(read_dlclist_body(over.as_slice(), None).is_err());
+        assert!(read_dlclist_body(over.as_slice(), Some(1)).is_err());
+    }
+
+    #[test]
+    fn dlc_http_reader_rejects_invalid_utf8_and_truncated_streams() {
+        assert!(read_dlclist_body(&[0xff][..], None).is_err());
+        assert!(read_dlclist_body(&b"short"[..], Some(10)).is_err());
+        struct Interrupted;
+        impl std::io::Read for Interrupted {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "private detail",
+                ))
+            }
+        }
+        let error = read_dlclist_body(Interrupted, None)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private detail"));
+    }
+
+    #[test]
+    fn dlc_transport_rejects_redirect_and_failure_statuses() {
+        assert!(validate_dlclist_status(200).is_ok());
+        for status in [301, 302, 303, 307, 308, 400, 429, 500] {
+            assert!(validate_dlclist_status(status).is_err());
+        }
+    }
+
+    #[test]
+    fn dlc_decoded_text_limit_counts_utf8_bytes_and_never_truncates() {
+        let text = "é".repeat(DLC_RESPONSE_TEXT_LIMIT / 2);
+        for (provider, body) in [
+            (
+                AiProviderKind::Ollama,
+                serde_json::json!({"response": text}),
+            ),
+            (
+                AiProviderKind::OllamaCloud,
+                serde_json::json!({"message": {"content": text}}),
+            ),
+            (
+                AiProviderKind::OpenAI,
+                serde_json::json!({"choices": [{"message": {"content": text}}]}),
+            ),
+            (
+                AiProviderKind::Anthropic,
+                serde_json::json!({"content": [{"type": "text", "text": text}]}),
+            ),
+        ] {
+            assert_eq!(
+                parse_dlclist_response(provider, &body.to_string()).unwrap(),
+                text
+            );
+        }
+        let over = serde_json::json!({"response": format!("{text}x")}).to_string();
+        assert!(parse_dlclist_response(AiProviderKind::Ollama, &over).is_err());
+        assert!(parse_dlclist_response(AiProviderKind::Ollama, "{truncated").is_err());
+    }
 
     #[test]
     fn settings_default_to_disabled_with_no_provider() {
