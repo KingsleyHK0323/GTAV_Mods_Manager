@@ -1,0 +1,161 @@
+// OpenAI-Codex
+import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { invoke } from "@tauri-apps/api/core";
+import { pickFile, pickSaveFile } from "../lib/pickers";
+import type { DlcEditorAnalysis, DlcEditorDocument } from "../types";
+
+/** A memory-only draft; switching tool tabs keeps this component mounted. */
+export function DlcEditorPanel() {
+  const { t } = useTranslation();
+  const [document, setDocument] = useState<DlcEditorDocument | null>(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState<"open" | "validate" | "save" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [savedPath, setSavedPath] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<{
+    sourcePath: string;
+    sourceHash: string;
+    draft: string;
+    result: DlcEditorAnalysis;
+  } | null>(null);
+  const generation = useRef(0);
+  const validated = Boolean(document && analysis &&
+    analysis.sourcePath === document.source_path &&
+    analysis.sourceHash === document.source_hash && analysis.draft === draft);
+
+  async function openDocument() {
+    setBusy("open");
+    setError(null);
+    try {
+      const path = await pickFile(["xml"], t("dlclistEditor.open_title"));
+      if (!path) return;
+      if (document && draft !== document.content && !window.confirm(t("dlclistEditor.discard_confirm"))) return;
+      const request = ++generation.current;
+      const next = await invoke<DlcEditorDocument>("read_dlclist_document", { path });
+      if (request !== generation.current) return;
+      setDocument(next);
+      setDraft(next.content);
+      setAnalysis(null);
+      setSavedPath(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function editDraft(content: string) {
+    generation.current += 1;
+    // Textarea input normalizes newlines; retain a uniform source CRLF convention.
+    const source = document?.content ?? "";
+    const crlf = source.includes("\r\n") && !source.replace(/\r\n/g, "").includes("\n");
+    setDraft(crlf ? content.replace(/\r?\n/g, "\r\n") : content);
+    setAnalysis(null);
+    setSavedPath(null);
+    setError(null);
+  }
+
+  async function validateDraft() {
+    if (!document) return;
+    const current = document;
+    const content = draft;
+    const request = ++generation.current;
+    setBusy("validate");
+    setError(null);
+    setAnalysis(null);
+    try {
+      const result = await invoke<DlcEditorAnalysis>("validate_dlclist_draft", {
+        original: current.content, draft: content,
+      });
+      if (request === generation.current) {
+        setAnalysis({ sourcePath: current.source_path, sourceHash: current.source_hash, draft: content, result });
+      }
+    } catch (reason) {
+      if (request === generation.current) setError(String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveCopy() {
+    if (!document || !validated) return;
+    const current = document;
+    const content = draft;
+    setBusy("save");
+    setError(null);
+    setSavedPath(null);
+    try {
+      const outputPath = await pickSaveFile(
+        current.source_path.replace(/\.xml$/i, ".edited.xml"), ["xml"], t("dlclistEditor.save_title"),
+      );
+      if (!outputPath) return;
+      const result = await invoke<string>("save_dlclist_copy", {
+        sourcePath: current.source_path, expectedSourceHash: current.source_hash,
+        outputPath, content,
+      });
+      setSavedPath(result);
+      // Keep the original source snapshot; saving a copy never edits that file.
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const result = validated ? analysis?.result : null;
+  const textStyle = { width: "100%", minHeight: 240, fontFamily: "monospace", resize: "vertical" as const };
+  return (
+    <section className="panel" aria-label={t("dlclistEditor.title")}>
+      <div className="panel-head"><h2>{t("dlclistEditor.title")}</h2></div>
+      <div style={{ padding: "16px 20px", overflowWrap: "anywhere" }}>
+        <p>{t("dlclistEditor.description")}</p>
+        <p>{t("dlclistEditor.limits")}</p>
+        <button type="button" className="btn-primary" disabled={busy !== null} onClick={openDocument}>
+          {t("dlclistEditor.open")}
+        </button>
+        <div aria-live="polite">
+          {busy && <p role="status">{t(`dlclistEditor.busy_${busy}`)}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
+          {savedPath && <p role="status">{t("dlclistEditor.saved", { path: savedPath })}</p>}
+        </div>
+        {!document && <p>{t("dlclistEditor.empty")}</p>}
+        {document && (
+          <>
+            <p>{t("dlclistEditor.source_path", { path: document.source_path })}</p>
+            <label htmlFor="dlclist-original">{t("dlclistEditor.original")}</label>
+            <textarea id="dlclist-original" readOnly value={document.content} style={textStyle} spellCheck={false} />
+            <label htmlFor="dlclist-draft">{t("dlclistEditor.draft")}</label>
+            <textarea id="dlclist-draft" value={draft} onChange={(event) => editDraft(event.target.value)}
+              disabled={busy === "open" || busy === "save"} style={textStyle} spellCheck={false} />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, margin: "12px 0" }}>
+              <button type="button" className="btn-primary" disabled={busy !== null} onClick={validateDraft}>
+                {t("dlclistEditor.validate")}
+              </button>
+              <button type="button" className="btn-primary" disabled={busy !== null || !validated} onClick={saveCopy}>
+                {t("dlclistEditor.save")}
+              </button>
+            </div>
+            {!validated && <p>{t("dlclistEditor.validation_required")}</p>}
+            {result && (
+              <div aria-live="polite">
+                <p>{t("dlclistEditor.valid", { count: result.validation.entries.length })}</p>
+                {result.validation.warnings.length > 0 && (
+                  <ul>{result.validation.warnings.map((warning) => <li key={warning}>{t(`dlclistEditor.warning_${warning}`, warning)}</li>)}</ul>
+                )}
+                {result.validation.duplicate_entries.length > 0 && (
+                  <p>{t("dlclistEditor.duplicates", { entries: result.validation.duplicate_entries.join(", ") })}</p>
+                )}
+                <h3>{t("dlclistEditor.added")}</h3>
+                {result.diff.added.length ? <ul>{result.diff.added.map((entry, index) => <li key={`${index}:${entry}`}><code>{entry}</code></li>)}</ul> : <p>{t("dlclistEditor.none")}</p>}
+                <h3>{t("dlclistEditor.removed")}</h3>
+                {result.diff.removed.length ? <ul>{result.diff.removed.map((entry, index) => <li key={`${index}:${entry}`}><code>{entry}</code></li>)}</ul> : <p>{t("dlclistEditor.none")}</p>}
+                {result.diff.reordered && <p>{t("dlclistEditor.reordered")}</p>}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}

@@ -31,6 +31,31 @@ export interface ManualDlcTask {
   unresolved: boolean;
 }
 
+// OpenAI-Codex: Exported XML inspection does not verify registration in the game.
+export interface DlcEditorValidation {
+  entries: string[];
+  duplicate_entries: string[];
+  warnings: string[];
+}
+
+export interface DlcEditorDiff {
+  added: string[];
+  removed: string[];
+  reordered: boolean;
+}
+
+export interface DlcEditorDocument {
+  source_path: string;
+  source_hash: string;
+  content: string;
+  validation: DlcEditorValidation;
+}
+
+export interface DlcEditorAnalysis {
+  validation: DlcEditorValidation;
+  diff: DlcEditorDiff;
+}
+
 export interface InstalledMod {
   id: number;
   name: string;

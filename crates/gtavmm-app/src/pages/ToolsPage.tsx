@@ -4,8 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { pickFile } from "../lib/pickers";
 import { highlightLine, languageFor } from "../lib/highlight";
 import type { FileHashes } from "../types";
+import { DlcEditorPanel } from "../components/DlcEditorPanel";
 
-type Tab = "editor" | "hash";
+type Tab = "editor" | "hash" | "dlclist";
 
 const NL = String.fromCharCode(10);
 const SEP = /[\\/]/;
@@ -160,6 +161,9 @@ export function ToolsPage() {
       </div>
 
       <div className="page-tabs">
+        <button className="page-tab" type="button" data-active={String(tab === "dlclist")} onClick={() => setTab("dlclist")}>
+          {t("dlclistEditor.title")}
+        </button>
         <button className="page-tab" type="button" data-active={String(tab === "editor")} onClick={() => setTab("editor")}>
           {t("tools.tab_editor")}
         </button>
@@ -167,6 +171,9 @@ export function ToolsPage() {
           {t("tools.tab_hash")}
         </button>
       </div>
+
+      {/* OpenAI-Codex: Keep the dedicated draft mounted across tool-tab changes. */}
+      <div hidden={tab !== "dlclist"}><DlcEditorPanel /></div>
 
       {tab === "editor" && (
         <>

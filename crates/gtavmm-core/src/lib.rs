@@ -15,6 +15,7 @@ pub mod conflict;
 pub mod crash_report;
 pub mod db;
 pub mod dlc_manual;
+pub mod dlclist_editor;
 pub mod dll_translation;
 pub mod error;
 pub mod fivem;

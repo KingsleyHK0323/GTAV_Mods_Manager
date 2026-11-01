@@ -39,6 +39,10 @@ pub fn run() {
             commands::list_mods,
             // OpenAI-Codex_atomic_review: Surface pending manual DLC work to the workspace.
             commands::list_manual_dlc_tasks,
+            // OpenAI-Codex_atomic_review: Export-only DLC editor commands.
+            commands::read_dlclist_document,
+            commands::validate_dlclist_draft,
+            commands::save_dlclist_copy,
             commands::set_mod_mode,
             commands::detect_game,
             commands::inspect_mod,

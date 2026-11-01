@@ -1482,6 +1482,166 @@ pub fn export_mods_to_xlsx(
 // ---------------------------------------------------------------------------
 
 const MAX_TEXT_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+// OpenAI-Codex_atomic_review: The editor exports a new XML file; it never edits archives.
+#[derive(Serialize)]
+pub struct DlcEditorDocument {
+    source_path: String,
+    source_hash: String,
+    content: String,
+    validation: gtavmm_core::dlclist_editor::DlcEditorValidation,
+}
+
+#[derive(Serialize)]
+pub struct DlcEditorAnalysis {
+    validation: gtavmm_core::dlclist_editor::DlcEditorValidation,
+    diff: gtavmm_core::dlclist_editor::DlcEditorDiff,
+}
+
+fn dlclist_path_checks(path: &str, existing: bool) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path};
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err("An absolute XML path without relative components is required.".into());
+    }
+    // OpenAI-Codex: An export must be a regular file, never a Windows data stream.
+    #[cfg(windows)]
+    if path.components().any(|component| matches!(component, Component::Normal(name) if name.to_string_lossy().contains(':'))) {
+        return Err("Alternate data streams are not supported.".into());
+    }
+    if !path
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("xml"))
+        || gtavmm_core::protected_files::is_protected(path)
+    {
+        return Err("A non-protected XML path is required.".into());
+    }
+    if path.components().any(|c| {
+        c.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("update.rpf")
+    }) {
+        return Err("Paths inside update.rpf are not supported; use an exported XML copy.".into());
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let metadata = std::fs::symlink_metadata(ancestor)
+            .map_err(|e| format!("Unable to inspect parent: {e}"))?;
+        if dlclist_linked(&metadata) || !metadata.is_dir() {
+            return Err("Linked or non-directory parents are not allowed.".into());
+        }
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if existing && !dlclist_linked(&metadata) && metadata.is_file() => {}
+        Ok(_) if existing => return Err("Source must be a regular, non-linked file.".into()),
+        Ok(_) => return Err("Output already exists.".into()),
+        Err(e) if !existing && e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Unable to inspect path: {e}")),
+    }
+    Ok(path.to_path_buf())
+}
+
+fn dlclist_linked(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn read_dlclist_snapshot(path: &str) -> Result<(String, String), String> {
+    let path = dlclist_path_checks(path, true)?;
+    let file = std::fs::File::open(&path).map_err(|e| format!("Unable to open source: {e}"))?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Source is not a regular file.".into());
+    }
+    let mut bytes = Vec::new();
+    file.take((gtavmm_core::dlclist_editor::MAX_DLCLIST_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Unable to read source: {e}"))?;
+    if bytes.len() > gtavmm_core::dlclist_editor::MAX_DLCLIST_BYTES {
+        return Err("Source exceeds the 5 MiB limit.".into());
+    }
+    let hash = gtavmm_core::dlclist_editor::sha256_bytes(&bytes);
+    let content = String::from_utf8(bytes).map_err(|_| "Source is not valid UTF-8.".to_string())?;
+    Ok((content, hash))
+}
+
+fn read_dlclist_document_impl(path: &str) -> Result<DlcEditorDocument, String> {
+    let (content, source_hash) = read_dlclist_snapshot(path)?;
+    let validation =
+        gtavmm_core::dlclist_editor::validate_dlclist(&content).map_err(|e| e.to_string())?;
+    Ok(DlcEditorDocument {
+        source_path: path.to_string(),
+        source_hash,
+        content,
+        validation,
+    })
+}
+
+#[tauri::command]
+pub fn read_dlclist_document(path: String) -> Result<DlcEditorDocument, String> {
+    read_dlclist_document_impl(&path)
+}
+
+#[tauri::command]
+pub fn validate_dlclist_draft(
+    original: String,
+    draft: String,
+) -> Result<DlcEditorAnalysis, String> {
+    let validation =
+        gtavmm_core::dlclist_editor::validate_dlclist(&draft).map_err(|e| e.to_string())?;
+    let diff = gtavmm_core::dlclist_editor::compare_dlclist(&original, &draft)
+        .map_err(|e| e.to_string())?;
+    Ok(DlcEditorAnalysis { validation, diff })
+}
+
+fn save_dlclist_copy_impl(
+    source_path: &str,
+    expected_source_hash: &str,
+    output_path: &str,
+    content: &str,
+) -> Result<String, String> {
+    gtavmm_core::dlclist_editor::validate_dlclist(content).map_err(|e| e.to_string())?;
+    let (source_content, source_hash) = read_dlclist_snapshot(source_path)?;
+    gtavmm_core::dlclist_editor::validate_dlclist(&source_content).map_err(|e| e.to_string())?;
+    if source_hash != expected_source_hash {
+        return Err("Source changed since it was opened; reopen it before exporting.".into());
+    }
+    let output = dlclist_path_checks(output_path, false)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|e| format!("Unable to create output: {e}"))?;
+    file.write_all(content.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|e| {
+            format!(
+                "Export failed; partial output may remain at {}: {e}",
+                output.display()
+            )
+        })?;
+    Ok(output_path.to_string())
+}
+
+#[tauri::command]
+pub fn save_dlclist_copy(
+    source_path: String,
+    expected_source_hash: String,
+    output_path: String,
+    content: String,
+) -> Result<String, String> {
+    save_dlclist_copy_impl(&source_path, &expected_source_hash, &output_path, &content)
+}
 const EDITABLE_TEXT_EXTENSIONS: &[&str] = &["ini", "xml", "json", "meta", "cfg", "txt"];
 
 fn validate_editable_path(path: &str, must_exist: bool) -> Result<std::path::PathBuf, String> {
@@ -2344,6 +2504,146 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("GTA5.exe"), b"").unwrap();
         dir
+    }
+
+    // OpenAI-Codex_atomic_review: Export is exclusive and leaves the source unchanged.
+    #[test]
+    fn dlclist_copy_refuses_changed_source_existing_output_and_invalid_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.xml");
+        let output = dir.path().join("copy.xml");
+        let original = "<SMandatoryPacksData><Paths></Paths></SMandatoryPacksData>";
+        std::fs::write(&source, original).unwrap();
+        let doc = read_dlclist_document_impl(source.to_str().unwrap()).unwrap();
+        assert!(save_dlclist_copy_impl(
+            source.to_str().unwrap(),
+            &doc.source_hash,
+            output.to_str().unwrap(),
+            "<broken>"
+        )
+        .is_err());
+        assert!(!output.exists());
+        std::fs::write(&output, b"existing").unwrap();
+        assert!(save_dlclist_copy_impl(
+            source.to_str().unwrap(),
+            &doc.source_hash,
+            output.to_str().unwrap(),
+            original
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"existing");
+        std::fs::write(&source, format!("{original} ")).unwrap();
+        let other = dir.path().join("other.xml");
+        assert!(save_dlclist_copy_impl(
+            source.to_str().unwrap(),
+            &doc.source_hash,
+            other.to_str().unwrap(),
+            original
+        )
+        .is_err());
+        assert!(!other.exists());
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            format!("{original} ")
+        );
+    }
+
+    #[test]
+    fn dlclist_copy_creates_new_file_without_changing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.xml");
+        let output = dir.path().join("copy.xml");
+        let original = "<SMandatoryPacksData><Paths></Paths></SMandatoryPacksData>";
+        std::fs::write(&source, original).unwrap();
+        let doc = read_dlclist_document_impl(source.to_str().unwrap()).unwrap();
+        save_dlclist_copy_impl(
+            source.to_str().unwrap(),
+            &doc.source_hash,
+            output.to_str().unwrap(),
+            original,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(source).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(output).unwrap(), original);
+    }
+
+    #[test]
+    fn dlclist_read_rejects_oversized_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("large.xml");
+        std::fs::write(
+            &source,
+            vec![b'x'; gtavmm_core::dlclist_editor::MAX_DLCLIST_BYTES + 1],
+        )
+        .unwrap();
+        assert!(read_dlclist_document_impl(source.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn dlclist_copy_rejects_game_override_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.xml");
+        let original = "<SMandatoryPacksData><Paths></Paths></SMandatoryPacksData>";
+        std::fs::write(&source, original).unwrap();
+        let doc = read_dlclist_document_impl(source.to_str().unwrap()).unwrap();
+        for prefix in [
+            "update/update.rpf/common/data",
+            "mods/update/update.rpf/common/data",
+        ] {
+            let parent = dir.path().join(prefix);
+            std::fs::create_dir_all(&parent).unwrap();
+            let output = parent.join("dlclist.xml");
+            assert!(save_dlclist_copy_impl(
+                source.to_str().unwrap(),
+                &doc.source_hash,
+                output.to_str().unwrap(),
+                original
+            )
+            .is_err());
+            assert!(!output.exists());
+        }
+        assert_eq!(std::fs::read_to_string(source).unwrap(), original);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dlclist_editor_rejects_source_and_output_data_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.xml");
+        let original = "<SMandatoryPacksData><Paths/></SMandatoryPacksData>";
+        std::fs::write(&source, original).unwrap();
+        let stream = format!("{}:copy.xml", source.display());
+        assert!(dlclist_path_checks(&stream, true).is_err());
+        assert!(dlclist_path_checks(&stream, false).is_err());
+        let doc = read_dlclist_document_impl(source.to_str().unwrap()).unwrap();
+        assert!(save_dlclist_copy_impl(
+            source.to_str().unwrap(),
+            &doc.source_hash,
+            &stream,
+            original
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dlclist_copy_rejects_linked_output_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.xml");
+        let linked = dir.path().join("linked");
+        let original = "<SMandatoryPacksData><Paths></Paths></SMandatoryPacksData>";
+        std::fs::write(&source, original).unwrap();
+        std::os::unix::fs::symlink(dir.path(), &linked).unwrap();
+        let doc = read_dlclist_document_impl(source.to_str().unwrap()).unwrap();
+        assert!(save_dlclist_copy_impl(
+            source.to_str().unwrap(),
+            &doc.source_hash,
+            linked.join("copy.xml").to_str().unwrap(),
+            original
+        )
+        .is_err());
+        assert!(!dir.path().join("copy.xml").exists());
     }
 
     // OpenAI-Codex_atomic_review: Both Legacy pages share the same physical DLC work.
