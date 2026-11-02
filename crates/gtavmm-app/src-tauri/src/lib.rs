@@ -49,6 +49,8 @@ pub fn run() {
             commands::set_mod_mode,
             commands::detect_game,
             commands::inspect_mod,
+            // OpenAI-Codex_install_preflight_backend: Mode-aware, read-only installation preflight.
+            commands::inspect_install_preview,
             commands::install_mod,
             commands::load_startup_state,
             commands::set_theme,

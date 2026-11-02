@@ -115,6 +115,13 @@
     "bulk_disable_error": "有 {{count}} 個 Mod 無法停用：{{details}}"
   },
   "installWizard": {
+    "preview_mode": "安裝模式：{{mode}}",
+    "preview_root": "遊戲資料夾：{{path}}",
+    "preview_changed": "安裝模式已改變，請重新選取套件以更新預覽。",
+    "preflight_note": "這是目前狀態的快照。安裝時會重新檢查資料夾及衝突；看過警告不代表已授權覆寫檔案。",
+    "preflight_conflicts": "以下既存檔案需要注意。安裝流程會另行要求確認，才會覆寫。",
+    "preflight_untracked": "既存檔案，沒有記錄中的啟用擁有者",
+    "preflight_update": "依共用檔案路徑判斷，可能是「{{name}}」的更新；這不代表兩個套件確實相關。",
     "title": "安裝 Mod",
     "pick_title": "選擇 mod 檔案",
     "pick_body_sp": "選擇要安裝的 mod 檔案（.asi、.dll、Menyoo .xml、.zip、.7z、.rar）。會依這台機器偵測到的版本（Legacy/Enhanced）套用一般單機版慣例。",
@@ -125,7 +132,7 @@
     "row_format": "格式",
     "row_files": "將寫入的檔案",
     "more_files": "…還有 {{count}} 個",
-    "review_note": "這是唯讀預覽（gtavmm-core 真正的 `inspect` 分類器）——目前還沒有寫入任何檔案。衝突檢查只會在你點擊「安裝」之後才進行。",
+    "review_note": "安裝前請檢查目的地檔案及衝突。預覽不會安裝檔案或修改模組資料庫；壓縮套件可能使用暫存解壓檔案。",
     "installing": "安裝中…",
     "success": "檔案部署完成——已寫入 {{count}} 個檔案。",
     "protected_head": "已阻擋：受保護檔案",

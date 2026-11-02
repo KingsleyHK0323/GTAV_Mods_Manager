@@ -115,6 +115,13 @@
     "bulk_disable_error": "Could not disable {{count}} mod(s): {{details}}"
   },
   "installWizard": {
+    "preview_mode": "Installation mode: {{mode}}",
+    "preview_root": "Game folder: {{path}}",
+    "preview_changed": "The installation mode changed. Select the package again to refresh the preview.",
+    "preflight_note": "This is a snapshot. Installation checks the folder and conflicts again; reviewing these warnings does not authorize overwriting files.",
+    "preflight_conflicts": "Existing files need your attention. Installation will request separate confirmation before overwriting.",
+    "preflight_untracked": "Existing file with no recorded active owner",
+    "preflight_update": "Possible update to {{name}}, based on shared file paths only. This does not establish that the packages are related.",
     "title": "Install Mod",
     "pick_title": "Choose a mod file",
     "pick_body_sp": "Choose a mod file to install (.asi, .dll, Menyoo .xml, .zip, .7z, .rar). This targets plain single-player conventions for whichever edition (Legacy/Enhanced) is detected on this machine.",
@@ -125,7 +132,7 @@
     "row_format": "Format",
     "row_files": "Files to write",
     "more_files": "…and {{count}} more",
-    "review_note": "This is a read-only preview (gtavmm-core's real `inspect` classifier) — nothing has been written yet. Conflict checking only happens once you click Install.",
+    "review_note": "Review the destination files and conflicts before installing. Preview does not install files or change the mod database. Archives may use temporary extraction files.",
     "installing": "Installing…",
     "success": "File deployment complete — {{count}} file(s) written.",
     "protected_head": "Blocked: protected file",

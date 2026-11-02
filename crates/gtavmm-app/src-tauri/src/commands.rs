@@ -375,6 +375,127 @@ pub fn inspect_mod(
     inspect_mod_impl(effective_game_path.as_deref(), &mode, &path)
 }
 
+/// OpenAI-Codex_install_preflight_backend: Current targets and ownership, never an install authorization.
+#[derive(Debug, Serialize)]
+pub struct InstallPreview {
+    pub mode: String,
+    pub game_root: String,
+    pub plan: gtavmm_core::mod_analyzer::ModPlan,
+    pub conflicts: gtavmm_core::conflict::ConflictReport,
+}
+
+// OpenAI-Codex_install_preflight_backend: Only canonicalize the trusted resolved root.
+// The client echoes this identity; its value is never used as an installation path.
+fn preview_root_identity(root: &std::path::Path) -> Result<String, String> {
+    let canonical = std::fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let identity = canonical
+        .to_str()
+        .ok_or_else(|| "The game root is not valid Unicode.".to_string())?;
+    let identity = identity.to_string();
+    Ok(identity)
+}
+
+fn ensure_install_preview_mode(mode: &str) -> Result<(), String> {
+    let page = crate::page_mode::PageMode::parse(mode)?;
+    page.ensure_available()?;
+    if !matches!(mode, "legacy-sp" | "legacy-lspdfr") {
+        return Err("Installation preview supports only Legacy SP and Legacy LSPDFR.".to_string());
+    }
+    Ok(())
+}
+
+// OpenAI-Codex_install_preflight_backend: Preserve the resolver's target spelling,
+// including for missing files whose ownership keys cannot be canonicalized yet.
+fn classify_install_preview(
+    root: std::path::PathBuf,
+    mode: &str,
+    path: &std::path::Path,
+) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
+    ensure_install_preview_mode(mode)?;
+    // ModeProvider is not Send; construct the provider inside the worker.
+    let provider: Box<dyn gtavmm_core::providers::ModeProvider> = match mode {
+        "legacy-sp" => Box::new(gtavmm_core::providers::LegacySpProvider::new(root)),
+        "legacy-lspdfr" => Box::new(gtavmm_core::providers::LegacyLspdfrProvider::new(root)),
+        _ => {
+            return Err(
+                "Installation preview supports only Legacy SP and Legacy LSPDFR.".to_string(),
+            )
+        }
+    };
+    gtavmm_core::mod_analyzer::classify(path, provider.as_ref()).map_err(|error| error.to_string())
+}
+
+fn finish_install_preview(
+    conn: &Connection,
+    mode: &str,
+    root: &std::path::Path,
+    plan: gtavmm_core::mod_analyzer::ModPlan,
+) -> Result<InstallPreview, String> {
+    if let gtavmm_core::mod_analyzer::ModFormat::Unsupported(reason) = &plan.format {
+        return Err(format!("Unsupported mod package: {reason}"));
+    }
+    if plan.files.is_empty() {
+        return Err("The package contains no installable files.".to_string());
+    }
+    let targets = plan
+        .files
+        .iter()
+        .map(|file| file.target.clone())
+        .collect::<Vec<_>>();
+    // Keep the plan (including its archive staging guard) alive through analysis.
+    // All active owners matter, including owners recorded on a different page.
+    let conflicts =
+        gtavmm_core::conflict::analyze(conn, &targets).map_err(|error| error.to_string())?;
+    Ok(InstallPreview {
+        mode: mode.to_string(),
+        game_root: preview_root_identity(root)?,
+        plan,
+        conflicts,
+    })
+}
+
+/// OpenAI-Codex_install_preflight_backend: Classification may stage archives; no game/DB writes.
+#[tauri::command]
+pub async fn inspect_install_preview(
+    state: tauri::State<'_, crate::AppState>,
+    game_path: Option<String>,
+    mode: String,
+    path: String,
+) -> Result<InstallPreview, String> {
+    ensure_install_preview_mode(&mode)?;
+    let root = {
+        let conn = state.conn.lock().map_err(|error| error.to_string())?;
+        // Resolve and reject pending pages before inspecting the package path.
+        resolve_page_target(&conn, game_path.as_deref(), &mode)?.0
+    };
+    let worker_root = root.clone();
+    let worker_mode = mode.clone();
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        classify_install_preview(worker_root, &worker_mode, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|_| "Installation preview could not complete.".to_string())??;
+    let conn = state.conn.lock().map_err(|error| error.to_string())?;
+    finish_install_preview(&conn, &mode, &root, plan)
+}
+
+fn check_install_preview_root(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: &str,
+    expected_game_root: Option<&str>,
+) -> Result<(), String> {
+    if let Some(expected) = expected_game_root {
+        let (root, _) = resolve_page_target(conn, game_path, mode)?;
+        if preview_root_identity(&root)? != expected {
+            return Err(
+                "The game installation changed. Review the installation preview again.".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Installs `path` for real. Mirrors the CLI's `install` command: classify, then run
 /// the full install pipeline (conflict check, backup, write, record). `backup_root` is
 /// a parameter (not computed internally) so this stays unit-testable against a temp
@@ -454,8 +575,16 @@ pub fn install_mod(
     path: String,
     name: Option<String>,
     override_foreign_conflicts: bool,
+    expected_game_root: Option<String>,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
+    // OpenAI-Codex_install_preflight_backend: Guard before app-data creation or any install write.
+    check_install_preview_root(
+        &conn,
+        game_path.as_deref(),
+        &mode,
+        expected_game_root.as_deref(),
+    )?;
     // Each install gets its own timestamped folder under backups/, so restoring
     // one mod never disturbs what another mod replaced.
     let backup_root =
@@ -2631,6 +2760,203 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("GTA5.exe"), b"").unwrap();
         dir
+    }
+
+    // OpenAI-Codex_install_preflight_backend: Synthetic preflight contracts; not runtime acceptance.
+    fn preflight_fixture(
+        conn: &Connection,
+        root: &std::path::Path,
+        mode: &str,
+        source: &std::path::Path,
+    ) -> Result<InstallPreview, String> {
+        ensure_install_preview_mode(mode)?;
+        let (root, _) = resolve_page_target(conn, root.to_str(), mode)?;
+        let plan = classify_install_preview(root.clone(), mode, source)?;
+        finish_install_preview(conn, mode, &root, plan)
+    }
+
+    #[test]
+    fn install_preview_keeps_managed_dll_routes_separate_and_does_not_write_game_or_db() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let root = fake_game_root();
+        let source = tempfile::tempdir().unwrap();
+        let dll = source.path().join("Example.dll");
+        let mut bytes = vec![0u8; 512];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(b"PE\0\0");
+        bytes[88..90].copy_from_slice(&0x10bu16.to_le_bytes());
+        bytes[296..300].copy_from_slice(&1u32.to_le_bytes());
+        bytes[300..304].copy_from_slice(&1u32.to_le_bytes());
+        std::fs::write(&dll, bytes).unwrap();
+        let changes: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        for (mode, folder) in [("legacy-sp", "scripts"), ("legacy-lspdfr", "Plugins")] {
+            let preview = preflight_fixture(&conn, root.path(), mode, &dll).unwrap();
+            assert_eq!(preview.mode, mode);
+            assert_eq!(
+                preview.plan.files[0].target,
+                root.path().join(folder).join("Example.dll")
+            );
+            assert_eq!(
+                preview.plan.format,
+                gtavmm_core::mod_analyzer::ModFormat::ManagedDll
+            );
+            assert!(preview.conflicts.foreign_conflicts.is_empty());
+            assert!(!root.path().join(folder).exists());
+        }
+        assert_eq!(
+            conn.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            changes
+        );
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn install_preview_reports_protected_cross_page_owner_and_untracked_targets() {
+        use gtavmm_core::mod_analyzer::{ModFormat, ModPlan, PlannedFile};
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let root = fake_game_root();
+        let owned = root.path().join("Owned.asi");
+        let unknown = root.path().join("Unknown.asi");
+        std::fs::write(&unknown, b"untracked").unwrap();
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('SP owner', 'asi', ?1, 'active', 'legacy-sp')", [owned.to_string_lossy().as_ref()]).unwrap();
+        let owner = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![owner, owned.to_string_lossy().as_ref()]).unwrap();
+        let plan = ModPlan::new(
+            ModFormat::FolderReplacer,
+            [root.path().join("GTA5.exe"), owned, unknown]
+                .into_iter()
+                .map(|target| PlannedFile {
+                    source: target.clone(),
+                    target,
+                })
+                .collect(),
+        );
+        let preview = finish_install_preview(&conn, "legacy-lspdfr", root.path(), plan).unwrap();
+        assert_eq!(preview.conflicts.protected_hits.len(), 1);
+        assert_eq!(preview.conflicts.foreign_conflicts.len(), 2);
+        assert!(preview
+            .conflicts
+            .foreign_conflicts
+            .iter()
+            .any(|c| c.owner_mod_id == Some(owner)));
+        assert!(preview
+            .conflicts
+            .foreign_conflicts
+            .iter()
+            .any(|c| c.owner_mod_id.is_none()));
+        assert!(preview.conflicts.self_update.is_some());
+    }
+
+    #[test]
+    fn install_preview_rejects_pending_modes_before_missing_path_and_unsupported_plans() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        for mode in ["enhanced-sp", "enhanced-lspdfr", "fivem-client"] {
+            let error = preflight_fixture(
+                &conn,
+                std::path::Path::new("missing-game"),
+                mode,
+                std::path::Path::new("missing-package.asi"),
+            )
+            .unwrap_err();
+            assert!(error.contains("under development"), "{error}");
+        }
+        assert!(ensure_install_preview_mode("sp").is_err());
+        assert!(ensure_install_preview_mode("lspdfr").is_err());
+        let root = fake_game_root();
+        let error = preflight_fixture(
+            &conn,
+            root.path(),
+            "legacy-sp",
+            std::path::Path::new("unsupported.oiv"),
+        )
+        .unwrap_err();
+        assert!(error.contains("Unsupported"), "{error}");
+        let empty = gtavmm_core::mod_analyzer::ModPlan::new(
+            gtavmm_core::mod_analyzer::ModFormat::FolderReplacer,
+            vec![],
+        );
+        assert!(
+            finish_install_preview(&conn, "legacy-sp", root.path(), empty)
+                .unwrap_err()
+                .contains("no installable files")
+        );
+    }
+
+    #[test]
+    fn install_root_guard_rejects_changed_settings_and_preserves_legacy_callers() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let old = fake_game_root();
+        let new = fake_game_root();
+        complete_onboarding_impl(&conn, old.path().to_str()).unwrap();
+        let (resolved, _) = resolve_page_target(&conn, None, "legacy-sp").unwrap();
+        let expected = preview_root_identity(&resolved).unwrap();
+        assert!(check_install_preview_root(&conn, None, "legacy-sp", Some(&expected)).is_ok());
+        complete_onboarding_impl(&conn, new.path().to_str()).unwrap();
+        assert!(
+            check_install_preview_root(&conn, None, "legacy-sp", Some(&expected))
+                .unwrap_err()
+                .contains("preview again")
+        );
+        assert!(check_install_preview_root(&conn, None, "legacy-sp", None).is_ok());
+    }
+
+    #[test]
+    fn install_rechecks_conflicts_introduced_after_preview() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let root = fake_game_root();
+        let source = tempfile::tempdir().unwrap();
+        let file = source.path().join("Later.asi");
+        std::fs::write(&file, b"new mod").unwrap();
+        let preview = preflight_fixture(&conn, root.path(), "legacy-sp", &file).unwrap();
+        assert!(preview.conflicts.foreign_conflicts.is_empty());
+        let target = root.path().join("Later.asi");
+        std::fs::write(&target, b"added after preview").unwrap();
+        let backup = source.path().join("backups");
+        let result = install_mod_impl(
+            &mut conn,
+            root.path().to_str(),
+            "legacy-sp",
+            file.to_str().unwrap(),
+            None,
+            false,
+            &backup,
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            gtavmm_core::install::InstallOutcome::RequiresOverride(_)
+        ));
+        assert_eq!(std::fs::read(target).unwrap(), b"added after preview");
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
+    }
+
+    // OpenAI-Codex_install_preflight_backend: Missing targets must retain the DB path spelling on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn install_preview_retains_missing_target_owner_across_legacy_pages() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let root = fake_game_root();
+        let source = tempfile::tempdir().unwrap();
+        let file = source.path().join("MissingOwned.asi");
+        std::fs::write(&file, b"synthetic mod").unwrap();
+        let target = root.path().join("MissingOwned.asi");
+        assert!(!target.exists());
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('SP owner', 'asi', ?1, 'active', 'legacy-sp')", [target.to_string_lossy().as_ref()]).unwrap();
+        let owner = conn.last_insert_rowid();
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![owner, target.to_string_lossy().as_ref()]).unwrap();
+        let preview = preflight_fixture(&conn, root.path(), "legacy-lspdfr", &file).unwrap();
+        assert_eq!(preview.plan.files[0].target, target);
+        assert_eq!(preview.conflicts.foreign_conflicts.len(), 1);
+        assert_eq!(
+            preview.conflicts.foreign_conflicts[0].owner_mod_id,
+            Some(owner)
+        );
+        assert!(!target.exists());
     }
 
     // OpenAI-Codex_atomic_review: Export is exclusive and leaves the source unchanged.

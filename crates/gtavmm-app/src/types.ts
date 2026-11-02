@@ -148,6 +148,14 @@ export interface ConflictReport {
   self_update: SelfUpdateSuggestion | null;
 }
 
+// OpenAI-Codex: Informational snapshot; install rechecks the root and conflicts.
+export interface InstallPreview {
+  mode: PageMode;
+  game_root: string;
+  plan: ModPlan;
+  conflicts: ConflictReport;
+}
+
 export type InstallOutcome =
   | { Success: { installed_mod_id: number; files_written: number } }
   | { RequiresOverride: ConflictReport }
