@@ -35,6 +35,7 @@
 - Corrected Rust formatting in provider tests and existing 7z path-validation code.
 
 ### Fixed
+- Replace the DLC response encoding check's `map_or(true, ...)` with the equivalent `is_none_or(...)`, addressing the shared Windows/Ubuntu Clippy blocker in CI run `41372530542`. Preserve response limits, existing tests and warnings-as-errors; follow-up remote verification is pending. <!-- OpenAI-Codex -->
 
 - Align the recorded-root legacy restore regression test with retained snapshot storage, checking restored content, the unchanged fallback root, file hash, active status, and entry removal without changing production cleanup behavior.
 - Commit all recycle-bin restore file metadata, mod status, event, and entry removal in one database transaction. SQL failure preserves the previous metadata and recovery storage, while target files may already contain restored payloads; filesystem rollback remains separate.

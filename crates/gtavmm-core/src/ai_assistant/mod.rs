@@ -328,7 +328,7 @@ pub fn call_dlclist_provider(snapshot: &DlcAiProviderSnapshot, prompt: &str) -> 
     // ureq may decode compressed responses, whose wire length is not the decoded length.
     let expected_length = if response
         .header("Content-Encoding")
-        .map_or(true, |encoding| encoding.eq_ignore_ascii_case("identity"))
+        .is_none_or(|encoding| encoding.eq_ignore_ascii_case("identity"))
     {
         response
             .header("Content-Length")
