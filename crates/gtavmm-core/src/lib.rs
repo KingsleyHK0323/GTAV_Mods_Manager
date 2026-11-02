@@ -24,6 +24,8 @@ pub mod game_locator;
 pub mod hash_calculator;
 pub mod history;
 pub mod install;
+// OpenAI-Codex: Declaration-only LML foundation; no installation entry point.
+pub mod lml;
 pub mod malware_scan;
 pub mod mod_analyzer;
 pub mod mod_details;

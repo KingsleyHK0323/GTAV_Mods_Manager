@@ -1,5 +1,12 @@
 # GTAV Mods Manager
 
+<!-- OpenAI-Codex -->
+### LML development status
+
+The LML foundation parses a bounded, explicitly supported subset of `install.xml` declarations in memory. Local package references and virtual game identifiers remain distinct. Unsupported instructions and attributes are rejected rather than silently ignored. This source phase does not enumerate package files, check their existence, create installation plans, modify `mods.xml`, or expose installation and lifecycle controls. It does not establish complete virtual-resource conflict coverage or loader compatibility. LML package installation and management remain required follow-up work for V1.0.0; Legacy SP and Legacy LSPDFR retain separate routing rules. Test sources are written before implementation, but no local test or build is executed and no observed red/green result is claimed. Remote verification and real-loader acceptance remain pending.
+
+The current grammar accepts optional `Name`, `Author`, `Version`, `Link` and `Description` metadata, simple `Addons/Addon` streaming/data references, and `Replacements/Replacement` file references. Group `name` and singular `DataFile` `type` are the only resource attributes accepted. Replacements may use a local text reference or a `GamePath`/`FilePath` pair. Legal comments and CDATA are accepted. Resource groups, mixed `Resources`, `ResourceFolders`, Lua, `DlcRpf`, entry replacement and unmodeled attributes are rejected. Input is limited to UTF-8 XML 1.0, 1 MiB, depth 64, 10,000 parser events and 1,024 bytes per reference. Local references require forward slashes and safe relative components; backslashes are deliberately rejected in this phase. Virtual game identifiers are opaque declarations, not normalized conflict keys or host paths. Metadata-only or empty manifests may parse successfully; parsing is not permission to install.
+
 [Visit the GTAV Mods Manager website](https://spacesquare640.github.io/GTAV_Mods_Manager/)
 
 Code: PolyForm Noncommercial License · Website content: CC BY-NC-SA
