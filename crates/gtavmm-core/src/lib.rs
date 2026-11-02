@@ -26,6 +26,8 @@ pub mod history;
 pub mod install;
 // OpenAI-Codex: Declaration-only LML foundation; no installation entry point.
 pub mod lml;
+// OpenAI-Codex: Source inventory and limited declaration comparisons only.
+pub mod lml_package;
 pub mod malware_scan;
 pub mod mod_analyzer;
 pub mod mod_details;

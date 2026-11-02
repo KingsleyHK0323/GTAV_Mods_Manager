@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_lml_classifier_guard
 
 //! Classifies a mod package (file/folder/archive) into a plan of `(source, target)`
 //! file mappings, per the format table in the MVP spec: `.asi`/`.dll` (native and
@@ -120,6 +121,14 @@ pub fn classify(
             ))
         }
         Some("dll") => classify_dll(input, provider),
+        Some("xml")
+            if input
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("install.xml")) =>
+        {
+            Ok(unsupported_lml_package())
+        }
         Some("xml") => classify_menyoo_xml(input, provider),
         Some("zip") => classify_zip(input, provider),
         Some("7z") => classify_seven_zip(input, provider),
@@ -139,6 +148,13 @@ fn unsupported(tag: &str, message: &str) -> ModPlan {
     ModPlan::new(
         ModFormat::Unsupported(format!("{tag}: {message}")),
         Vec::new(),
+    )
+}
+
+fn unsupported_lml_package() -> ModPlan {
+    unsupported(
+        "lml",
+        "LML install.xml packages are not supported for installation; inspect declarations separately before arranging files manually.",
     )
 }
 
@@ -210,6 +226,13 @@ fn classify_folder_with_name_hint(
     provider: &dyn crate::providers::ModeProvider,
     name_hint: Option<&str>,
 ) -> CoreResult<ModPlan> {
+    // A marker anywhere in a wrapper or mixed package takes precedence over DLC,
+    // OIV, LSPDFR and generic routing. Scan failures must never enable fallback.
+    if crate::lml_package::contains_manifest_marker(input)
+        .map_err(|reason| CoreError::UnsupportedFormat { reason })?
+    {
+        return Ok(unsupported_lml_package());
+    }
     if let Some(pack_dir) = dlc::find_dlc_pack_dir(input) {
         let name_override = if pack_dir == input { name_hint } else { None };
         return classify_add_on_pack(&pack_dir, provider, name_override);
@@ -840,6 +863,116 @@ mod tests {
 
     fn provider(game_root: &Path) -> LegacySpProvider {
         LegacySpProvider::new(game_root.to_path_buf())
+    }
+
+    // OpenAI-Codex_lml_classifier_guard: source-first LML routing regressions.
+    fn assert_lml_refused(plan: ModPlan) {
+        assert!(
+            matches!(plan.format, ModFormat::Unsupported(ref reason) if reason.starts_with("lml:"))
+        );
+        assert!(plan.files.is_empty());
+    }
+
+    #[test]
+    fn standalone_install_xml_is_refused_without_parsing_its_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["install.xml", "INSTALL.XML", "Install.Xml"] {
+            let input = dir.path().join(name);
+            std::fs::write(&input, b"<Outfit>malformed XML").unwrap();
+            assert_lml_refused(classify(&input, &provider(dir.path())).unwrap());
+        }
+    }
+
+    #[test]
+    fn marker_alone_or_with_individual_dlc_and_plugins_payloads_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, payload) in [None, Some("dlc.rpf"), Some("Plugins/LSPDFR/Callout.dll")]
+            .iter()
+            .enumerate()
+        {
+            let root = dir.path().join(format!("package-{index}"));
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("install.xml"), b"<EasyInstall/>").unwrap();
+            if let Some(payload) = payload {
+                let path = root.join(payload);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"payload").unwrap();
+            }
+            assert_lml_refused(classify(&root, &provider(dir.path())).unwrap());
+            assert_lml_refused(
+                classify(&root, &LegacyLspdfrProvider::new(dir.path().to_path_buf())).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn lml_marker_precedes_folder_dlc_oiv_and_lspdfr_routing() {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, marker) in [
+            "install.xml",
+            "wrapper/install.xml",
+            "wrapper/nested/INSTALL.XML",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let root = dir.path().join(format!("package-{index}"));
+            let marker = root.join(marker);
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(marker, b"not valid XML").unwrap();
+            std::fs::write(root.join("dlc.rpf"), b"payload").unwrap();
+            std::fs::write(root.join("installer.oiv"), b"payload").unwrap();
+            std::fs::create_dir_all(root.join("Plugins/LSPDFR")).unwrap();
+            std::fs::write(root.join("Plugins/LSPDFR/Callout.dll"), b"payload").unwrap();
+            assert_lml_refused(classify(&root, &provider(dir.path())).unwrap());
+            assert_lml_refused(
+                classify(&root, &LegacyLspdfrProvider::new(dir.path().to_path_buf())).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn lml_scan_failure_cannot_fall_back_to_an_add_on_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("package");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("dlc.rpf"), b"payload").unwrap();
+        let mut nested = root.clone();
+        for _ in 0..65 {
+            nested.push("d");
+        }
+        std::fs::create_dir_all(nested).unwrap();
+        assert!(matches!(
+            classify(&root, &provider(dir.path())),
+            Err(CoreError::UnsupportedFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn lml_archives_keep_unsupported_instead_of_container_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries: &[(&str, &[u8])] = &[
+            ("wrapper/INSTALL.XML", b"malformed XML"),
+            ("dlc.rpf", b"payload"),
+            ("Plugins/LSPDFR/Callout.dll", b"payload"),
+        ];
+        for extension in ["zip", "7z", "rar"] {
+            let archive = dir.path().join(format!("package.{extension}"));
+            match extension {
+                "zip" => write_test_zip(&archive, entries),
+                "7z" => write_test_seven_zip(&archive, entries),
+                "rar" => write_test_rar(&archive, entries),
+                _ => unreachable!(),
+            }
+            assert_lml_refused(classify(&archive, &provider(dir.path())).unwrap());
+            assert_lml_refused(
+                classify(
+                    &archive,
+                    &LegacyLspdfrProvider::new(dir.path().to_path_buf()),
+                )
+                .unwrap(),
+            );
+        }
     }
 
     #[test]

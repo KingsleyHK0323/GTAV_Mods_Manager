@@ -20,7 +20,7 @@ pub const MAX_PATH_BYTES: usize = 1024;
 pub struct LocalReference(String);
 
 impl LocalReference {
-    fn parse(value: &str) -> Result<Self, String> {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
         require(
             !value.is_empty() && value.len() <= MAX_PATH_BYTES,
             "invalid local path length",
