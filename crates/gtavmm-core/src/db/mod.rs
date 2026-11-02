@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
+// OpenAI-Codex_lml_store_impl
 // OpenAI-Codex_dlc_deep_audit
 
 //! SQLite connection management and schema migration. No cloud/network component —
@@ -16,7 +17,7 @@ use crate::error::CoreResult;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const PROFILE_SCHEMA_SQL: &str = include_str!("profile_schema.sql");
-const CURRENT_SCHEMA_VERSION: i32 = 15;
+const CURRENT_SCHEMA_VERSION: i32 = 16;
 
 /// Resolves the default database file location under the OS-appropriate app-data
 /// directory (via the `directories` crate), e.g.
@@ -429,6 +430,7 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
         restore_foreign_keys?;
     }
     if user_version < 15 {
+        // OpenAI-Codex_lml_store_impl
         // OpenAI-Codex_dlc_deep_audit: additive reminders never rewrite mod data.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS manual_dlc_event (
@@ -458,14 +460,127 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
         )?;
     }
     if user_version < CURRENT_SCHEMA_VERSION {
-        conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+        migrate_lml_v16(conn)?;
     }
     Ok(())
 }
 
+// OpenAI-Codex_lml_store_impl; OpenAI-Codex: atomic additive schema.
+fn migrate_lml_v16(conn: &Connection) -> CoreResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch("CREATE TABLE lml_operation (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL CHECK(mode IN ('legacy-sp','legacy-lspdfr')),
+        root_key TEXT NOT NULL, root_display TEXT NOT NULL, target TEXT NOT NULL,
+        staging_path TEXT NOT NULL, manifest BLOB NOT NULL,
+        manifest_sha256 TEXT NOT NULL, unresolved_coverage INTEGER NOT NULL CHECK(unresolved_coverage IN (0,1)),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE TABLE lml_operation_file (
+        operation_id INTEGER NOT NULL REFERENCES lml_operation(id),
+        relative_path TEXT NOT NULL, path_lower TEXT NOT NULL, path_upper TEXT NOT NULL,
+        size INTEGER NOT NULL CHECK(size>=0), sha256 TEXT NOT NULL,
+        PRIMARY KEY(operation_id,relative_path),
+        UNIQUE(operation_id,path_lower), UNIQUE(operation_id,path_upper)
+    );
+    CREATE TABLE lml_operation_event (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id INTEGER NOT NULL REFERENCES lml_operation(id),
+        phase TEXT NOT NULL CHECK(phase IN ('prepared','staged','publishing','registered','recovery_required')),
+        diagnostic TEXT NOT NULL CHECK(length(CAST(diagnostic AS BLOB))<=4096),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE TRIGGER lml_files_sealed BEFORE INSERT ON lml_operation_file
+        WHEN EXISTS(SELECT 1 FROM lml_operation_event WHERE operation_id=NEW.operation_id)
+        BEGIN SELECT RAISE(ABORT,'LML file snapshot is sealed'); END;
+    CREATE INDEX lml_event_operation ON lml_operation_event(operation_id,id);
+    CREATE TABLE lml_package (
+        operation_id INTEGER PRIMARY KEY REFERENCES lml_operation(id),
+        root_key TEXT NOT NULL, target_lower TEXT NOT NULL, target_upper TEXT NOT NULL,
+        registered INTEGER NOT NULL DEFAULT 0 CHECK(registered IN (0,1)),
+        installed_mod_id INTEGER UNIQUE REFERENCES installed_mod(id),
+        CHECK(registered=1 OR installed_mod_id IS NULL),
+        UNIQUE(root_key,target_lower), UNIQUE(root_key,target_upper)
+    );
+    CREATE TRIGGER lml_package_no_delete BEFORE DELETE ON lml_package BEGIN
+        SELECT RAISE(ABORT,'LML reservations cannot be released'); END;
+    CREATE TRIGGER lml_package_finalize_only BEFORE UPDATE ON lml_package
+        WHEN OLD.registered!=0 OR NEW.registered!=1
+        OR NEW.operation_id!=OLD.operation_id OR NEW.root_key!=OLD.root_key
+        OR NEW.target_lower!=OLD.target_lower OR NEW.target_upper!=OLD.target_upper
+        BEGIN SELECT RAISE(ABORT,'LML ownership is immutable after registration'); END;
+    CREATE TRIGGER lml_event_order BEFORE INSERT ON lml_operation_event
+        WHEN NOT COALESCE((
+            (NEW.phase='prepared' AND NOT EXISTS(SELECT 1 FROM lml_operation_event WHERE operation_id=NEW.operation_id))
+            OR (NEW.phase='staged' AND (SELECT phase FROM lml_operation_event WHERE operation_id=NEW.operation_id ORDER BY id DESC LIMIT 1)='prepared')
+            OR (NEW.phase='publishing' AND (SELECT phase FROM lml_operation_event WHERE operation_id=NEW.operation_id ORDER BY id DESC LIMIT 1)='staged')
+            OR (NEW.phase='registered' AND (SELECT phase FROM lml_operation_event WHERE operation_id=NEW.operation_id ORDER BY id DESC LIMIT 1)='publishing' AND EXISTS(SELECT 1 FROM lml_package WHERE operation_id=NEW.operation_id AND registered=1))
+            OR (NEW.phase='recovery_required' AND (SELECT phase FROM lml_operation_event WHERE operation_id=NEW.operation_id ORDER BY id DESC LIMIT 1) IN ('prepared','staged','publishing'))
+        ),0) BEGIN SELECT RAISE(ABORT,'invalid LML phase order'); END;")?;
+    for table in ["lml_operation", "lml_operation_file", "lml_operation_event"] {
+        for action in ["UPDATE", "DELETE"] {
+            tx.execute_batch(&format!("CREATE TRIGGER {table}_no_{action} BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'immutable LML journal'); END;"))?;
+        }
+    }
+    tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Synthetic historical fixtures begin from the current in-memory schema.
+    fn remove_lml_fixture_schema(conn: &Connection) {
+        conn.execute_batch(
+            "DROP TABLE lml_package; DROP TABLE lml_operation_event;
+            DROP TABLE lml_operation_file; DROP TABLE lml_operation;",
+        )
+        .unwrap();
+    }
+    #[test]
+    fn lml_v16_failure_rolls_back_schema_and_version() {
+        let conn = open_in_memory().unwrap();
+        remove_lml_fixture_schema(&conn);
+        conn.pragma_update(None, "user_version", 15).unwrap();
+        conn.execute_batch("CREATE TABLE lml_package(unexpected TEXT);")
+            .unwrap();
+        assert!(run_migrations(&conn).is_err());
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
+                .unwrap(),
+            15
+        );
+        assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('lml_operation','lml_operation_file','lml_operation_event')",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    #[test]
+    fn lml_v16_preserves_old_data_and_repeats() {
+        let conn = open_in_memory().unwrap();
+        insert_legacy_row(&conn, "Existing", "C:/Game/mod.asi");
+        conn.execute("INSERT INTO installed_mod_file(installed_mod_id,target_path,file_hash) VALUES(1,'C:/Game/mod.asi','existing')",[]).unwrap();
+        conn.execute("INSERT INTO manual_dlc_event(operation_id,root_key,root_display,archive_scope,pack_key,pack_display,operation,phase) VALUES(1,'root','root','dlclist','pack','pack','install','intent')",[]).unwrap();
+        remove_lml_fixture_schema(&conn);
+        conn.pragma_update(None, "user_version", 15).unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM installed_mod_file", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM manual_dlc_event", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT name FROM installed_mod WHERE id=1", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "Existing"
+        );
+    }
 
     #[test]
     fn in_memory_db_applies_schema_and_seeds_singleton_settings_row() {
@@ -509,6 +624,7 @@ mod tests {
             conn.execute("UPDATE user_settings SET language = 'zh-TW'", [])
                 .unwrap();
             // The v15 migration must be additive to these v14-compatible tables.
+            remove_lml_fixture_schema(&conn);
             conn.pragma_update(None, "user_version", 14).unwrap();
         }
         for attempt in 0..2 {
@@ -516,7 +632,7 @@ mod tests {
             let version: i32 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 15);
+            assert_eq!(version, CURRENT_SCHEMA_VERSION);
             let (name, status, hash, language): (String, String, String, String) = conn
                 .query_row(
                     "SELECT m.name, m.status, f.file_hash, s.language \
@@ -585,6 +701,7 @@ mod tests {
         )
         .unwrap();
 
+        remove_lml_fixture_schema(&conn);
         conn.pragma_update(None, "user_version", 10).unwrap();
         run_migrations(&conn).unwrap();
 
@@ -695,6 +812,7 @@ mod tests {
             [],
         )
         .unwrap();
+        remove_lml_fixture_schema(&conn);
         conn.pragma_update(None, "user_version", 13).unwrap();
 
         run_migrations(&conn).unwrap();

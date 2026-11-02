@@ -28,6 +28,8 @@ pub mod install;
 pub mod lml;
 // OpenAI-Codex: Source inventory and limited declaration comparisons only.
 pub mod lml_package;
+// OpenAI-Codex: Database-only operation records; no filesystem installation API.
+pub mod lml_store;
 pub mod malware_scan;
 pub mod mod_analyzer;
 pub mod mod_details;
