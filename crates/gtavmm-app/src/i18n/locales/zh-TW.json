@@ -115,6 +115,12 @@
     "bulk_disable_error": "有 {{count}} 個 Mod 無法停用：{{details}}"
   },
   "installWizard": {
+    "role_label": "獨立受控 DLL 安裝位置",
+    "role_choose": "請依模組作者指示選擇",
+    "role_general": "一般 RPH 外掛 — Plugins",
+    "role_callout": "LSPDFR 警情任務／外掛 — Plugins/LSPDFR",
+    "role_help": "這只是選擇安裝位置，不會辨識 DLL 身分或保證相容。附屬設定、音效及相依元件不會自動找到；改變選擇後會重新預檢目的地與衝突。",
+    "role_required": "請先選擇位置並檢查更新後的預覽，才能安裝。初始預設目的地不代表你已確認。",
     "preview_mode": "安裝模式：{{mode}}",
     "preview_root": "遊戲資料夾：{{path}}",
     "preview_changed": "安裝模式已改變，請重新選取套件以更新預覽。",

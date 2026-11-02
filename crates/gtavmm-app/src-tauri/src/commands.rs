@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_lspdfr_role_app
 
 //! Command implementations, factored as plain functions so they're unit-testable
 //! without a running Tauri app — the `#[tauri::command]` wrappers below just marshal
@@ -382,6 +383,8 @@ pub struct InstallPreview {
     pub game_root: String,
     pub plan: gtavmm_core::mod_analyzer::ModPlan,
     pub conflicts: gtavmm_core::conflict::ConflictReport,
+    pub role: Option<crate::install_role::ManagedDllRole>,
+    pub role_required: bool,
 }
 
 // OpenAI-Codex_install_preflight_backend: Only canonicalize the trusted resolved root.
@@ -406,11 +409,28 @@ fn ensure_install_preview_mode(mode: &str) -> Result<(), String> {
 
 // OpenAI-Codex_install_preflight_backend: Preserve the resolver's target spelling,
 // including for missing files whose ownership keys cannot be canonicalized yet.
+#[cfg(test)]
 fn classify_install_preview(
     root: std::path::PathBuf,
     mode: &str,
     path: &std::path::Path,
 ) -> Result<gtavmm_core::mod_analyzer::ModPlan, String> {
+    classify_install_preview_with_role(root, mode, path, None).map(|result| result.0)
+}
+
+fn classify_install_preview_with_role(
+    root: std::path::PathBuf,
+    mode: &str,
+    path: &std::path::Path,
+    role: Option<&str>,
+) -> Result<
+    (
+        gtavmm_core::mod_analyzer::ModPlan,
+        Option<crate::install_role::ManagedDllRole>,
+        bool,
+    ),
+    String,
+> {
     ensure_install_preview_mode(mode)?;
     // ModeProvider is not Send; construct the provider inside the worker.
     let provider: Box<dyn gtavmm_core::providers::ModeProvider> = match mode {
@@ -422,14 +442,26 @@ fn classify_install_preview(
             )
         }
     };
-    gtavmm_core::mod_analyzer::classify(path, provider.as_ref()).map_err(|error| error.to_string())
+    crate::install_role::classify(path, mode, provider.as_ref(), role)
 }
 
+#[cfg(test)]
 fn finish_install_preview(
     conn: &Connection,
     mode: &str,
     root: &std::path::Path,
     plan: gtavmm_core::mod_analyzer::ModPlan,
+) -> Result<InstallPreview, String> {
+    finish_install_preview_with_role(conn, mode, root, plan, None, false)
+}
+
+fn finish_install_preview_with_role(
+    conn: &Connection,
+    mode: &str,
+    root: &std::path::Path,
+    plan: gtavmm_core::mod_analyzer::ModPlan,
+    role: Option<crate::install_role::ManagedDllRole>,
+    role_required: bool,
 ) -> Result<InstallPreview, String> {
     if let gtavmm_core::mod_analyzer::ModFormat::Unsupported(reason) = &plan.format {
         return Err(format!("Unsupported mod package: {reason}"));
@@ -451,6 +483,8 @@ fn finish_install_preview(
         game_root: preview_root_identity(root)?,
         plan,
         conflicts,
+        role,
+        role_required,
     })
 }
 
@@ -461,6 +495,7 @@ pub async fn inspect_install_preview(
     game_path: Option<String>,
     mode: String,
     path: String,
+    role: Option<String>,
 ) -> Result<InstallPreview, String> {
     ensure_install_preview_mode(&mode)?;
     let root = {
@@ -470,13 +505,18 @@ pub async fn inspect_install_preview(
     };
     let worker_root = root.clone();
     let worker_mode = mode.clone();
-    let plan = tauri::async_runtime::spawn_blocking(move || {
-        classify_install_preview(worker_root, &worker_mode, std::path::Path::new(&path))
+    let (plan, role, role_required) = tauri::async_runtime::spawn_blocking(move || {
+        classify_install_preview_with_role(
+            worker_root,
+            &worker_mode,
+            std::path::Path::new(&path),
+            role.as_deref(),
+        )
     })
     .await
     .map_err(|_| "Installation preview could not complete.".to_string())??;
     let conn = state.conn.lock().map_err(|error| error.to_string())?;
-    finish_install_preview(&conn, &mode, &root, plan)
+    finish_install_preview_with_role(&conn, &mode, &root, plan, role, role_required)
 }
 
 fn check_install_preview_root(
@@ -510,14 +550,37 @@ pub fn install_mod_impl(
     override_foreign_conflicts: bool,
     backup_root: &std::path::Path,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
+    install_mod_with_role_impl(
+        conn,
+        game_path,
+        mode,
+        path,
+        name,
+        override_foreign_conflicts,
+        backup_root,
+        None,
+    )
+}
+
+// OpenAI-Codex_lspdfr_role_app: Legacy callers retain the provider default by omitting a role.
+#[allow(clippy::too_many_arguments)]
+pub fn install_mod_with_role_impl(
+    conn: &mut Connection,
+    game_path: Option<&str>,
+    mode: &str,
+    path: &str,
+    name: Option<&str>,
+    override_foreign_conflicts: bool,
+    backup_root: &std::path::Path,
+    role: Option<&str>,
+) -> Result<gtavmm_core::install::InstallOutcome, String> {
     // The caller names a page, not a provider. Both are needed: the provider
     // decides where files go, and the page is what gets recorded so this mod
     // shows up on the workspace it was installed from and nowhere else.
     let page = crate::page_mode::PageMode::parse(mode)?;
     let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
     let input_path = std::path::Path::new(path);
-    let plan = gtavmm_core::mod_analyzer::classify(input_path, provider.as_ref())
-        .map_err(|e| e.to_string())?;
+    let (plan, _, _) = crate::install_role::classify(input_path, mode, provider.as_ref(), role)?;
     let name = name.map(str::to_string).unwrap_or_else(|| {
         input_path
             .file_name()
@@ -576,6 +639,7 @@ pub fn install_mod(
     name: Option<String>,
     override_foreign_conflicts: bool,
     expected_game_root: Option<String>,
+    role: Option<String>,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
     // OpenAI-Codex_install_preflight_backend: Guard before app-data creation or any install write.
@@ -585,19 +649,42 @@ pub fn install_mod(
         &mode,
         expected_game_root.as_deref(),
     )?;
+    // Validate role eligibility before creating the app-data backup directory.
+    if role.as_deref().is_some_and(|value| !value.is_empty()) {
+        let (_, provider) = resolve_page_target(&conn, game_path.as_deref(), &mode)?;
+        crate::install_role::classify(
+            std::path::Path::new(&path),
+            &mode,
+            provider.as_ref(),
+            role.as_deref(),
+        )?;
+    }
     // Each install gets its own timestamped folder under backups/, so restoring
     // one mod never disturbs what another mod replaced.
     let backup_root =
         default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
-    install_mod_impl(
-        &mut conn,
-        game_path.as_deref(),
-        &mode,
-        &path,
-        name.as_deref(),
-        override_foreign_conflicts,
-        &backup_root,
-    )
+    if role.as_deref().is_some_and(|value| !value.is_empty()) {
+        install_mod_with_role_impl(
+            &mut conn,
+            game_path.as_deref(),
+            &mode,
+            &path,
+            name.as_deref(),
+            override_foreign_conflicts,
+            &backup_root,
+            role.as_deref(),
+        )
+    } else {
+        install_mod_impl(
+            &mut conn,
+            game_path.as_deref(),
+            &mode,
+            &path,
+            name.as_deref(),
+            override_foreign_conflicts,
+            &backup_root,
+        )
+    }
 }
 
 pub fn profile_list_impl(conn: &Connection) -> Result<Vec<gtavmm_core::profile::Profile>, String> {
@@ -2259,6 +2346,20 @@ fn reinstall_mod_with_optional_staging_impl(
     staging_root: Option<&std::path::Path>,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
     let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
+    // OpenAI-Codex_lspdfr_role_app: Recover the recorded destination before core classification/uninstall.
+    let role = crate::install_role::infer_saved_role(conn, mod_id, &game_root)?;
+    if let Some(role) = role {
+        crate::install_role::classify(
+            std::path::Path::new(new_source_path),
+            mode,
+            provider.as_ref(),
+            Some(role.as_str()),
+        )?;
+    }
+    let provider = crate::install_role::RoleProvider {
+        inner: provider.as_ref(),
+        role,
+    };
     let options = gtavmm_core::install::InstallOptions {
         auto_backup: true,
         override_foreign_conflicts: false,
@@ -2269,7 +2370,7 @@ fn reinstall_mod_with_optional_staging_impl(
             mod_id,
             std::path::Path::new(new_source_path),
             version_label,
-            provider.as_ref(),
+            &provider,
             &game_root,
             backup_root,
             recycle_bin_root,
@@ -2282,7 +2383,7 @@ fn reinstall_mod_with_optional_staging_impl(
             mod_id,
             std::path::Path::new(new_source_path),
             version_label,
-            provider.as_ref(),
+            &provider,
             &game_root,
             backup_root,
             recycle_bin_root,
@@ -2773,6 +2874,150 @@ mod tests {
         let (root, _) = resolve_page_target(conn, root.to_str(), mode)?;
         let plan = classify_install_preview(root.clone(), mode, source)?;
         finish_install_preview(conn, mode, &root, plan)
+    }
+
+    // OpenAI-Codex_lspdfr_role_app: Removing the role wrapper would break these destination contracts.
+    #[test]
+    fn callout_preview_install_and_reinstall_keep_the_same_destination() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let root = fake_game_root();
+        let work = tempfile::tempdir().unwrap();
+        let dll = work.path().join("Example.dll");
+        let mut bytes = vec![0u8; 512];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(b"PE\0\0");
+        bytes[88..90].copy_from_slice(&0x10bu16.to_le_bytes());
+        bytes[296..300].copy_from_slice(&1u32.to_le_bytes());
+        bytes[300..304].copy_from_slice(&1u32.to_le_bytes());
+        std::fs::write(&dll, &bytes).unwrap();
+        let provider = gtavmm_core::providers::LegacyLspdfrProvider::new(root.path().to_path_buf());
+        let (plan, role, required) =
+            crate::install_role::classify(&dll, "legacy-lspdfr", &provider, Some("callout"))
+                .unwrap();
+        let preview = finish_install_preview_with_role(
+            &conn,
+            "legacy-lspdfr",
+            root.path(),
+            plan,
+            role,
+            required,
+        )
+        .unwrap();
+        assert!(preview.role_required);
+        assert_eq!(
+            preview.role,
+            Some(crate::install_role::ManagedDllRole::Callout)
+        );
+        let target = preview.plan.files[0].target.clone();
+        let installed = install_mod_with_role_impl(
+            &mut conn,
+            root.path().to_str(),
+            "legacy-lspdfr",
+            dll.to_str().unwrap(),
+            None,
+            false,
+            &work.path().join("backup"),
+            Some("callout"),
+        )
+        .unwrap();
+        let gtavmm_core::install::InstallOutcome::Success {
+            installed_mod_id, ..
+        } = installed
+        else {
+            panic!("expected successful role installation");
+        };
+        assert_eq!(target, root.path().join("Plugins/LSPDFR/Example.dll"));
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        assert!(reinstall_mod_impl(
+            &mut conn,
+            installed_mod_id,
+            dll.to_str().unwrap(),
+            "wrong-page",
+            "legacy-sp",
+            root.path().to_str(),
+            &work.path().join("wrong-backup"),
+            &work.path().join("wrong-recycle"),
+        )
+        .is_err());
+        assert!(target.is_file());
+        assert!(!work.path().join("wrong-backup").exists());
+        assert!(!work.path().join("wrong-recycle").exists());
+        let outcome = reinstall_mod_impl(
+            &mut conn,
+            installed_mod_id,
+            dll.to_str().unwrap(),
+            "v2",
+            "legacy-lspdfr",
+            root.path().to_str(),
+            &work.path().join("backup2"),
+            &work.path().join("recycle"),
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            gtavmm_core::install::InstallOutcome::Success { .. }
+        ));
+        assert!(target.is_file());
+        assert!(!root.path().join("Plugins/Example.dll").exists());
+        let gtavmm_core::install::InstallOutcome::Success {
+            installed_mod_id, ..
+        } = outcome
+        else {
+            panic!("expected successful role reinstall");
+        };
+        let staging = work.path().join("staging");
+        disable_mod_impl(&conn, installed_mod_id, &staging).unwrap();
+        assert!(!target.exists());
+        enable_mod_impl(&conn, installed_mod_id, &staging).unwrap();
+        assert!(target.is_file());
+        disable_mod_impl(&conn, installed_mod_id, &staging).unwrap();
+        reinstall_mod_with_staging_impl(
+            &mut conn,
+            installed_mod_id,
+            dll.to_str().unwrap(),
+            "v3",
+            "legacy-lspdfr",
+            root.path().to_str(),
+            &work.path().join("backup3"),
+            &work.path().join("recycle3"),
+            &staging,
+        )
+        .unwrap();
+        assert!(target.is_file());
+        assert!(!root.path().join("Plugins/Example.dll").exists());
+    }
+
+    #[test]
+    fn role_install_rejects_wrong_mode_and_changed_preview_root_before_writes() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let root = fake_game_root();
+        let work = tempfile::tempdir().unwrap();
+        let backup = work.path().join("backup");
+        let err = install_mod_with_role_impl(
+            &mut conn,
+            root.path().to_str(),
+            "legacy-sp",
+            "missing.dll",
+            None,
+            false,
+            &backup,
+            Some("callout"),
+        )
+        .unwrap_err();
+        assert!(err.contains("standalone managed DLL"));
+        assert!(!backup.exists());
+        assert!(check_install_preview_root(
+            &conn,
+            root.path().to_str(),
+            "legacy-lspdfr",
+            Some("changed-root")
+        )
+        .is_err());
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM installed_mod", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

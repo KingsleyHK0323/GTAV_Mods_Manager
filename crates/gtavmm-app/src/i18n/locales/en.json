@@ -115,6 +115,12 @@
     "bulk_disable_error": "Could not disable {{count}} mod(s): {{details}}"
   },
   "installWizard": {
+    "role_label": "Standalone managed DLL destination",
+    "role_choose": "Choose according to the mod author's instructions",
+    "role_general": "General RPH plugin — Plugins",
+    "role_callout": "LSPDFR callout/plugin — Plugins/LSPDFR",
+    "role_help": "This selects the destination; it does not identify the DLL or prove compatibility. Companion settings, audio and dependencies are not discovered automatically. Changing this choice refreshes targets and conflicts.",
+    "role_required": "Choose a destination and review its refreshed preview before installing. The initial default target is not a confirmed choice.",
     "preview_mode": "Installation mode: {{mode}}",
     "preview_root": "Game folder: {{path}}",
     "preview_changed": "The installation mode changed. Select the package again to refresh the preview.",

@@ -149,11 +149,15 @@ export interface ConflictReport {
 }
 
 // OpenAI-Codex: Informational snapshot; install rechecks the root and conflicts.
+export type ManagedDllRole = "generalRph" | "callout";
+
 export interface InstallPreview {
   mode: PageMode;
   game_root: string;
   plan: ModPlan;
   conflicts: ConflictReport;
+  role: ManagedDllRole | null;
+  role_required: boolean;
 }
 
 export type InstallOutcome =

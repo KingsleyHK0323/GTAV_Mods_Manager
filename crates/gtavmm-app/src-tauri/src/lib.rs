@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_lspdfr_role_app
 
 //! Tauri command layer: thin IPC wrappers over `gtavmm-core`, mirroring the CLI's own
 //! role — no business logic lives here, only argument marshalling and error-to-string
@@ -8,6 +9,7 @@
 //! functions (`commands::*`) so it's unit-testable without spinning up a Tauri app.
 
 mod commands;
+mod install_role;
 mod lspdfr_category;
 mod page_mode;
 

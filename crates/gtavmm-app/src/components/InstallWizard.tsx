@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { pickFile } from "../lib/pickers";
-import { formatLabel, type InstallOutcome, type InstallPreview, type PageMode, type ScanOutcome } from "../types";
+import { formatLabel, type InstallOutcome, type InstallPreview, type ManagedDllRole, type PageMode, type ScanOutcome } from "../types";
 
 interface InstallWizardProps {
   open: boolean;
@@ -49,6 +49,9 @@ export function InstallWizard({
   const [step, setStep] = useState<Step>("pick");
   const [path, setPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<InstallPreview | null>(null);
+  // OpenAI-Codex: Explicit destination choice, not automatic plugin identification.
+  const [role, setRole] = useState<ManagedDllRole | null>(null);
+  const roleRef = useRef<ManagedDllRole | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<InstallOutcome | null>(null);
   const [scanResult, setScanResult] = useState<ScanOutcome | null>(null);
@@ -60,6 +63,7 @@ export function InstallWizard({
   context.current = { open, mode, gamePath };
   const plan = preview?.plan ?? null;
   const blocked = !preview || preview.mode !== mode ||
+    preview.role !== role || (preview.role_required && role === null) ||
     preview.conflicts.protected_hits.length > 0 || !plan || plan.files.length === 0 ||
     (typeof plan.format === "object" && "Unsupported" in plan.format);
 
@@ -77,6 +81,8 @@ export function InstallWizard({
     setStep("pick");
     setPath(null);
     setPreview(null);
+    setRole(null);
+    roleRef.current = null;
     setError(null);
     setOutcome(null);
     setScanResult(null);
@@ -104,10 +110,12 @@ export function InstallWizard({
       setStep("analyzing");
       setError(null);
       setPreview(null);
+      setRole(null);
+      roleRef.current = null;
       setScanResult(null);
-      const result = await invoke<InstallPreview>("inspect_install_preview", { gamePath, mode, path: picked });
+      const result = await invoke<InstallPreview>("inspect_install_preview", { gamePath, mode, path: picked, role: null });
       if (!current()) return;
-      if (result.mode !== mode) throw new Error(t("installWizard.preview_changed"));
+      if (result.mode !== mode || result.role !== null) throw new Error(t("installWizard.preview_changed"));
       setPreview(result);
       setStep("review");
       // Fire-and-forget — a scan result (or its unavailability) is informational,
@@ -120,6 +128,40 @@ export function InstallWizard({
         .finally(() => { if (current()) setScanning(false); });
     } catch (e) {
       if (current()) { setError(String(e)); setStep("error"); }
+    } finally {
+      if (inFlight.current === request) inFlight.current = null;
+    }
+  }
+
+  async function chooseRole(value: string) {
+    if (!path || !preview?.role_required || inFlight.current !== null) return;
+    if (value !== "generalRph" && value !== "callout") return;
+    const selectedRole: ManagedDllRole = value;
+    const request = ++generation.current;
+    inFlight.current = request;
+    roleRef.current = selectedRole;
+    setRole(selectedRole);
+    setPreview(null);
+    setOutcome(null);
+    setError(null);
+    setScanResult(null);
+    setScanning(false);
+    setStep("analyzing");
+    const current = () => mounted.current && request === generation.current &&
+      context.current.open && context.current.mode === mode && context.current.gamePath === gamePath &&
+      roleRef.current === selectedRole;
+    try {
+      const result = await invoke<InstallPreview>("inspect_install_preview", {
+        gamePath, mode, path, role: selectedRole,
+      });
+      if (!current()) return;
+      if (result.mode !== mode || result.role !== selectedRole || !result.role_required) {
+        throw new Error(t("installWizard.preview_changed"));
+      }
+      setPreview(result);
+      setStep("review");
+    } catch (reason) {
+      if (current()) { setError(String(reason)); setStep("error"); }
     } finally {
       if (inFlight.current === request) inFlight.current = null;
     }
@@ -142,6 +184,7 @@ export function InstallWizard({
         name: null,
         overrideForeignConflicts,
         expectedGameRoot: preview.game_root,
+        role: preview.role,
       });
       if (current()) { setOutcome(result); setStep("done"); }
     } catch (e) {
@@ -182,6 +225,16 @@ export function InstallWizard({
                 mode: t(preview?.mode === "legacy-sp" ? "legacySp.title" : "legacyLspdfr.title"),
               })}</p>
               <p className="mono">{t("installWizard.preview_root", { path: preview?.game_root })}</p>
+              {preview?.role_required && <div>
+                <label htmlFor="install-dll-role">{t("installWizard.role_label")}</label>
+                <select id="install-dll-role" value={role ?? ""} onChange={(event) => chooseRole(event.target.value)}>
+                  <option value="" disabled>{t("installWizard.role_choose")}</option>
+                  <option value="generalRph">{t("installWizard.role_general")}</option>
+                  <option value="callout">{t("installWizard.role_callout")}</option>
+                </select>
+                <p>{t("installWizard.role_help")}</p>
+                {role === null && <p role="status">{t("installWizard.role_required")}</p>}
+              </div>}
               <div className="analyze-row">
                 <span>{t("installWizard.row_format")}</span>
                 <span className="mono">{formatLabel(plan.format)}</span>

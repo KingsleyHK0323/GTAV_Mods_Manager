@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_lspdfr_role_core
 
 //! The install pipeline state machine: Analyzing (done by the caller via
 //! `mod_analyzer::classify`) → ConflictCheck → Backing_Up → Writing → Verifying →
@@ -236,6 +237,7 @@ pub fn install(
         source_path,
         &std::collections::HashMap::new(),
         None,
+        None,
     )
 }
 
@@ -250,6 +252,7 @@ fn install_with_expected_restores(
     source_path: &Path,
     expected_restores: &std::collections::HashMap<PathBuf, String>,
     manual_operation: Option<&ManualDlcOperationToken>,
+    preserved_mode: Option<&str>,
 ) -> CoreResult<InstallOutcome> {
     // OpenAI-Codex: Shared protection for callers that already hold a plan.
     crate::providers::ensure_game_root_available(game_root)?;
@@ -321,13 +324,14 @@ fn install_with_expected_restores(
     let db_result = (|| -> CoreResult<i64> {
         let db_tx = conn.transaction()?;
         db_tx.execute(
-            "INSERT INTO installed_mod (name, source_type, install_path, status, source_path) \
-             VALUES (?1, ?2, ?3, 'active', ?4)",
+            "INSERT INTO installed_mod (name, source_type, install_path, status, source_path, mode) \
+             VALUES (?1, ?2, ?3, 'active', ?4, ?5)",
             rusqlite::params![
                 name,
                 source_type,
                 game_root.to_string_lossy(),
-                source_path.to_string_lossy()
+                source_path.to_string_lossy(),
+                preserved_mode
             ],
         )?;
         let installed_mod_id = db_tx.last_insert_rowid();
@@ -483,6 +487,139 @@ pub fn reinstall_with_staging(
     )
 }
 
+// OpenAI-Codex_lspdfr_role_core: DB destinations, not current file existence,
+// preserve the user's standalone LSPDFR role across all reinstall callers.
+fn preserve_lspdfr_reinstall_role(
+    conn: &Connection,
+    mod_id: i64,
+    source: &Path,
+    game_root: &Path,
+    plan: &ModPlan,
+) -> CoreResult<Option<&'static str>> {
+    let (mode, source_type, old_root): (Option<String>, String, String) = conn.query_row(
+        "SELECT mode, source_type, install_path FROM installed_mod WHERE id = ?1",
+        [mod_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    // Historical managed and native DLLs both use `dll`; archives retain their
+    // archive source type, even if they contain only one managed DLL.
+    if mode.as_deref() != Some("legacy-lspdfr") || source_type != "dll" {
+        return Ok(None);
+    }
+    let refused = || {
+        CoreError::UnsupportedFormat {
+        reason: "cannot safely preserve the recorded LSPDFR DLL destination; choose a standalone managed DLL and retain its recorded Plugins or Plugins/LSPDFR role".to_string(),
+    }
+    };
+    let root = lspdfr_role_path_key(game_root).ok_or_else(refused)?;
+    if lspdfr_role_path_key(Path::new(&old_root)).as_ref() != Some(&root) {
+        return Err(refused());
+    }
+    let mut statement =
+        conn.prepare("SELECT target_path FROM installed_mod_file WHERE installed_mod_id = ?1")?;
+    let targets: Vec<String> = statement
+        .query_map([mod_id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    if targets.len() != 1 {
+        return Err(refused());
+    }
+    let old_target = lspdfr_role_path_key(Path::new(&targets[0])).ok_or_else(refused)?;
+    let prefix = format!("{root}/");
+    let relative = old_target
+        .strip_prefix(prefix.as_str())
+        .ok_or_else(refused)?;
+    let (folder, basename) = relative.rsplit_once('/').unwrap_or(("", relative));
+    if !lspdfr_role_dll_basename(basename) {
+        return Err(refused());
+    }
+    // A single root DLL is the existing native-DLL layout, outside role routing.
+    if folder.is_empty() {
+        return Ok(None);
+    }
+    if !matches!(folder, "Plugins" | "Plugins/LSPDFR") {
+        return Err(refused());
+    }
+    if plan.format != ModFormat::ManagedDll || plan.files.len() != 1 {
+        return Err(refused());
+    }
+    let metadata = std::fs::symlink_metadata(source)?;
+    if !metadata.file_type().is_file() {
+        return Err(refused());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(refused());
+        }
+    }
+    let source_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(refused)?;
+    if !lspdfr_role_dll_basename(source_name) || plan.files[0].source != source {
+        return Err(refused());
+    }
+    let expected = game_root.join(folder).join(source_name);
+    if lspdfr_role_path_key(&plan.files[0].target) != lspdfr_role_path_key(&expected) {
+        return Err(refused());
+    }
+    Ok(Some("legacy-lspdfr"))
+}
+
+fn lspdfr_role_path_key(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let path = path.to_str()?.replace('\\', "/");
+    if path.split('/').any(|part| part == "." || part == "..") {
+        return None;
+    }
+    let path = path.trim_end_matches('/').to_string();
+    Some(path)
+}
+
+fn lspdfr_role_dll_basename(name: &str) -> bool {
+    let Some(stem) = name.get(..name.len().saturating_sub(4)) else {
+        return false;
+    };
+    !stem.is_empty()
+        && name.to_ascii_lowercase().ends_with(".dll")
+        && !stem.ends_with(['.', ' '])
+        && !name
+            .chars()
+            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+        && !matches!(
+            stem.split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase()
+                .as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn reinstall_impl(
     conn: &mut Connection,
@@ -532,6 +669,8 @@ fn reinstall_impl(
     // Keep this plan alive: archive source paths belong to its staging directory.
     let plan = crate::mod_analyzer::classify(new_source_path, provider)?;
     source_type_str(&plan.format)?;
+    let preserved_mode =
+        preserve_lspdfr_reinstall_role(conn, mod_id, new_source_path, game_root, &plan)?;
     if plan.files.is_empty() {
         return Err(CoreError::UnsupportedFormat {
             reason: "the new package contains no installable files".to_string(),
@@ -664,6 +803,7 @@ fn reinstall_impl(
         new_source_path,
         &expected_restores,
         Some(&manual_operation),
+        preserved_mode,
     )
 }
 
@@ -748,6 +888,7 @@ fn record_failed_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::ModeProvider;
 
     // OpenAI-Codex: Disabled reinstall preserves recoverable staging on refusal.
     #[test]
@@ -1751,6 +1892,274 @@ mod tests {
         assert_eq!(
             std::fs::read(game_root.join("cool_mod_v2.asi")).unwrap(),
             b"v2 payload"
+        );
+    }
+
+    struct CalloutReinstallProvider(crate::providers::LegacyLspdfrProvider);
+
+    impl crate::providers::ModeProvider for CalloutReinstallProvider {
+        fn game_root(&self) -> &Path {
+            self.0.game_root()
+        }
+        fn resolve_asi_target(&self, name: &std::ffi::OsStr) -> PathBuf {
+            self.0.resolve_asi_target(name)
+        }
+        fn resolve_native_dll_target(&self, name: &std::ffi::OsStr) -> PathBuf {
+            self.0.resolve_native_dll_target(name)
+        }
+        fn resolve_managed_dll_target(&self, name: &std::ffi::OsStr) -> PathBuf {
+            self.0.game_root().join("Plugins/LSPDFR").join(name)
+        }
+        fn resolve_menyoo_target(
+            &self,
+            category: crate::mod_analyzer::MenyooCategory,
+            name: &std::ffi::OsStr,
+        ) -> PathBuf {
+            self.0.resolve_menyoo_target(category, name)
+        }
+        fn resolve_folder_replacer_target(&self, relative: &Path) -> PathBuf {
+            self.0.resolve_folder_replacer_target(relative)
+        }
+        fn lspdfr_package_game_root(&self) -> Option<&Path> {
+            self.0.lspdfr_package_game_root()
+        }
+        fn resolve_add_on_pack_target(&self, name: &str, relative: &Path) -> PathBuf {
+            self.0.resolve_add_on_pack_target(name, relative)
+        }
+    }
+
+    // OpenAI-Codex_lspdfr_role_core: Catch role loss before uninstall, even when
+    // the original source or deployed payload no longer exists.
+    #[test]
+    fn lspdfr_reinstall_rejects_role_loss_before_changing_the_old_record() {
+        for missing_target in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let game = dir.path().join("game");
+            let old_target = game.join("Plugins/LSPDFR/old.dll");
+            std::fs::create_dir_all(old_target.parent().unwrap()).unwrap();
+            if !missing_target {
+                std::fs::write(&old_target, b"old payload").unwrap();
+            }
+            let mut conn = crate::db::open_in_memory().unwrap();
+            conn.execute(
+                "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('Old callout', 'dll', ?1, 'active', 'legacy-lspdfr')",
+                [game.to_string_lossy().as_ref()],
+            ).unwrap();
+            let id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'old')",
+                rusqlite::params![id, old_target.to_string_lossy()],
+            ).unwrap();
+            let mut pe = vec![0u8; 0x180];
+            pe[0..2].copy_from_slice(b"MZ");
+            pe[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+            pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+            pe[0x58..0x5a].copy_from_slice(&0x20bu16.to_le_bytes());
+            pe[0x138..0x13c].copy_from_slice(&1u32.to_le_bytes());
+            pe[0x13c..0x140].copy_from_slice(&1u32.to_le_bytes());
+            let source = write_source(dir.path(), "new.dll", &pe);
+            let provider = crate::providers::LegacyLspdfrProvider::new(game.clone());
+            let recycle = dir.path().join("recycle");
+            let backup = dir.path().join("backup");
+            let result = reinstall(
+                &mut conn,
+                id,
+                &source,
+                "v2",
+                &provider,
+                &game,
+                &backup,
+                &recycle,
+                InstallOptions::default(),
+            );
+            assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "active");
+            assert!(!game.join("Plugins/new.dll").exists());
+            assert!(!backup.exists());
+            assert!(!recycle.exists());
+            if !missing_target {
+                assert_eq!(std::fs::read(&old_target).unwrap(), b"old payload");
+                let matching = CalloutReinstallProvider(provider);
+                let outcome = reinstall(
+                    &mut conn,
+                    id,
+                    &source,
+                    "v2",
+                    &matching,
+                    &game,
+                    &backup,
+                    &recycle,
+                    InstallOptions::default(),
+                )
+                .unwrap();
+                let InstallOutcome::Success {
+                    installed_mod_id: new_id,
+                    ..
+                } = outcome
+                else {
+                    panic!("expected a matching-role reinstall");
+                };
+                let new_mode: Option<String> = conn
+                    .query_row(
+                        "SELECT mode FROM installed_mod WHERE id = ?1",
+                        [new_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(new_mode.as_deref(), Some("legacy-lspdfr"));
+                assert_eq!(
+                    std::fs::read(game.join("Plugins/LSPDFR/new.dll")).unwrap(),
+                    pe
+                );
+                assert!(!game.join("Plugins/new.dll").exists());
+                let ordinary = crate::providers::LegacyLspdfrProvider::new(game.clone());
+                let second = reinstall(
+                    &mut conn,
+                    new_id,
+                    &source,
+                    "v3",
+                    &ordinary,
+                    &game,
+                    &backup,
+                    &recycle,
+                    InstallOptions::default(),
+                );
+                assert!(matches!(second, Err(CoreError::UnsupportedFormat { .. })));
+                assert_eq!(
+                    std::fs::read(game.join("Plugins/LSPDFR/new.dll")).unwrap(),
+                    pe
+                );
+                assert!(!game.join("Plugins/new.dll").exists());
+                let status: String = conn
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [new_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(status, "active");
+            }
+        }
+    }
+
+    #[test]
+    fn lspdfr_role_guard_accepts_matching_folder_and_preserves_other_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let source = write_source(dir.path(), "new.dll", b"new");
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('Old', 'dll', ?1, 'active', 'legacy-lspdfr')",
+            [game.to_string_lossy().as_ref()],
+        ).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'old')",
+            rusqlite::params![id, game.join("Plugins/LSPDFR/old.dll").to_string_lossy()],
+        ).unwrap();
+        let plan = ModPlan::new(
+            ModFormat::ManagedDll,
+            vec![PlannedFile {
+                source: source.clone(),
+                target: game.join("Plugins/LSPDFR/new.dll"),
+            }],
+        );
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &plan).is_ok());
+        #[cfg(unix)]
+        {
+            let linked_source = dir.path().join("linked.dll");
+            std::os::unix::fs::symlink(&source, &linked_source).unwrap();
+            let linked_plan = ModPlan::new(
+                ModFormat::ManagedDll,
+                vec![PlannedFile {
+                    source: linked_source.clone(),
+                    target: game.join("Plugins/LSPDFR/linked.dll"),
+                }],
+            );
+            assert!(
+                preserve_lspdfr_reinstall_role(&conn, id, &linked_source, &game, &linked_plan)
+                    .is_err()
+            );
+        }
+        let native_plan = ModPlan::new(ModFormat::NativeDll, plan.files.clone());
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &native_plan).is_err());
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &folder, &game, &plan).is_err());
+        let multi = ModPlan::new(ModFormat::ManagedDll, vec![plan.files[0].clone(); 2]);
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &multi).is_err());
+        let ordinary_plan = ModPlan::new(
+            ModFormat::ManagedDll,
+            vec![PlannedFile {
+                source: source.clone(),
+                target: game.join("Plugins/new.dll"),
+            }],
+        );
+        for malformed in [
+            game.join("Plugins/extra/old.dll"),
+            game.join("Plugins/LSPDFR/../old.dll"),
+            game.join("Plugins/LSPDFR/old.txt"),
+            dir.path().join("other/Plugins/LSPDFR/old.dll"),
+        ] {
+            conn.execute(
+                "UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2",
+                rusqlite::params![malformed.to_string_lossy(), id],
+            )
+            .unwrap();
+            assert!(
+                preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &ordinary_plan).is_err()
+            );
+        }
+        conn.execute(
+            "UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2",
+            rusqlite::params![game.join("Plugins/old.dll").to_string_lossy(), id],
+        )
+        .unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &plan).is_err());
+        conn.execute(
+            "UPDATE installed_mod SET mode = 'legacy-sp' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &plan).is_ok());
+        conn.execute("UPDATE installed_mod SET mode = NULL WHERE id = ?1", [id])
+            .unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &plan).is_ok());
+        conn.execute(
+            "UPDATE installed_mod SET mode = 'legacy-lspdfr', source_type = 'zip' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &plan).is_ok());
+        conn.execute(
+            "UPDATE installed_mod SET source_type = 'dll' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE installed_mod_file SET target_path = ?1 WHERE installed_mod_id = ?2",
+            rusqlite::params![game.join("old.dll").to_string_lossy(), id],
+        )
+        .unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &ordinary_plan).is_ok());
+        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'old')",
+            rusqlite::params![id, game.join("Plugins/other.dll").to_string_lossy()]).unwrap();
+        assert!(preserve_lspdfr_reinstall_role(&conn, id, &source, &game, &ordinary_plan).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lspdfr_role_paths_do_not_merge_differently_cased_roots() {
+        assert_ne!(
+            lspdfr_role_path_key(Path::new(r"C:\Game\Plugins\old.dll")),
+            lspdfr_role_path_key(Path::new(r"C:\game\Plugins\old.dll")),
         );
     }
 
