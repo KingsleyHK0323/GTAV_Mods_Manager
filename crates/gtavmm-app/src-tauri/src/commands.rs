@@ -631,6 +631,8 @@ pub fn install_mod_with_role_impl(
 }
 
 #[tauri::command]
+// OpenAI-Codex: Preserve the existing flat IPC payload, including optional role/root guards.
+#[allow(clippy::too_many_arguments)]
 pub fn install_mod(
     state: tauri::State<crate::AppState>,
     game_path: Option<String>,

@@ -1897,7 +1897,7 @@ mod tests {
 
     struct CalloutReinstallProvider(crate::providers::LegacyLspdfrProvider);
 
-    impl crate::providers::ModeProvider for CalloutReinstallProvider {
+    impl ModeProvider for CalloutReinstallProvider {
         fn game_root(&self) -> &Path {
             self.0.game_root()
         }
@@ -2054,7 +2054,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let game = dir.path().join("game");
         let source = write_source(dir.path(), "new.dll", b"new");
-        let mut conn = crate::db::open_in_memory().unwrap();
+        let conn = crate::db::open_in_memory().unwrap();
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status, mode) VALUES ('Old', 'dll', ?1, 'active', 'legacy-lspdfr')",
             [game.to_string_lossy().as_ref()],

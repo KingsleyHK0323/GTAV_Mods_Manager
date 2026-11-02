@@ -37,6 +37,7 @@
 - Corrected Rust formatting in provider tests and existing 7z path-validation code.
 
 ### Fixed
+- Address the three shared Clippy blockers in role revision `e1d9723`: use the imported test provider trait, make a read-only test connection immutable, and document a function-scoped argument-count exception for the compatible installation IPC boundary. Preserve tests, role routing and global warnings-as-errors; follow-up remote verification is pending. <!-- OpenAI-Codex -->
 - Replace the DLC response encoding check's `map_or(true, ...)` with the equivalent `is_none_or(...)`, addressing the shared Windows/Ubuntu Clippy blocker in CI run `41372530542`. Preserve response limits, existing tests and warnings-as-errors; follow-up remote verification is pending. <!-- OpenAI-Codex -->
 
 - Align the recorded-root legacy restore regression test with retained snapshot storage, checking restored content, the unchanged fallback root, file hash, active status, and entry removal without changing production cleanup behavior.
