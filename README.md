@@ -77,6 +77,8 @@ The preceding checksum-file guidance applies only where such a file exists.
 
 Some previously published releases do not include a separate checksum file. The updated release workflow prepares a draft, verifies its installer assets and checksums, and leaves publication to a human reviewer. Before publishing, compare the draft assets with the workflow run's recorded names, sizes and SHA-256 digests; another writer can change the draft after verification. This workflow update and its new tests have not yet been executed.
 
+For source revision `2cfe3fac5fe36f9747fe26ce0e5a56a8e3f7b155`, [GitHub-hosted CI run 41637074847](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/actions/runs/41637074847) passed on Windows and Ubuntu, including 18 mocked release-asset tests and the historical migration fixture on each platform. The four Windows native probes remained ignored. The release workflow itself and actual asset upload or manual publication were not executed. <!-- OpenAI-Codex -->
+
 ### Windows replacement probe preparation
 
 <!-- OpenAI-Codex -->

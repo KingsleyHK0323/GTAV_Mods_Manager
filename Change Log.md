@@ -7,6 +7,7 @@
 
 ## Unreleased
 
+- Verify source revision `2cfe3fac5fe36f9747fe26ce0e5a56a8e3f7b155` with GitHub-hosted CI run `41637074847`: Windows and Ubuntu passed, including 18 mocked release-asset tests and the historical migration fixture on each platform. Four Windows native probes remained ignored; actual release upload and publication were not exercised. <!-- OpenAI-Codex -->
 - Integrate draft-only release asset verification, pause Dependabot direct merges, and pin external workflow actions to reviewed commit SHAs. The workflow and its new tests have not been executed. This supersedes the integration status in the following preparation entry. <!-- OpenAI-Codex -->
 - Prepare source-only draft release asset checks and mocked regression tests. The release workflow integration and runtime verification are pending. <!-- OpenAI-Codex -->
 
