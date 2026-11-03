@@ -529,11 +529,28 @@ fn migrate_lml_v16(conn: &Connection) -> CoreResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Synthetic historical fixtures begin from the current in-memory schema.
+    // OpenAI-Codex: Historical fixtures may never have contained LML tables.
+    #[test]
+    fn lml_fixture_cleanup_preserves_a_baseline_without_lml_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        remove_lml_fixture_schema(&conn);
+        assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('installed_mod','installed_mod_file')", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'lml_%'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    // OpenAI-Codex: Fixtures may start from the baseline or current schema.
     fn remove_lml_fixture_schema(conn: &Connection) {
         conn.execute_batch(
-            "DROP TABLE lml_package; DROP TABLE lml_operation_event;
-            DROP TABLE lml_operation_file; DROP TABLE lml_operation;",
+            "DROP TABLE IF EXISTS lml_package; DROP TABLE IF EXISTS lml_operation_event;
+            DROP TABLE IF EXISTS lml_operation_file; DROP TABLE IF EXISTS lml_operation;",
         )
         .unwrap();
     }

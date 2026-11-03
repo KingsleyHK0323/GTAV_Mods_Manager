@@ -72,6 +72,11 @@ Legacy core restore APIs still restore files and remove the restored entry, but 
 
 Download installers only from [GitHub Releases](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/releases) and verify the SHA-256 checksum file attached to each release. See [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md).
 
+<!-- OpenAI-Codex -->
+The preceding checksum-file guidance applies only where such a file exists.
+
+Some previously published releases do not include a separate checksum file. The updated release workflow prepares a draft, verifies its installer assets and checksums, and leaves publication to a human reviewer. Before publishing, compare the draft assets with the workflow run's recorded names, sizes and SHA-256 digests; another writer can change the draft after verification. This workflow update and its new tests have not yet been executed.
+
 ### Windows replacement probe preparation
 
 <!-- OpenAI-Codex -->

@@ -18,13 +18,16 @@ permissions:
 
 jobs:
   merge-dependabot-pull-request:
+    # OpenAI-Codex: Pause direct merges until server-side base protection is verified.
     if: >-
+      false && (
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'pull_request') ||
       (github.event_name == 'check_suite' &&
        github.event.check_suite.conclusion == 'success') ||
       github.event_name == 'schedule'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

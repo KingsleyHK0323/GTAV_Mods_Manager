@@ -7,7 +7,11 @@
 
 ## Unreleased
 
+- Integrate draft-only release asset verification, pause Dependabot direct merges, and pin external workflow actions to reviewed commit SHAs. The workflow and its new tests have not been executed. This supersedes the integration status in the following preparation entry. <!-- OpenAI-Codex -->
+- Prepare source-only draft release asset checks and mocked regression tests. The release workflow integration and runtime verification are pending. <!-- OpenAI-Codex -->
+
 ### Added
+- Correct the historical migration test fixture to tolerate absent LML tables, with a baseline-schema regression source. Keep production migration logic and original assertions unchanged. The previously reported remote failure has not yet been rerun. <!-- OpenAI-Codex -->
 - Add source for an additive v16 LML metadata store with immutable operation/file snapshots, append-only phase records and reserved package ownership. Validate snapshots and transactional state transitions without creating active installed mods or writing game files. Source-first tests and static review do not establish execution, filesystem recovery or loader compatibility. <!-- OpenAI-Codex -->
 - Add source-only bounded LML package inventories, reference checks and limited exact virtual-declaration overlap reporting. Block standalone and nested `install.xml` markers before normal XML, DLC and folder routing, retaining unsupported results through archive classification. This phase does not enable LML installation or lifecycle operations. Test sources precede implementation; local execution and remote validation remain pending. <!-- OpenAI-Codex -->
 - Add a bounded, declaration-only LML manifest parser foundation with a closed pure-resource grammar, distinct local references and virtual game identifiers, and source-first rejection tests. This does not expose LML installation, enable/disable, conflict completeness or loader compatibility. Local tests and builds were not executed; remote compilation and tests remain pending. <!-- OpenAI-Codex -->
