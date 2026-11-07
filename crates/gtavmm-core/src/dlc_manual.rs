@@ -433,6 +433,8 @@ fn list_tasks_in_snapshot(
             // OpenAI-Codex: Legacy rows can retain a different Windows path spelling.
             // Compare resolved identities and pass a resolved pair to the scanner.
             let resolved_target = path.as_ref().and_then(|p| safe_resolved(Path::new(p)).ok());
+            // OpenAI-Codex: An unresolvable target requires conservative review.
+            uncertain |= resolved_target.is_none();
             let target_here = target_here
                 || resolved_target
                     .as_ref()
@@ -506,6 +508,178 @@ mod tests {
         conn.execute("INSERT INTO installed_mod_file(installed_mod_id,target_path,file_hash) VALUES(?1,?2,'hash')",
             params![id, root.join("mods/update/x64/dlcpacks").join(pack).join("dlc.rpf").to_str().unwrap()]).unwrap();
         id
+    }
+
+    // OpenAI-Codex_lml_backup_review: Snapshot regular synthetic fixture files.
+    fn manual_fixture_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        let mut pending = vec![root.to_path_buf()];
+        let mut entries = Vec::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    entries.push((path.clone(), None));
+                    pending.push(path);
+                } else {
+                    assert!(kind.is_file());
+                    entries.push((path.clone(), Some(std::fs::read(path).unwrap())));
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+
+    fn manual_fixture_events(conn: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, operation_id, root_key, root_display, archive_scope, pack_key, \
+             pack_display, operation, phase, installed_mod_id, created_at \
+             FROM manual_dlc_event ORDER BY id"
+        ).unwrap();
+        let rows = stmt.query_map([], |row| {
+            (0usize..11)
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        }).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        rows
+    }
+
+    fn manual_fixture_roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::fs::write(a.join("sentinel.bin"), b"root a").unwrap();
+        std::fs::write(b.join("sentinel.bin"), b"root b").unwrap();
+        let payload = a.join("mods/update/x64/dlcpacks/Car/dlc.rpf");
+        std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
+        std::fs::write(payload, b"synthetic car payload").unwrap();
+        let xml = crate::mod_analyzer::dlc::dlclist_path(&a);
+        std::fs::create_dir_all(xml.parent().unwrap()).unwrap();
+        std::fs::write(xml, b"<Paths><Item>dlcpacks:\\Car\\</Item></Paths>").unwrap();
+        (dir, a, b)
+    }
+
+    fn manual_fixture_uninstall_settled(conn: &mut Connection, root: &Path) {
+        let token = begin_tasks(
+            conn,
+            root,
+            &["Car".to_string()],
+            ManualDlcOperation::Uninstall,
+            None,
+        ).unwrap();
+        let tx = conn.transaction().unwrap();
+        settle_tasks(&tx, &token).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn manual_fixture_incomplete_owner(
+        conn: &Connection,
+        owner_root: &str,
+        status: &str,
+        target: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO installed_mod(name,source_type,install_path,status,mode) \
+             VALUES('incomplete','folder',?1,?2,'legacy-sp')",
+            params![owner_root, status],
+        ).unwrap();
+        let owner_id = conn.last_insert_rowid();
+        if let Some(target) = target {
+            conn.execute(
+                "INSERT INTO installed_mod_file(installed_mod_id,target_path,file_hash) \
+                 VALUES(?1,?2,'hash')",
+                params![owner_id, target],
+            ).unwrap();
+        }
+    }
+
+    fn assert_manual_removal_hint(
+        conn: &Connection,
+        fixture_root: &Path,
+        game_root: &Path,
+        expected: &str,
+    ) {
+        let tree_before = manual_fixture_tree(fixture_root);
+        let events_before = manual_fixture_events(conn);
+        assert_eq!(events_before.len(), 2);
+        let changes_before: i64 = conn.query_row(
+            "SELECT total_changes()", [], |row| row.get(0)
+        ).unwrap();
+        let tasks = list_tasks(conn, Some(game_root)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].pack_name, "Car");
+        assert_eq!(tasks[0].operation, "uninstall");
+        assert!(!tasks[0].unresolved);
+        assert!(tasks[0].owner_mod_ids.is_empty());
+        assert_eq!(tasks[0].recommendation, expected);
+        assert_eq!(manual_fixture_events(conn), events_before);
+        assert_eq!(manual_fixture_tree(fixture_root), tree_before);
+        let changes_after: i64 = conn.query_row(
+            "SELECT total_changes()", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(changes_after, changes_before);
+    }
+
+    #[test]
+    fn unknown_root_and_target_require_review_after_settled_uninstall() {
+        for status in ["active", "disabled"] {
+            for target in [Some("mods/update/x64/dlcpacks/Car/dlc.rpf"), None] {
+                let (dir, a, _b) = manual_fixture_roots();
+                let mut conn = crate::db::open_in_memory().unwrap();
+                manual_fixture_incomplete_owner(&conn, "", status, target);
+                manual_fixture_uninstall_settled(&mut conn, &a);
+                assert_manual_removal_hint(&conn, dir.path(), &a, "review");
+            }
+        }
+    }
+
+    #[test]
+    fn same_root_unclassifiable_relative_target_requires_review() {
+        for status in ["active", "disabled"] {
+            let (dir, a, _b) = manual_fixture_roots();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            manual_fixture_incomplete_owner(
+                &conn, a.to_str().unwrap(), status, Some("scripts/unknown.asi"),
+            );
+            manual_fixture_uninstall_settled(&mut conn, &a);
+            assert_manual_removal_hint(&conn, dir.path(), &a, "review");
+        }
+    }
+
+    #[test]
+    fn resolved_other_root_owner_does_not_force_removal_review() {
+        for status in ["active", "disabled"] {
+            let (dir, a, b) = manual_fixture_roots();
+            let other_target = b.join("mods/update/x64/dlcpacks/Car/dlc.rpf");
+            std::fs::create_dir_all(other_target.parent().unwrap()).unwrap();
+            std::fs::write(&other_target, b"other root payload").unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            owner(&conn, &b, "Car", status, "legacy-sp");
+            manual_fixture_uninstall_settled(&mut conn, &a);
+            assert_manual_removal_hint(&conn, dir.path(), &a, "check_removal");
+        }
+    }
+
+    #[test]
+    fn unresolved_other_root_owner_requires_review() {
+        for status in ["active", "disabled"] {
+            for target in [Some("scripts/unknown.asi"), None] {
+                let (dir, a, b) = manual_fixture_roots();
+                let mut conn = crate::db::open_in_memory().unwrap();
+                manual_fixture_incomplete_owner(
+                    &conn,
+                    b.to_str().unwrap(),
+                    status,
+                    target,
+                );
+                manual_fixture_uninstall_settled(&mut conn, &a);
+                assert_manual_removal_hint(&conn, dir.path(), &a, "review");
+            }
+        }
     }
 
     #[test]

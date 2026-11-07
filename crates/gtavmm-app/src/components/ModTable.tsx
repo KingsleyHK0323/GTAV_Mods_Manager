@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { ModDetailDrawer } from "./ModDetailDrawer";
 import type { InstalledMod, PageMode } from "../types";
+
+// OpenAI-Codex
 
 interface ModTableProps {
   mods: InstalledMod[];
@@ -36,9 +38,10 @@ export function ModTable({
   bulkStateActions = false,
 }: ModTableProps) {
   const { t } = useTranslation();
+  const disableNoteId = useId();
   const [openId, setOpenId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [bulkBusy, setBulkBusy] = useState<"enable" | "disable" | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<"enable" | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
 
@@ -67,16 +70,16 @@ export function ModTable({
   const allSelectableSelected =
     selectableMods.length > 0 && selectableMods.every((mod) => selectedIds.has(mod.id));
 
-  async function applyBulkState(action: "enable" | "disable") {
-    const candidates = action === "enable" ? enableCandidates : disableCandidates;
+  async function applyBulkEnable() {
+    const candidates = enableCandidates;
     if (candidates.length === 0 || bulkBusy) return;
 
-    setBulkBusy(action);
+    setBulkBusy("enable");
     setBulkError(null);
     setBulkStatus(null);
     const failures: Array<{ id: number; detail: string }> = [];
     let succeeded = 0;
-    const command = action === "enable" ? "enable_mod" : "disable_mod";
+    const command = "enable_mod";
 
     for (const mod of candidates) {
       try {
@@ -90,13 +93,13 @@ export function ModTable({
     setSelectedIds(new Set(failures.map((failure) => failure.id)));
     onChanged();
     if (failures.length > 0) {
-      const key = action === "enable" ? "bulk_enable_error" : "bulk_disable_error";
+      const key = "bulk_enable_error";
       setBulkError(t(`legacySp.${key}`, {
         count: failures.length,
         details: failures.map((failure) => failure.detail).join("; "),
       }));
     } else {
-      const key = action === "enable" ? "bulk_enabled" : "bulk_disabled";
+      const key = "bulk_enabled";
       setBulkStatus(t(`legacySp.${key}`, { count: succeeded }));
     }
     setBulkBusy(null);
@@ -141,7 +144,7 @@ export function ModTable({
                 className="btn-ghost"
                 type="button"
                 disabled={enableCandidates.length === 0 || bulkBusy !== null}
-                onClick={() => applyBulkState("enable")}
+                onClick={() => applyBulkEnable()}
               >
                 {bulkBusy === "enable"
                   ? t("legacySp.bulk_enabling")
@@ -150,15 +153,18 @@ export function ModTable({
               <button
                 className="btn-ghost"
                 type="button"
-                disabled={disableCandidates.length === 0 || bulkBusy !== null}
-                onClick={() => applyBulkState("disable")}
+                disabled
+                aria-describedby={disableNoteId}
               >
-                {bulkBusy === "disable"
-                  ? t("legacySp.bulk_disabling")
-                  : t("legacySp.bulk_disable_selected", { count: disableCandidates.length })}
+                {t("legacySp.bulk_disable_selected", { count: disableCandidates.length })}
               </button>
             </div>
           </div>
+        )}
+        {bulkStateActions && (
+          <p id={disableNoteId} className="page-sub" role="note">
+            {t("legacySp.disable_pending")}
+          </p>
         )}
         {bulkError && <p className="error" role="alert">{bulkError}</p>}
         {bulkStatus && <p style={{ color: "var(--success)" }}>{bulkStatus}</p>}

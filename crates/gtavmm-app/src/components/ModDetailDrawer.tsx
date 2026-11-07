@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFile } from "../lib/pickers";
@@ -31,7 +31,13 @@ interface ModDetailDrawerProps {
   onChanged: () => void;
 }
 
-type Busy = "disable" | "enable" | "uninstall" | "reinstall" | "save" | "page" | null;
+// OpenAI-Codex_Responsible: Source_Code; OpenAI-Codex_dialog_evidence.
+function isBackupConfirmationCancelled(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && error.code === "backup_confirmation_cancelled";
+}
+
+type Busy = "enable" | "uninstall" | "reinstall" | "save" | "page" | null;
 
 /**
  * Details for one installed mod, and the only place its lifecycle can be driven.
@@ -43,9 +49,10 @@ type Busy = "disable" | "enable" | "uninstall" | "reinstall" | "save" | "page" |
  * used to expand inline inside the table lives here too, so a row has one place
  * to open rather than two competing affordances.
  *
- * Uninstall asks first. It is recoverable — the engine snapshots into the
- * recycle bin and keeps it for fifteen days — but it deletes real files from a
- * real game folder, so it should not happen on a single stray click.
+ * OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code
+ * Uninstall asks first and may delete real game files. The program attempts
+ * to record a recycle-bin snapshot, but restoration is not guaranteed.
+ * This version pauses expiry sweeping; post-restore cleanup is separate.
  */
 export function ModDetailDrawer({
   mod,
@@ -55,6 +62,7 @@ export function ModDetailDrawer({
   onChanged,
 }: ModDetailDrawerProps) {
   const { t } = useTranslation();
+  const disableNoteId = useId();
   const [notes, setNotes] = useState("");
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
@@ -107,7 +115,7 @@ export function ModDetailDrawer({
       await action();
       if (kind === "uninstall") onClose();
     } catch (e) {
-      setError(String(e));
+      if (kind !== "reinstall" || !isBackupConfirmationCancelled(e)) setError(String(e));
     } finally {
       setBusy(null);
       // A failed reinstall can still have committed an uninstall and its reminder.
@@ -399,16 +407,27 @@ export function ModDetailDrawer({
           )}
         </div>
 
+        {isActive && (
+          <p
+            id={disableNoteId}
+            className="page-sub"
+            role="note"
+            style={{ margin: "var(--space-2) var(--card-pad)" }}
+          >
+            {t("legacySp.disable_pending")}
+          </p>
+        )}
+
         {!isGone && (
           <div className="drawer-actions">
             {isActive && (
               <button
                 className="btn-ghost"
                 type="button"
-                disabled={anyBusy}
-                onClick={() => run("disable", () => invoke("disable_mod", { modId: mod.id }))}
+                disabled
+                aria-describedby={disableNoteId}
               >
-                {busy === "disable" ? t("drawer.working") : t("drawer.disable")}
+                {t("drawer.disable")}
               </button>
             )}
             {isDisabled && (

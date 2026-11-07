@@ -536,7 +536,13 @@ pub fn ensure_installed_mod_available(
             }
         })?;
     ensure_mode_available(mode.as_deref().unwrap_or("legacy-sp"))?;
-    ensure_game_root_available(Path::new(&root))
+    // OpenAI-Codex: An observed empty root cannot authorize this operation.
+    if root.is_empty() {
+        return crate::lml_store::reject_observed_empty_root(conn, mod_id);
+    }
+    ensure_game_root_available(Path::new(&root))?;
+    // OpenAI-Codex_lml_generic_guards; OpenAI-Codex: Guard every generic lifecycle.
+    crate::lml_store::ensure_generic_mod_allowed(conn, mod_id)
 }
 
 /// Resolves the game root and [`ModeProvider`] to use for install/inspect, given an
@@ -618,8 +624,33 @@ mod tests {
             .unwrap();
             let staging = dir.path().join("staging");
             let recycle = dir.path().join("recycle");
-            assert!(crate::state::disable(&conn, id, &staging).is_err());
-            assert!(crate::uninstall::uninstall(&mut conn, id, dir.path(), &recycle).is_err());
+            // OpenAI-Codex_disable_ai_audit: Check mode guards independently of disabling.
+            let expected = if mode == "fivem-client" {
+                "FiveM support is under development"
+            } else {
+                "GTA V Enhanced support is under development"
+            };
+            let before: i64 = conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert!(matches!(
+                ensure_installed_mod_available(&conn, id),
+                Err(crate::error::CoreError::UnsupportedFormat { reason })
+                    if reason == expected
+            ));
+            assert!(matches!(
+                crate::state::disable(&conn, id, &staging),
+                Err(crate::error::CoreError::ModDisablingUnavailable)
+            ));
+            assert!(matches!(
+                crate::uninstall::uninstall(&mut conn, id, dir.path(), &recycle),
+                Err(crate::error::CoreError::UnsupportedFormat { reason })
+                    if reason == expected
+            ));
+            let after: i64 = conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(after, before);
             assert_eq!(std::fs::read(&target).unwrap(), b"keep existing content");
             assert!(!staging.exists());
             assert!(!recycle.exists());
@@ -628,7 +659,21 @@ mod tests {
                 [id],
             )
             .unwrap();
-            assert!(crate::state::enable(&conn, id, &staging).is_err());
+            let before_enable: i64 = conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert!(matches!(
+                crate::state::enable(&conn, id, &staging),
+                Err(crate::error::CoreError::UnsupportedFormat { reason })
+                    if reason == expected
+            ));
+            let after_enable: i64 = conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(after_enable, before_enable);
+            assert_eq!(std::fs::read(&target).unwrap(), b"keep existing content");
+            assert!(!staging.exists());
+            assert!(!recycle.exists());
             let status: String = conn
                 .query_row(
                     "SELECT status FROM installed_mod WHERE id = ?1",

@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_v1_removal_review: Clarify conflict policy and owner uncertainty.
 
 //! Compares a planned install's target files against existing `InstalledModFile` rows
 //! (the "who owns which file" ownership tracking that lets the core distinguish, e.g.,
 //! a Legacy SP mod's own file from a same-path file owned by a different mod/provider).
 //!
-//! Classifies each overlap per the MVP spec's three-tier policy:
+//! Reports the following conflict and update observations:
 //! - **Protected hit** — target matches `protected_files` → always fatal, no override,
 //!   checked independently of everything else below.
-//! - **Self-update** — the planned targets overlap mostly with one *existing active*
-//!   mod's own files (overlap ratio ≥ [`SELF_UPDATE_OVERLAP_THRESHOLD`]) → suggested,
-//!   not forced; the overlap still requires explicit confirmation.
-//! - **Foreign conflict** — a planned target matches a file owned by a *different*
-//!   active mod → requires explicit override from the caller before `install`
-//!   proceeds.
-//! - **Untracked existing file** — a target exists without a recorded active owner;
-//!   it also requires confirmation, with no fabricated owner ID.
+//! - **Self-update** — the planned targets mostly overlap one existing active mod
+//!   (ratio ≥ [`SELF_UPDATE_OVERLAP_THRESHOLD`]); this is a hint, not proof of identity.
+//! - **Active owner conflict** — an identified different active owner blocks install
+//!   even with override; reinstall first excludes its own existing mod.
+//! - **No identified active owner** — an existing target may require confirmation;
+//!   no owner ID is fabricated, and an unidentified owner may still exist.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,7 +45,7 @@ pub struct ProtectedHit {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ForeignConflict {
-    /// None when the target exists but has no active owner recorded by this app.
+    /// None when the target exists and no active owner was identified by this analysis.
     pub owner_mod_id: Option<i64>,
     pub owner_name: String,
     pub path: PathBuf,
@@ -67,9 +66,8 @@ pub struct ConflictReport {
 }
 
 impl ConflictReport {
-    /// `true` if `install` must refuse to proceed without the caller supplying an
-    /// explicit override (protected hits are never overridable and aren't included in
-    /// this check — see [`ConflictReport::has_protected_hits`]).
+    /// `true` when this report has conflicts requiring policy review. Callers decide
+    /// whether any identified conflict is overridable; protected hits are separate.
     pub fn requires_explicit_override(&self) -> bool {
         !self.foreign_conflicts.is_empty()
     }
@@ -153,7 +151,7 @@ pub fn analyze(conn: &Connection, planned_targets: &[PathBuf]) -> CoreResult<Con
         if !tracked_targets.contains(&key) && untracked_targets.insert(key) {
             report.foreign_conflicts.push(ForeignConflict {
                 owner_mod_id: None,
-                owner_name: "Unknown (existing file not tracked by this app)".to_string(),
+                owner_name: "Unknown (existing file with no identified active owner)".to_string(),
                 path: target.clone(),
             });
         }
@@ -239,6 +237,10 @@ mod tests {
         assert!(report.requires_explicit_override());
         assert_eq!(report.foreign_conflicts.len(), 1);
         assert_eq!(report.foreign_conflicts[0].owner_mod_id, None);
+        assert_eq!(
+            report.foreign_conflicts[0].owner_name,
+            "Unknown (existing file with no identified active owner)"
+        );
         assert_eq!(report.foreign_conflicts[0].path, target);
     }
 

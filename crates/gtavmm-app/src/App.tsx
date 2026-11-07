@@ -23,6 +23,8 @@ import "./App.css";
 import { TermsGate } from "./pages/TermsGate";
 import { OnboardingGate } from "./pages/OnboardingGate";
 import { applyTheme, type Theme } from "./lib/theme";
+import startupEnglish from "./i18n/locales/en.json";
+import startupTraditionalChinese from "./i18n/locales/zh-TW.json";
 
 // OpenAI-Codex: Keep FiveM Server gated until the user re-enables support.
 const FIVEM_SERVER_SUPPORTED = false;
@@ -110,29 +112,81 @@ function App() {
   // `null` means "not known yet". The workspace is not rendered until the answer
   // arrives, because flashing it and then replacing it with a gate would show
   // mod management to someone who has not accepted the terms.
+  // OpenAI-Codex_v1_asi_rebase: Do not bypass gates when startup fails.
   const [startup, setStartup] = useState<StartupState | null>(null);
+  const [startupError, setStartupError] = useState(false);
+  const [startupAttempt, setStartupAttempt] = useState(0);
 
   useEffect(() => {
-    invoke<StartupState>("load_startup_state")
-      .then((s) => {
-        setStartup(s);
-        if (s.language) i18n.changeLanguage(s.language);
-        applyTheme((s.theme ?? "system") as Theme);
-      })
-      .catch(() => {
-        // No Tauri runtime (plain browser preview). Fall through to the
-        // workspace rather than trapping the preview behind a gate it has no
-        // way to pass.
-        setStartup({
-          theme: "system",
-          terms_accepted: true,
-          onboarding_completed: true,
-          language: "en",
-        });
-      });
-  }, [i18n]);
+    let active = true;
+    setStartup(null);
+    setStartupError(false);
 
-  if (!startup) return null;
+    async function loadStartup() {
+      try {
+        const state = await invoke<StartupState>("load_startup_state");
+        if (
+          !state ||
+          typeof state.theme !== "string" ||
+          typeof state.language !== "string" ||
+          typeof state.terms_accepted !== "boolean" ||
+          typeof state.onboarding_completed !== "boolean"
+        ) {
+          throw new Error("Invalid startup state");
+        }
+        if (!active) return;
+        if (state.language) await i18n.changeLanguage(state.language);
+        if (!active) return;
+        applyTheme(state.theme as Theme);
+        setStartup(state);
+      } catch {
+        if (active) {
+          setStartup(null);
+          setStartupError(true);
+        }
+      }
+    }
+
+    void loadStartup();
+    return () => {
+      active = false;
+    };
+  }, [i18n, startupAttempt]);
+
+  if (!startup) {
+    return (
+      <div className="fullscreen" data-shown="true">
+        <div className="fullscreen-inner" style={{ maxWidth: 660, minWidth: 0 }}>
+          {startupError ? (
+            <>
+              <h1 className="page-title">
+                {startupEnglish.startup.error_title} / {startupTraditionalChinese.startup.error_title}
+              </h1>
+              <p className="error" role="alert">
+                {startupEnglish.startup.error_body}
+                <br />
+                {startupTraditionalChinese.startup.error_body}
+              </p>
+              <button
+                className="btn-primary"
+                type="button"
+                onClick={() => {
+                  setStartupError(false);
+                  setStartupAttempt((value) => value + 1);
+                }}
+              >
+                {startupEnglish.startup.retry} / {startupTraditionalChinese.startup.retry}
+              </button>
+            </>
+          ) : (
+            <p role="status">
+              {startupEnglish.startup.loading} / {startupTraditionalChinese.startup.loading}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
   if (!startup.terms_accepted) {
     return (
       <TermsGate onAccepted={() => setStartup({ ...startup, terms_accepted: true })} />

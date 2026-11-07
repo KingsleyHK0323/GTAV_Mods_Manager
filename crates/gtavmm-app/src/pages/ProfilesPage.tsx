@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { pickFile, pickSaveFile } from "../lib/pickers";
 import type { ImportOutcome, InstalledMod, Profile, SwitchOutcome } from "../types";
 
+// OpenAI-Codex
+
 /**
  * Real profile management against the real gtavmm-core `profile` module — create,
  * delete, switch, and per-mod membership (opt-in per mod, same as the CLI: a mod not
@@ -18,7 +20,7 @@ export function ProfilesPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [memberIds, setMemberIds] = useState<Set<number>>(new Set());
   const [newName, setNewName] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | { kind: "switch_disable_pending" } | null>(null);
   const [imported, setImported] = useState<ImportOutcome | null>(null);
   const [switchResult, setSwitchResult] = useState<SwitchOutcome | null>(null);
 
@@ -117,7 +119,11 @@ export function ProfilesPage() {
       setSwitchResult(result);
       loadProfiles();
     } catch (e) {
-      setError(String(e));
+      setError(
+        typeof e === "string" && e === "GTAVMM_PROFILE_MOD_DISABLING_UNAVAILABLE"
+          ? { kind: "switch_disable_pending" }
+          : String(e),
+      );
     }
   }
 
@@ -155,7 +161,11 @@ export function ProfilesPage() {
         </div>
       )}
 
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error">
+          {typeof error === "string" ? error : t("profiles.switch_disable_pending")}
+        </p>
+      )}
       {switchResult && (
         <p className="page-sub">
           {t("profiles.switch_result", {

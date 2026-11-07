@@ -116,6 +116,130 @@ pub(crate) fn uninstall_for_reinstall(
     )
 }
 
+// OpenAI-Codex: Compare relative snapshot names at component boundaries.
+fn recycle_snapshot_prefix_hit(set: &std::collections::BTreeSet<String>, key: &str) -> bool {
+    if set.contains(key) {
+        return true;
+    }
+    if key
+        .match_indices('/')
+        .any(|(index, _)| set.contains(&key[..index]))
+    {
+        return true;
+    }
+    let prefix = format!("{key}/");
+    set.range(prefix.clone()..)
+        .next()
+        .is_some_and(|candidate| candidate.starts_with(&prefix))
+}
+
+fn validate_recycle_snapshot_paths(paths: &[PathBuf]) -> CoreResult<()> {
+    let mut lower = std::collections::BTreeSet::new();
+    let mut upper = std::collections::BTreeSet::new();
+    for relative in paths {
+        let mut parts = Vec::new();
+        for component in relative.components() {
+            match component {
+                std::path::Component::Normal(part) => {
+                    let part = part.to_str().ok_or_else(|| CoreError::UnsupportedFormat {
+                        reason: format!(
+                            "recycle snapshot path is not Unicode: {}",
+                            relative.display()
+                        ),
+                    })?;
+                    parts.push(part);
+                }
+                _ => {
+                    return Err(CoreError::UnsupportedFormat {
+                        reason: format!(
+                            "recycle snapshot path is not relative: {}",
+                            relative.display()
+                        ),
+                    });
+                }
+            }
+        }
+        let key = parts.join("/");
+        crate::lml::LocalReference::parse(&key).map_err(|reason| CoreError::UnsupportedFormat {
+            reason: format!(
+                "recycle snapshot path is unsupported: {} ({reason})",
+                relative.display()
+            ),
+        })?;
+        let low = key.to_lowercase();
+        let high = key.to_uppercase();
+        if recycle_snapshot_prefix_hit(&lower, &low)
+            || recycle_snapshot_prefix_hit(&upper, &high)
+        {
+            return Err(CoreError::UnsupportedFormat {
+                reason: format!("recycle snapshot paths overlap: {}", relative.display()),
+            });
+        }
+        lower.insert(low);
+        upper.insert(high);
+    }
+    Ok(())
+}
+
+// OpenAI-Codex: Check old snapshot paths before a compound reinstall intent.
+pub(crate) fn preflight_recycle_snapshot_paths(
+    conn: &Connection,
+    mod_id: i64,
+    game_root: &Path,
+) -> CoreResult<()> {
+    let files = load_mod_files(conn, mod_id)?;
+    let resolved_root = std::fs::canonicalize(game_root)?;
+    let mut relatives = Vec::with_capacity(files.len());
+    for file in &files {
+        let target = Path::new(&file.target_path);
+        let invalid_target = || CoreError::UnsupportedFormat {
+            reason: format!(
+                "uninstall target is outside its game root or has an unsafe relative path: {}",
+                target.display()
+            ),
+        };
+        let relative = target
+            .strip_prefix(game_root)
+            .map_err(|_| invalid_target())?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid_target());
+        }
+        let mut ancestor = target;
+        loop {
+            match std::fs::canonicalize(ancestor) {
+                Ok(resolved) => {
+                    if !resolved.starts_with(&resolved_root) {
+                        return Err(invalid_target());
+                    }
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match std::fs::symlink_metadata(ancestor) {
+                        Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(other) => return Err(other.into()),
+                        Ok(_) => return Err(invalid_target()),
+                    }
+                    ancestor = ancestor.parent().ok_or_else(invalid_target)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        relatives.push(relative.to_path_buf());
+    }
+    validate_recycle_snapshot_paths(&relatives)
+}
+
+// OpenAI-Codex: Create a new snapshot leaf without reusing an existing entry.
+fn create_recycle_entry_dir(recycle_bin_root: &Path, entry_dir: &Path) -> CoreResult<()> {
+    std::fs::create_dir_all(recycle_bin_root)?;
+    std::fs::create_dir(entry_dir)?;
+    Ok(())
+}
+
 fn uninstall_impl(
     conn: &mut Connection,
     installed_mod_id: i64,
@@ -195,6 +319,8 @@ fn uninstall_impl(
         }
         snapshot_relatives.push(relative.to_path_buf());
     }
+    // OpenAI-Codex: Refuse colliding snapshot destinations before any mutation.
+    validate_recycle_snapshot_paths(&snapshot_relatives)?;
 
     if disabled {
         // OpenAI-Codex: Never touch current game targets, backups, or shared DLC
@@ -231,7 +357,7 @@ fn uninstall_impl(
             "{installed_mod_id}-{}",
             chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
         ));
-        std::fs::create_dir_all(&entry_dir)?;
+        create_recycle_entry_dir(recycle_bin_root, &entry_dir)?;
         for ((_, source), relative) in payloads.iter().zip(&snapshot_relatives) {
             let destination = entry_dir.join(relative);
             if let Some(parent) = destination.parent() {
@@ -345,7 +471,7 @@ fn uninstall_impl(
         chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
     );
     let entry_dir = recycle_bin_root.join(&entry_dir_name);
-    std::fs::create_dir_all(&entry_dir)?;
+    create_recycle_entry_dir(recycle_bin_root, &entry_dir)?;
     let mut snapshotted_file_ids = Vec::new();
 
     for (file, relative) in files.iter().zip(&snapshot_relatives) {
@@ -402,9 +528,648 @@ fn uninstall_impl(
     Ok(())
 }
 
+// OpenAI-Codex_disable_frontend_audit: Construct test-only staged metadata.
+#[cfg(test)]
+pub(crate) fn seed_disabled_fixture_from_staging(
+    conn: &Connection,
+    mod_id: i64,
+    staging_root: &Path,
+) {
+    #[derive(serde::Serialize)]
+    struct SyntheticStagedFile {
+        file_id: i64,
+        index: usize,
+        hash: String,
+    }
+
+    assert_eq!(mod_status(conn, mod_id).unwrap().as_deref(), Some("active"));
+    let stage = staging_root.join(mod_id.to_string());
+    assert!(stage.is_dir());
+    let file_ids: Vec<i64> = {
+        let mut statement = conn
+            .prepare("SELECT id FROM installed_mod_file WHERE installed_mod_id = ?1 ORDER BY id")
+            .unwrap();
+        let rows = statement.query_map([mod_id], |row| row.get(0)).unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    assert!(!file_ids.is_empty());
+    let mut manifest = Vec::new();
+    for (index, file_id) in file_ids.into_iter().enumerate() {
+        let staged = stage.join(index.to_string());
+        match std::fs::symlink_metadata(&staged) {
+            Ok(metadata) => {
+                assert!(metadata.file_type().is_file());
+                manifest.push(SyntheticStagedFile {
+                    file_id,
+                    index,
+                    hash: crate::util::hash_file(&staged).unwrap(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("synthetic staged metadata: {error}"),
+        }
+    }
+    std::fs::write(stage.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert_eq!(
+        conn.execute(
+            "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1 AND status = 'active'",
+            [mod_id],
+        )
+        .unwrap(),
+        1
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex_recycle_snapshot_review: Capture synthetic recovery data.
+    fn snapshot_disabled_fixture_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        let mut pending = vec![root.to_path_buf()];
+        let mut snapshot = Vec::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    snapshot.push((path.clone(), None));
+                    pending.push(path);
+                } else {
+                    assert!(kind.is_file());
+                    snapshot.push((path.clone(), Some(std::fs::read(path).unwrap())));
+                }
+            }
+        }
+        snapshot.sort_by(|a, b| a.0.cmp(&b.0));
+        snapshot
+    }
+
+    fn snapshot_disabled_fixture_database(
+        conn: &Connection,
+    ) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' \
+                 AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name",
+            )
+            .unwrap();
+        let tables = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        drop(statement);
+        tables
+            .into_iter()
+            .map(|table| {
+                let sql = format!(
+                    "SELECT rowid, * FROM \"{}\" ORDER BY rowid",
+                    table.replace('"', "\"\"")
+                );
+                let mut statement = conn.prepare(&sql).unwrap();
+                let count = statement.column_count();
+                let rows = statement
+                    .query_map([], |row| {
+                        (0..count)
+                            .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap();
+                (table, rows)
+            })
+            .collect()
+    }
+
+    struct DisabledSnapshotFixture {
+        temp: tempfile::TempDir,
+        conn: Connection,
+        mod_id: i64,
+        game_root: PathBuf,
+        staging_root: PathBuf,
+        recycle_root: PathBuf,
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Model valid legacy data without a manifest.
+    fn disabled_snapshot_fixture(first: &str, second: &str) -> DisabledSnapshotFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let game_root = temp.path().join("game");
+        let staging_root = temp.path().join("staging");
+        let recycle_root = temp.path().join("recycle");
+        std::fs::create_dir(&game_root).unwrap();
+        std::fs::create_dir(&recycle_root).unwrap();
+        std::fs::write(game_root.join("unrelated.asi"), b"unrelated game file").unwrap();
+        std::fs::write(recycle_root.join("untouched.bin"), b"existing recycle data").unwrap();
+
+        let conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) \
+             VALUES ('Legacy disabled', 'asi', ?1, 'disabled', 'legacy-sp')",
+            [game_root.to_str().unwrap()],
+        )
+        .unwrap();
+        let mod_id = conn.last_insert_rowid();
+        let stage_dir = staging_root.join(mod_id.to_string());
+        std::fs::create_dir_all(&stage_dir).unwrap();
+        let mut file_ids = Vec::new();
+        for (index, (relative, payload)) in [
+            (first, b"first staged payload".as_slice()),
+            (second, b"second staged payload".as_slice()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let staged = stage_dir.join(index.to_string());
+            std::fs::write(&staged, payload).unwrap();
+            let target = game_root.join(relative);
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    mod_id,
+                    target.to_str().unwrap(),
+                    crate::util::hash_file(&staged).unwrap()
+                ],
+            )
+            .unwrap();
+            file_ids.push(conn.last_insert_rowid());
+        }
+        assert_ne!(file_ids[0], file_ids[1]);
+        assert!(!stage_dir.join("manifest.json").exists());
+        assert!(crate::providers::ensure_installed_mod_available(&conn, mod_id).is_ok());
+        let payloads = crate::state::disabled_payloads(&conn, mod_id, &staging_root).unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(
+            payloads.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            file_ids
+        );
+        DisabledSnapshotFixture {
+            temp,
+            conn,
+            mod_id,
+            game_root,
+            staging_root,
+            recycle_root,
+        }
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Never reuse occupied synthetic entries.
+    #[test]
+    fn recycle_entry_rejects_an_existing_directory_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("recycle");
+        let entry = root.join("42-20261105000000000");
+        std::fs::create_dir_all(entry.join("nested")).unwrap();
+        std::fs::write(entry.join("nested/payload.asi"), b"old payload").unwrap();
+        std::fs::write(root.join("peer.bin"), b"peer data").unwrap();
+        let before = snapshot_disabled_fixture_tree(temp.path());
+        let error = create_recycle_entry_dir(&root, &entry).unwrap_err();
+        assert!(
+            matches!(&error, CoreError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error:?}"
+        );
+        assert_eq!(snapshot_disabled_fixture_tree(temp.path()), before);
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Do not replace an occupied synthetic file.
+    #[test]
+    fn recycle_entry_rejects_an_existing_file_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("recycle");
+        std::fs::create_dir(&root).unwrap();
+        let entry = root.join("42-20261105000000000");
+        std::fs::write(&entry, b"occupied file").unwrap();
+        std::fs::write(root.join("peer.bin"), b"peer data").unwrap();
+        let before = snapshot_disabled_fixture_tree(temp.path());
+        let error = create_recycle_entry_dir(&root, &entry).unwrap_err();
+        assert!(
+            matches!(&error, CoreError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error:?}"
+        );
+        assert_eq!(snapshot_disabled_fixture_tree(temp.path()), before);
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Create missing parents and one fresh leaf.
+    #[test]
+    fn recycle_entry_creates_missing_parents_and_preserves_peers() {
+        let temp = tempfile::tempdir().unwrap();
+        let sentinel = temp.path().join("peer.bin");
+        std::fs::write(&sentinel, b"peer data").unwrap();
+        let root = temp.path().join("missing/nested/recycle");
+        let entry = root.join("42-20261105000000000");
+        assert!(!root.exists());
+        create_recycle_entry_dir(&root, &entry).unwrap();
+        assert!(root.is_dir());
+        assert!(entry.is_dir());
+        assert_eq!(std::fs::read_dir(&entry).unwrap().count(), 0);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"peer data");
+        let before_retry = snapshot_disabled_fixture_tree(temp.path());
+        let error = create_recycle_entry_dir(&root, &entry).unwrap_err();
+        assert!(
+            matches!(&error, CoreError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error:?}"
+        );
+        assert_eq!(snapshot_disabled_fixture_tree(temp.path()), before_retry);
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Retain existing siblings under the recycle root.
+    #[test]
+    fn recycle_entry_creates_a_fresh_leaf_under_existing_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("recycle");
+        std::fs::create_dir(&root).unwrap();
+        let sibling = root.join("peer.bin");
+        std::fs::write(&sibling, b"peer data").unwrap();
+        let entry = root.join("42-20261105000000000");
+        create_recycle_entry_dir(&root, &entry).unwrap();
+        assert!(entry.is_dir());
+        assert_eq!(std::fs::read_dir(&entry).unwrap().count(), 0);
+        assert_eq!(std::fs::read(&sibling).unwrap(), b"peer data");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Root-file failures retain their I/O type.
+    #[test]
+    fn recycle_entry_reports_root_file_io_error_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root-file");
+        std::fs::write(&root, b"root file data").unwrap();
+        let entry = root.join("42-20261105000000000");
+        let before = snapshot_disabled_fixture_tree(temp.path());
+        let error = create_recycle_entry_dir(&root, &entry).unwrap_err();
+        assert!(matches!(&error, CoreError::Io(_)), "{error:?}");
+        assert_eq!(snapshot_disabled_fixture_tree(temp.path()), before);
+    }
+
+    // OpenAI-Codex: Unsupported names must fail independently of path overlap.
+    #[test]
+    fn recycle_snapshot_rejects_unverifiable_relative_names() {
+        for name in [
+            "CON.txt".to_string(),
+            "name.".to_string(),
+            "name ".to_string(),
+            "bad:name.asi".to_string(),
+            "a".repeat(1025),
+        ] {
+            let paths = vec![PathBuf::from("safe.asi"), PathBuf::from(&name)];
+            let error = validate_recycle_snapshot_paths(&paths).unwrap_err();
+            assert!(matches!(
+                error,
+                CoreError::UnsupportedFormat { reason }
+                    if reason.starts_with("recycle snapshot path is unsupported:")
+            ));
+        }
+        assert!(validate_recycle_snapshot_paths(&[
+            PathBuf::from("safe.asi"),
+            PathBuf::from("nested/other.asi"),
+        ])
+        .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recycle_snapshot_rejects_non_unicode_relative_names() {
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = std::ffi::OsString::from_vec(vec![0xff]);
+        let error = validate_recycle_snapshot_paths(&[PathBuf::from(invalid)]).unwrap_err();
+        assert!(matches!(
+            error,
+            CoreError::UnsupportedFormat { reason }
+                if reason.starts_with("recycle snapshot path is not Unicode:")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recycle_snapshot_rejects_non_unicode_relative_names() {
+        use std::os::windows::ffi::OsStringExt;
+        let invalid = std::ffi::OsString::from_wide(&[0xd800]);
+        let error = validate_recycle_snapshot_paths(&[PathBuf::from(invalid)]).unwrap_err();
+        assert!(matches!(
+            error,
+            CoreError::UnsupportedFormat { reason }
+                if reason.starts_with("recycle snapshot path is not Unicode:")
+        ));
+    }
+
+    struct ActiveSnapshotFixture {
+        temp: tempfile::TempDir,
+        conn: Connection,
+        mod_id: i64,
+        game_root: PathBuf,
+        recycle_root: PathBuf,
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Create actual synthetic active targets.
+    fn active_snapshot_fixture(first: &str, second: &str) -> ActiveSnapshotFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let game_root = temp.path().join("game");
+        let recycle_root = temp.path().join("recycle");
+        std::fs::create_dir(&game_root).unwrap();
+        std::fs::create_dir(&recycle_root).unwrap();
+        std::fs::write(game_root.join("unrelated.asi"), b"unrelated game file").unwrap();
+        std::fs::write(recycle_root.join("untouched.bin"), b"existing recycle data").unwrap();
+
+        let conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO installed_mod (name, source_type, install_path, status, mode) \
+             VALUES ('Active synthetic', 'asi', ?1, 'active', 'legacy-sp')",
+            [game_root.to_str().unwrap()],
+        )
+        .unwrap();
+        let mod_id = conn.last_insert_rowid();
+        let mut file_ids = Vec::new();
+        for relative in [first, second] {
+            let target = game_root.join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            if !target.exists() {
+                std::fs::write(&target, b"active mod payload").unwrap();
+            }
+            assert!(std::fs::metadata(&target).unwrap().is_file());
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    mod_id,
+                    target.to_str().unwrap(),
+                    crate::util::hash_file(&target).unwrap()
+                ],
+            )
+            .unwrap();
+            file_ids.push(conn.last_insert_rowid());
+        }
+        assert_ne!(file_ids[0], file_ids[1]);
+        conn.execute(
+            "INSERT INTO install_event (installed_mod_id, event_type, success) \
+             VALUES (?1, 'install', 1)",
+            [mod_id],
+        )
+        .unwrap();
+        assert!(crate::providers::ensure_installed_mod_available(&conn, mod_id).is_ok());
+        ActiveSnapshotFixture {
+            temp,
+            conn,
+            mod_id,
+            game_root,
+            recycle_root,
+        }
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Refuse active snapshot aliases before mutation.
+    #[test]
+    fn active_uninstall_refuses_overlapping_snapshot_relative_paths() {
+        for (first, second) in [
+            ("shared.asi", "shared.asi"),
+            ("Plugins/Callout.dll", "plugins/callout.dll"),
+        ] {
+            let mut fixture = active_snapshot_fixture(first, second);
+            let tree_before = snapshot_disabled_fixture_tree(fixture.temp.path());
+            let database_before = snapshot_disabled_fixture_database(&fixture.conn);
+            let changes_before: i64 = fixture
+                .conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            let result = uninstall(
+                &mut fixture.conn,
+                fixture.mod_id,
+                &fixture.game_root,
+                &fixture.recycle_root,
+            );
+            let second_target = fixture.game_root.join(second);
+            let relative = second_target.strip_prefix(&fixture.game_root).unwrap();
+            let expected_error = format!("recycle snapshot paths overlap: {}", relative.display());
+            assert!(
+                matches!(
+                    result,
+                    Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
+                ),
+                "first={first}, second={second}"
+            );
+            assert_eq!(
+                snapshot_disabled_fixture_tree(fixture.temp.path()),
+                tree_before,
+                "first={first}, second={second}"
+            );
+            assert_eq!(
+                snapshot_disabled_fixture_database(&fixture.conn),
+                database_before,
+                "first={first}, second={second}"
+            );
+            let changes_after: i64 = fixture
+                .conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(changes_after, changes_before);
+            assert_eq!(
+                mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+                Some("active")
+            );
+        }
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Disjoint active targets still uninstall normally.
+    #[test]
+    fn active_uninstall_snapshots_disjoint_relative_paths() {
+        let mut fixture = active_snapshot_fixture("first.asi", "nested/second.asi");
+        uninstall(
+            &mut fixture.conn,
+            fixture.mod_id,
+            &fixture.game_root,
+            &fixture.recycle_root,
+        )
+        .unwrap();
+        assert_eq!(
+            mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+            Some("uninstalled")
+        );
+        let snapshot: String = fixture
+            .conn
+            .query_row(
+                "SELECT mod_package_snapshot_path FROM recycle_bin_entry \
+                 WHERE original_installed_mod_id = ?1",
+                [fixture.mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let snapshot = PathBuf::from(snapshot);
+        assert_eq!(
+            std::fs::read(snapshot.join("first.asi")).unwrap(),
+            b"active mod payload"
+        );
+        assert_eq!(
+            std::fs::read(snapshot.join("nested/second.asi")).unwrap(),
+            b"active mod payload"
+        );
+        assert!(!fixture.game_root.join("first.asi").exists());
+        assert!(!fixture.game_root.join("nested/second.asi").exists());
+        assert_eq!(
+            std::fs::read(fixture.game_root.join("unrelated.asi")).unwrap(),
+            b"unrelated game file"
+        );
+        assert_eq!(
+            std::fs::read(fixture.recycle_root.join("untouched.bin")).unwrap(),
+            b"existing recycle data"
+        );
+        let uninstall_events: i64 = fixture
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM install_event \
+                 WHERE installed_mod_id = ?1 AND event_type = 'uninstall'",
+                [fixture.mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(uninstall_events, 1);
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Distinct payloads must not share a snapshot path.
+    #[test]
+    fn disabled_uninstall_refuses_overlapping_snapshot_relative_paths() {
+        for (first, second) in [
+            ("shared.asi", "shared.asi"),
+            ("Plugins/Callout.dll", "plugins/callout.dll"),
+            ("parent", "parent/child.asi"),
+            ("parent/child.asi", "parent"),
+        ] {
+            let mut fixture = disabled_snapshot_fixture(first, second);
+            let tree_before = snapshot_disabled_fixture_tree(fixture.temp.path());
+            let database_before = snapshot_disabled_fixture_database(&fixture.conn);
+            let changes_before: i64 = fixture
+                .conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            let result = uninstall_with_staging(
+                &mut fixture.conn,
+                fixture.mod_id,
+                &fixture.game_root,
+                &fixture.recycle_root,
+                &fixture.staging_root,
+            );
+            let second_target = fixture.game_root.join(second);
+            let relative = second_target.strip_prefix(&fixture.game_root).unwrap();
+            let expected_error = format!("recycle snapshot paths overlap: {}", relative.display());
+            assert!(
+                matches!(
+                    result,
+                    Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
+                ),
+                "first={first}, second={second}"
+            );
+            assert_eq!(
+                snapshot_disabled_fixture_tree(fixture.temp.path()),
+                tree_before,
+                "first={first}, second={second}"
+            );
+            assert_eq!(
+                snapshot_disabled_fixture_database(&fixture.conn),
+                database_before,
+                "first={first}, second={second}"
+            );
+            let changes_after: i64 = fixture
+                .conn
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(changes_after, changes_before);
+            assert_eq!(
+                mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+                Some("disabled")
+            );
+        }
+    }
+
+    // OpenAI-Codex_recycle_snapshot_review: Separate legacy paths remain snapshotable.
+    #[test]
+    fn disabled_uninstall_snapshots_disjoint_legacy_relative_paths() {
+        let mut fixture = disabled_snapshot_fixture("first.asi", "nested/second.asi");
+        uninstall_with_staging(
+            &mut fixture.conn,
+            fixture.mod_id,
+            &fixture.game_root,
+            &fixture.recycle_root,
+            &fixture.staging_root,
+        )
+        .unwrap();
+        assert_eq!(
+            mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+            Some("uninstalled")
+        );
+        let snapshot: String = fixture
+            .conn
+            .query_row(
+                "SELECT mod_package_snapshot_path FROM recycle_bin_entry \
+                 WHERE original_installed_mod_id = ?1",
+                [fixture.mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let snapshot = PathBuf::from(snapshot);
+        assert_eq!(
+            std::fs::read(snapshot.join("first.asi")).unwrap(),
+            b"first staged payload"
+        );
+        assert_eq!(
+            std::fs::read(snapshot.join("nested/second.asi")).unwrap(),
+            b"second staged payload"
+        );
+        let stage_dir = fixture.staging_root.join(fixture.mod_id.to_string());
+        assert_eq!(
+            std::fs::read(stage_dir.join("0")).unwrap(),
+            b"first staged payload"
+        );
+        assert_eq!(
+            std::fs::read(stage_dir.join("1")).unwrap(),
+            b"second staged payload"
+        );
+        assert_eq!(
+            std::fs::read(fixture.recycle_root.join("untouched.bin")).unwrap(),
+            b"existing recycle data"
+        );
+        assert_eq!(
+            std::fs::read(fixture.game_root.join("unrelated.asi")).unwrap(),
+            b"unrelated game file"
+        );
+        assert!(!fixture.game_root.join("first.asi").exists());
+        assert!(!fixture.game_root.join("nested/second.asi").exists());
+    }
+
+    // OpenAI-Codex: A shared text prefix is not necessarily a path ancestor.
+    #[test]
+    fn disabled_uninstall_allows_distinct_snapshot_path_prefixes() {
+        let mut fixture = disabled_snapshot_fixture("parent", "parent2/child.asi");
+        uninstall_with_staging(
+            &mut fixture.conn,
+            fixture.mod_id,
+            &fixture.game_root,
+            &fixture.recycle_root,
+            &fixture.staging_root,
+        )
+        .unwrap();
+        let snapshot: String = fixture
+            .conn
+            .query_row(
+                "SELECT mod_package_snapshot_path FROM recycle_bin_entry \
+                 WHERE original_installed_mod_id = ?1",
+                [fixture.mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let snapshot = PathBuf::from(snapshot);
+        assert_eq!(
+            std::fs::read(snapshot.join("parent")).unwrap(),
+            b"first staged payload"
+        );
+        assert_eq!(
+            std::fs::read(snapshot.join("parent2/child.asi")).unwrap(),
+            b"second staged payload"
+        );
+        assert_eq!(
+            std::fs::read(fixture.recycle_root.join("untouched.bin")).unwrap(),
+            b"existing recycle data"
+        );
+    }
 
     // OpenAI-Codex: Disabled snapshots must contain staged payloads, not originals.
     #[test]
@@ -424,11 +1189,21 @@ mod tests {
                 setup_installed_mod(&conn, &root, "mod.asi", original.map(|_| backup.as_path()));
             let staging = dir.path().join("staging");
             let recycle = dir.path().join("recycle");
-            crate::state::disable(&conn, id, &staging).unwrap();
-            // OpenAI-Codex: Reuse a retained manifest after enable and user edits.
+            let fixture_stage = staging.join(id.to_string());
+            std::fs::create_dir_all(&fixture_stage).unwrap();
+            std::fs::rename(&target, fixture_stage.join("0")).unwrap();
+            if let Some(bytes) = original {
+                std::fs::write(&target, bytes).unwrap();
+            }
+            crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
+            // OpenAI-Codex: Enable before constructing the edited staged fixture.
             crate::state::enable(&conn, id, &staging).unwrap();
             std::fs::write(&target, b"edited mod payload").unwrap();
-            crate::state::disable(&conn, id, &staging).unwrap();
+            std::fs::rename(&target, fixture_stage.join("0")).unwrap();
+            if let Some(bytes) = original {
+                std::fs::write(&target, bytes).unwrap();
+            }
+            crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
             assert!(uninstall(&mut conn, id, &root, &recycle).is_err());
             assert!(!recycle.exists());
             uninstall_with_staging(&mut conn, id, &root, &recycle, &staging).unwrap();
@@ -463,7 +1238,10 @@ mod tests {
         let mut conn = crate::db::open_in_memory().unwrap();
         let id = setup_installed_mod(&conn, &root, "mod.asi", None);
         let staging = dir.path().join("staging");
-        crate::state::disable(&conn, id, &staging).unwrap();
+        let fixture_stage = staging.join(id.to_string());
+        std::fs::create_dir_all(&fixture_stage).unwrap();
+        std::fs::rename(&target, fixture_stage.join("0")).unwrap();
+        crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
         let newer = setup_installed_mod(&conn, &root, "mod.asi", None);
         std::fs::write(&target, b"new owner payload").unwrap();
         uninstall_with_staging(&mut conn, id, &root, &dir.path().join("recycle"), &staging)
@@ -483,7 +1261,16 @@ mod tests {
             let mut conn = crate::db::open_in_memory().unwrap();
             let id = setup_installed_mod(&conn, &root, "mod.asi", None);
             let staging = dir.path().join("staging");
-            crate::state::disable(&conn, id, &staging).unwrap();
+            let fixture_stage = staging.join(id.to_string());
+            std::fs::create_dir_all(&fixture_stage).unwrap();
+            std::fs::rename(&target, fixture_stage.join("0")).unwrap();
+            crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
+            assert_eq!(
+                crate::state::disabled_payloads(&conn, id, &staging)
+                    .unwrap()
+                    .len(),
+                1
+            );
             let staged = staging.join(id.to_string()).join("0");
             match invalid {
                 "missing" => {
@@ -558,11 +1345,50 @@ mod tests {
             }
             std::fs::write(root.join("a.asi"), b"a payload").unwrap();
             let staging = dir.path().join("staging");
-            crate::state::disable(&conn, id, &staging).unwrap();
+            let fixture_stage = staging.join(id.to_string());
+            std::fs::create_dir_all(&fixture_stage).unwrap();
+            if !missing_first {
+                std::fs::rename(root.join("z.asi"), fixture_stage.join("0")).unwrap();
+            }
+            std::fs::rename(root.join("a.asi"), fixture_stage.join("1")).unwrap();
+            crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
+            assert_eq!(std::fs::read(fixture_stage.join("1")).unwrap(), b"a payload");
+            if missing_first {
+                assert!(!fixture_stage.join("0").exists());
+                let manifest: Vec<serde_json::Value> = serde_json::from_slice(
+                    &std::fs::read(fixture_stage.join("manifest.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(manifest.len(), 1);
+                assert_eq!(manifest[0]["index"].as_u64(), Some(1));
+                let second_file_id: i64 = conn
+                    .query_row(
+                        "SELECT id FROM installed_mod_file WHERE installed_mod_id = ?1 ORDER BY id LIMIT 1 OFFSET 1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(manifest[0]["file_id"].as_i64(), Some(second_file_id));
+                let actual_hash = crate::util::hash_file(&fixture_stage.join("1")).unwrap();
+                assert_eq!(manifest[0]["hash"].as_str(), Some(actual_hash.as_str()));
+            } else {
+                assert_eq!(std::fs::read(fixture_stage.join("0")).unwrap(), b"z payload");
+                assert_eq!(
+                    crate::state::disabled_payloads(&conn, id, &staging)
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            }
             let recycle = dir.path().join("recycle");
             let result = uninstall_with_staging(&mut conn, id, &root, &recycle, &staging);
             if missing_first {
                 assert!(result.is_err());
+                assert!(matches!(
+                    &result,
+                    Err(CoreError::UnsupportedFormat { reason })
+                        if reason == &format!("disabled staging for mod {id} is missing, unsafe, or does not match its file records; preserve it for recovery")
+                ));
                 assert!(!recycle.exists());
                 assert_eq!(mod_status(&conn, id).unwrap().as_deref(), Some("disabled"));
             } else {
@@ -617,7 +1443,16 @@ mod tests {
         let mut conn = crate::db::open_in_memory().unwrap();
         let id = setup_installed_mod(&conn, &root, "mod.asi", None);
         let staging = dir.path().join("staging");
-        crate::state::disable(&conn, id, &staging).unwrap();
+        let fixture_stage = staging.join(id.to_string());
+        std::fs::create_dir_all(&fixture_stage).unwrap();
+        std::fs::rename(root.join("mod.asi"), fixture_stage.join("0")).unwrap();
+        crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
+        assert_eq!(
+            crate::state::disabled_payloads(&conn, id, &staging)
+                .unwrap()
+                .len(),
+            1
+        );
         let staged = staging.join(id.to_string()).join("0");
         let locked = std::fs::OpenOptions::new()
             .read(true)
@@ -856,8 +1691,8 @@ mod tests {
     ) -> i64 {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
-             VALUES ('TestMod', 'asi', '', 'active')",
-            [],
+             VALUES ('TestMod', 'asi', ?1, 'active')",
+            [game_root.to_str().expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -990,7 +1825,10 @@ mod tests {
         .unwrap();
         let staging = dir.path().join("staging");
         if disabled {
-            crate::state::disable(&conn, mod_id, &staging).unwrap();
+            let fixture_stage = staging.join(mod_id.to_string());
+            std::fs::create_dir_all(&fixture_stage).unwrap();
+            std::fs::rename(&target, fixture_stage.join("0")).unwrap();
+            crate::uninstall::seed_disabled_fixture_from_staging(&conn, mod_id, &staging);
         }
         uninstall_with_staging(
             &mut conn,
@@ -1038,8 +1876,8 @@ mod tests {
         let mut conn = crate::db::open_in_memory().unwrap();
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
-             VALUES ('My Addon Car', 'folder', '', 'active')",
-            [],
+             VALUES ('My Addon Car', 'folder', ?1, 'active')",
+            [game_root.to_str().expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();

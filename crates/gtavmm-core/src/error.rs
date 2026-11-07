@@ -18,11 +18,19 @@ pub enum CoreError {
     #[error("unsupported mod format: {reason}")]
     UnsupportedFormat { reason: String },
 
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    #[error("Mod disabling is unavailable. This feature is under development.")]
+    ModDisablingUnavailable,
+
     #[error("conflict with a different mod's file: {path} (owned by mod #{owner_mod_id})")]
     ForeignConflict { path: PathBuf, owner_mod_id: i64 },
 
     #[error("existing file is not tracked by this app; confirmation is required before overwriting: {path}")]
     UntrackedFileConflict { path: PathBuf },
+
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    #[error("unsupported database schema version {found} (supported range: 0..={supported})")]
+    UnsupportedDatabaseSchemaVersion { found: i32, supported: i32 },
 
     #[error("database error")]
     Database(#[from] rusqlite::Error),
@@ -46,6 +54,10 @@ pub enum CoreError {
 
     #[error("io error")]
     Io(#[from] std::io::Error),
+
+    // OpenAI-Codex: Preserve the underlying collision error for callers.
+    #[error("a full backup filename for this second is already in use; retry later")]
+    FullBackupNameCollision(#[source] std::io::Error),
 
     #[error("network error: {reason}")]
     Network { reason: String },

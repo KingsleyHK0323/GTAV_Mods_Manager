@@ -133,7 +133,9 @@ pub struct RecycleBinEntry {
     pub original_installed_mod_id: Option<i64>,
     pub mod_package_snapshot_path: String,
     pub deleted_at: String,
-    /// `deleted_at + 15 days`; entries past this are swept on startup. See
-    /// `recycle_bin::sweep_expired`.
+    /// OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code
+    /// An expiry threshold, normally `deleted_at + 15 days`. This version
+    /// pauses automatic expiry sweeping; the timestamp does not guarantee an
+    /// accessible snapshot.
     pub expires_at: String,
 }

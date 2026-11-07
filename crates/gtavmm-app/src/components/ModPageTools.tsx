@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFile } from "../lib/pickers";
 import { RecycleBinModal } from "./RecycleBinModal";
 import type { ComponentStatus, PageMode, RecycleBinEntry } from "../types";
+
+// OpenAI-Codex: Notify mounted panels without passing recycle data.
+const RECYCLE_CHANGED_EVENT = "gtavmm:recycle-changed";
+export function notifyRecycleChanged() {
+  window.dispatchEvent(new Event(RECYCLE_CHANGED_EVENT));
+}
 
 // OpenAI-Codex: Keep page tools on the configured GTA path and edition.
 // OpenAI-Codex_manual_dlc_ui
@@ -50,6 +56,8 @@ export function ModPageTools({
   const [recycleEntries, setRecycleEntries] = useState<RecycleBinEntry[] | null>(null);
   const [recycleError, setRecycleError] = useState<string | null>(null);
   const [recycleModalOpen, setRecycleModalOpen] = useState(false);
+  const recycleRequestId = useRef(0);
+  const recycleMounted = useRef(false);
 
   const loadComponents = useCallback(() => {
     invoke<ComponentStatus[]>(variant === "framework" ? "check_framework" : "check_components", {
@@ -79,19 +87,46 @@ export function ModPageTools({
       .catch((e) => setBackupError(String(e)));
   }, [mode, t]);
 
+  // OpenAI-Codex: Discard stale list results and callbacks after effect cleanup.
   const loadRecycleBin = useCallback(() => {
+    if (!recycleMounted.current) return;
+    const requestId = ++recycleRequestId.current;
     invoke<RecycleBinEntry[]>("list_recycle_bin")
-      .then(setRecycleEntries)
-      .catch((e) => setRecycleError(String(e)));
+      .then((entries) => {
+        if (!recycleMounted.current || requestId !== recycleRequestId.current) return;
+        setRecycleEntries(entries);
+        setRecycleError(null);
+      })
+      .catch((e) => {
+        if (!recycleMounted.current || requestId !== recycleRequestId.current) return;
+        setRecycleError(String(e));
+      });
   }, []);
 
   useEffect(() => {
+    recycleMounted.current = true;
+    const onRecycleChanged = () => loadRecycleBin();
+    window.addEventListener(RECYCLE_CHANGED_EVENT, onRecycleChanged);
+    return () => {
+      window.removeEventListener(RECYCLE_CHANGED_EVENT, onRecycleChanged);
+      recycleMounted.current = false;
+      recycleRequestId.current += 1;
+    };
+  }, [loadRecycleBin]);
+
+  useEffect(() => {
+    let current = true;
     loadComponents();
     loadBackups();
     loadRecycleBin();
     invoke("sweep_expired_recycle_bin")
-      .then(() => loadRecycleBin())
+      .then(() => {
+        if (current) loadRecycleBin();
+      })
       .catch(() => {});
+    return () => {
+      current = false;
+    };
   }, [loadBackups, loadComponents, loadRecycleBin]);
 
   async function createBackup() {
@@ -211,6 +246,8 @@ export function ModPageTools({
             {t("modPageTools.recycle_view_all_button")}
           </button>
         </h3>
+        {/* OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code */}
+        <p role="status">{t("recycleBinModal.cleanup_paused")}</p>
         {recycleError && <p className="error">{recycleError}</p>}
         {recycleEntries && recycleEntries.length === 0 && (
           <span style={{ color: "var(--text-faint)", fontSize: 12 }}>{t("modPageTools.recycle_empty")}</span>
@@ -228,7 +265,7 @@ export function ModPageTools({
         onClose={() => setRecycleModalOpen(false)}
         entries={recycleEntries ?? []}
         onRestored={() => {
-          loadRecycleBin();
+          notifyRecycleChanged();
           onChanged?.();
         }}
       />

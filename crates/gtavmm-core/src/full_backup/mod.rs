@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// OpenAI-Codex_Responsible: Source_Code
 // OpenAI-Codex: Store the source edition in the archive comment and guard App restores.
 
 //! Full backup/restore of the entire `mods\` folder as a single zip — the coarse,
@@ -95,6 +96,16 @@ fn create_with_edition_unrestricted(
     backup_root: &Path,
     edition: Option<GameEdition>,
 ) -> CoreResult<PathBuf> {
+    create_with_edition_clock(game_root, backup_root, edition, chrono::Utc::now)
+}
+
+// OpenAI-Codex: Allow deterministic collision coverage without changing public APIs.
+fn create_with_edition_clock(
+    game_root: &Path,
+    backup_root: &Path,
+    edition: Option<GameEdition>,
+    now: impl FnOnce() -> chrono::DateTime<chrono::Utc>,
+) -> CoreResult<PathBuf> {
     let mods_dir = game_root.join(MODS_SUBFOLDER);
     if !mods_dir.is_dir() {
         return Err(CoreError::UnsupportedFormat {
@@ -109,10 +120,15 @@ fn create_with_edition_unrestricted(
     std::fs::create_dir_all(&full_backup_dir)?;
     let zip_path = full_backup_dir.join(format!(
         "mods_{}.zip",
-        chrono::Utc::now().format("%Y%m%d%H%M%S")
+        now().format("%Y%m%d%H%M%S")
     ));
 
-    let file = std::fs::File::create(&zip_path)?;
+    // OpenAI-Codex: Preserve occupied backup archives and their error source.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&zip_path)
+        .map_err(backup_open_error)?;
     let mut writer = zip::ZipWriter::new(file);
     if let Some(edition) = edition {
         writer.set_comment(edition.marker());
@@ -137,6 +153,15 @@ fn create_with_edition_unrestricted(
 
     writer.finish().map_err(zip_err("finalizing zip"))?;
     Ok(zip_path)
+}
+
+// OpenAI-Codex: Only classify the actual backup-open collision specially.
+fn backup_open_error(error: std::io::Error) -> CoreError {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        CoreError::FullBackupNameCollision(error)
+    } else {
+        CoreError::Io(error)
+    }
 }
 
 /// Lists all existing full backups (newest first), including unmarked archives.
@@ -282,6 +307,75 @@ mod tests {
         assert!(matches!(err, CoreError::UnsupportedFormat { .. }));
     }
 
+    // OpenAI-Codex: Same-name collisions retain the first full backup.
+    #[test]
+    fn same_second_backup_collision_preserves_first_archive() {
+        use std::io::Read;
+
+        fn fixed_backup_time() -> chrono::DateTime<chrono::Utc> {
+            chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        let mods_dir = game_root.join("mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        std::fs::write(mods_dir.join("mod.asi"), b"original payload").unwrap();
+        let backup_root = dir.path().join("backups");
+
+        let first = create_with_edition_clock(
+            &game_root,
+            &backup_root,
+            Some(GameEdition::Legacy),
+            fixed_backup_time,
+        )
+        .unwrap();
+        let before = std::fs::read(&first).unwrap();
+        let error =
+            create_with_edition_clock(&game_root, &backup_root, None, fixed_backup_time).unwrap_err();
+        assert!(matches!(
+            &error,
+            CoreError::FullBackupNameCollision(source)
+                if source.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            error.to_string(),
+            "a full backup filename for this second is already in use; retry later"
+        );
+        assert_eq!(std::fs::read(&first).unwrap(), before);
+        assert_eq!(
+            std::fs::read(mods_dir.join("mod.asi")).unwrap(),
+            b"original payload"
+        );
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&first).unwrap()).unwrap();
+        assert_eq!(archive.comment(), LEGACY_BACKUP_MARKER);
+        let mut restored = Vec::new();
+        archive
+            .by_name("mod.asi")
+            .unwrap()
+            .read_to_end(&mut restored)
+            .unwrap();
+        assert_eq!(restored, b"original payload");
+    }
+
+    // OpenAI-Codex: Non-collision open errors retain their original I/O detail.
+    #[test]
+    fn backup_open_error_preserves_non_collision_io() {
+        let error = backup_open_error(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "synthetic permission failure",
+        ));
+        assert!(matches!(
+            error,
+            CoreError::Io(source)
+                if source.kind() == std::io::ErrorKind::PermissionDenied
+                    && source.to_string() == "synthetic permission failure"
+        ));
+    }
+
     #[test]
     fn create_then_list_then_restore_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
@@ -411,7 +505,7 @@ mod tests {
         assert!(mismatch.contains("Enhanced"));
         assert!(!enhanced_target.join(MODS_SUBFOLDER).exists());
 
-        let unmarked = create(&game_root, &backup_root).unwrap();
+        let unmarked = create(&game_root, &dir.path().join("unmarked-backups")).unwrap();
         let unmarked_target = dir.path().join("unmarked-target");
         let missing_marker = restore_for_edition(&unmarked, &unmarked_target, GameEdition::Legacy)
             .unwrap_err()

@@ -574,6 +574,24 @@ pub fn install_mod_with_role_impl(
     backup_root: &std::path::Path,
     role: Option<&str>,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
+    install_mod_with_role_and_backup_impl(
+        conn, game_path, mode, path, name, override_foreign_conflicts, backup_root, role, true,
+    )
+}
+
+// OpenAI-Codex_backup_flow: Only the backend wrapper supplies a confirmed backup choice.
+#[allow(clippy::too_many_arguments)]
+fn install_mod_with_role_and_backup_impl(
+    conn: &mut Connection,
+    game_path: Option<&str>,
+    mode: &str,
+    path: &str,
+    name: Option<&str>,
+    override_foreign_conflicts: bool,
+    backup_root: &std::path::Path,
+    role: Option<&str>,
+    auto_backup: bool,
+) -> Result<gtavmm_core::install::InstallOutcome, String> {
     // The caller names a page, not a provider. Both are needed: the provider
     // decides where files go, and the page is what gets recorded so this mod
     // shows up on the workspace it was installed from and nowhere else.
@@ -581,6 +599,22 @@ pub fn install_mod_with_role_impl(
     let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
     let input_path = std::path::Path::new(path);
     let (plan, _, _) = crate::install_role::classify(input_path, mode, provider.as_ref(), role)?;
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    if plan.files.is_empty()
+        && !matches!(
+            &plan.format,
+            gtavmm_core::mod_analyzer::ModFormat::Unsupported(_)
+        )
+    {
+        gtavmm_core::providers::ensure_game_root_available(&game_root)
+            .map_err(|error| error.to_string())?;
+        return Err(
+            gtavmm_core::error::CoreError::UnsupportedFormat {
+                reason: "the install plan contains no files".to_string(),
+            }
+            .to_string(),
+        );
+    }
     let name = name.map(str::to_string).unwrap_or_else(|| {
         input_path
             .file_name()
@@ -589,52 +623,444 @@ pub fn install_mod_with_role_impl(
     });
 
     let options = gtavmm_core::install::InstallOptions {
-        auto_backup: true,
+        auto_backup,
         override_foreign_conflicts,
     };
-    let result = gtavmm_core::install::install(
-        conn,
-        &name,
-        &plan,
-        &game_root,
-        backup_root,
-        options,
-        input_path,
-    )
-    .map_err(|e| e.to_string());
-    if let Err(reason) = &result {
-        let _ = gtavmm_core::app_log::error(&format!("install_mod failed for '{name}': {reason}"));
-    }
-
+    // OpenAI-Codex_Source_Code: Pass page metadata to the install transaction.
+    // OpenAI-Codex_ui_report_review: Validate metadata before the install pipeline writes targets.
     // Stamp the page onto the new row. Recorded rather than inferred, so the
     // interface does not mark it as a guess.
-    if let Ok(gtavmm_core::install::InstallOutcome::Success {
-        installed_mod_id, ..
-    }) = &result
-    {
-        // The category is only meaningful on the LSPDFR pages, so it is left
-        // NULL elsewhere rather than filed under a taxonomy that does not apply.
-        let category = match page {
-            crate::page_mode::PageMode::LegacyLspdfr
-            | crate::page_mode::PageMode::EnhancedLspdfr => {
-                Some(crate::lspdfr_category::infer(&plan))
-            }
-            _ => None,
-        };
-        conn.execute(
-            "UPDATE installed_mod SET mode = ?1, mode_inferred = 0, category = ?3 WHERE id = ?2",
-            rusqlite::params![page.as_str(), installed_mod_id, category],
-        )
-        .map_err(|e| e.to_string())?;
+    // The category is only meaningful on the LSPDFR pages, so it is left
+    // NULL elsewhere rather than filed under a taxonomy that does not apply.
+    let category = match page {
+        crate::page_mode::PageMode::LegacyLspdfr
+        | crate::page_mode::PageMode::EnhancedLspdfr => {
+            Some(crate::lspdfr_category::infer(&plan))
+        }
+        _ => None,
+    };
+    let metadata = gtavmm_core::install::PageInstallMetadata::new(page.as_str(), category)
+        .ok_or_else(|| "Page metadata is not supported.".to_string())?;
+    let result = gtavmm_core::install::install_with_page_metadata(
+        conn, &name, &plan, &game_root, backup_root, options, input_path, metadata,
+    );
+    // OpenAI-Codex_v1_removal_review: A managed-owner refusal is an expected conflict.
+    // OpenAI-Codex_log_isolation_review: Avoid app log writes for identified database failures.
+    match &result {
+        Err(gtavmm_core::CoreError::ForeignConflict { .. })
+        | Err(gtavmm_core::CoreError::Database(_))
+        | Ok(_) => {}
+        Err(gtavmm_core::CoreError::InstallDatabaseRollbackFailed { database_error, .. })
+            if matches!(
+                database_error.as_ref().downcast_ref::<gtavmm_core::CoreError>(),
+                Some(gtavmm_core::CoreError::Database(_))
+            ) => {}
+        Err(reason) => {
+            let _ =
+                gtavmm_core::app_log::error(&format!("install_mod failed for '{name}': {reason}"));
+        }
     }
-    result
+    result.map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum BackupCommandError {
+    Failure(String),
+    Cancelled { code: &'static str },
+}
+
+impl From<String> for BackupCommandError {
+    fn from(error: String) -> Self {
+        Self::Failure(error)
+    }
+}
+
+fn backup_cancelled() -> BackupCommandError {
+    BackupCommandError::Cancelled {
+        code: "backup_confirmation_cancelled",
+    }
+}
+
+// OpenAI-Codex_backup_flow: Compare settings and same-connection writes after confirmation.
+#[derive(Debug, PartialEq, Eq)]
+struct BackupConfirmSnapshot {
+    settings: gtavmm_core::db::models::UserSettings,
+    changes: i64,
+}
+
+fn backup_confirm_snapshot(conn: &Connection) -> Result<BackupConfirmSnapshot, String> {
+    Ok(BackupConfirmSnapshot {
+        settings: load_user_settings_impl(conn)?,
+        changes: conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?,
+    })
+}
+
+fn recheck_backup_snapshot(
+    conn: &Connection,
+    expected: &BackupConfirmSnapshot,
+) -> Result<(), String> {
+    if &backup_confirm_snapshot(conn)? != expected {
+        return Err("Settings or application data changed. Review and retry.".to_string());
+    }
+    Ok(())
+}
+
+fn checked_backup_choice(
+    conn: &Connection,
+    expected: &BackupConfirmSnapshot,
+    confirmed: bool,
+) -> Result<bool, BackupCommandError> {
+    if !expected.settings.default_auto_backup && !confirmed {
+        return Err(backup_cancelled());
+    }
+    recheck_backup_snapshot(conn, expected)?;
+    Ok(expected.settings.default_auto_backup)
+}
+
+// OpenAI-Codex_backup_flow: A single native warning stays reserved until its callback is dropped.
+static BACKUP_WARNING_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+struct BackupWarningGuard(&'static std::sync::atomic::AtomicBool);
+
+impl Drop for BackupWarningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn acquire_backup_warning(
+    active: &'static std::sync::atomic::AtomicBool,
+) -> Option<std::sync::Arc<BackupWarningGuard>> {
+    active
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .ok()
+        .map(|_| std::sync::Arc::new(BackupWarningGuard(active)))
+}
+
+fn backup_warning_callback(
+    sender: std::sync::mpsc::Sender<bool>,
+    guard: std::sync::Arc<BackupWarningGuard>,
+) -> impl FnOnce(bool) + Send + 'static {
+    move |confirmed| {
+        let _guard = guard;
+        let _ = sender.send(confirmed);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BackupWarning<'a> {
+    Settings,
+    Install { path: &'a str, mode: &'a str },
+    Reinstall { id: i64, name: &'a str },
+}
+
+#[derive(Clone, Copy)]
+enum BackupWarningFailure {
+    Busy,
+    TimedOut,
+    Disconnected,
+    Worker,
+}
+
+fn backup_warning_failure(language: &str, failure: BackupWarningFailure) -> String {
+    let zh = language.eq_ignore_ascii_case("zh-TW");
+    match (zh, failure) {
+        (true, BackupWarningFailure::Busy) => "另一個備份確認仍未結束，無法開啟新確認。請嘗試回覆或關閉舊視窗；已逾時的回覆不會執行原操作。若仍無法解除，請重新啟動 App。",
+        (true, BackupWarningFailure::TimedOut) => "備份確認已超過 120 秒，本次操作已停止，舊視窗之後的回覆無效。若舊視窗仍顯示，請嘗試回覆或關閉；確認未釋放前，後續確認會被拒絕。若無法解除，請重新啟動 App。",
+        (true, BackupWarningFailure::Disconnected) => "備份確認沒有回傳結果，本次操作已停止。若舊視窗仍顯示，請嘗試回覆或關閉；已逾時的回覆無效。若後續確認仍被拒絕，請重新啟動 App。",
+        (true, BackupWarningFailure::Worker) => "備份確認無法完成，本次操作已停止。若舊視窗仍顯示，請嘗試回覆或關閉；已逾時的回覆無效。若後續確認仍被拒絕，請重新啟動 App。",
+        (false, BackupWarningFailure::Busy) => "Another backup confirmation is still pending, so a new one cannot be opened. Try responding to or closing the old dialog. Responses to timed-out operations are ignored. Restart the App if confirmation remains blocked.",
+        (false, BackupWarningFailure::TimedOut) => "Backup confirmation timed out after 120 seconds and this operation stopped. Any later response to the old dialog is ignored. Try responding to or closing it if still visible; further confirmations are refused until it is released. Restart the App if it remains blocked.",
+        (false, BackupWarningFailure::Disconnected) => "Backup confirmation returned no response and this operation stopped. Try responding to or closing the old dialog if still visible; responses to timed-out operations are ignored. Restart the App if confirmation remains blocked.",
+        (false, BackupWarningFailure::Worker) => "Backup confirmation could not complete and this operation stopped. Try responding to or closing the old dialog if still visible; responses to timed-out operations are ignored. Restart the App if confirmation remains blocked.",
+    }
+    .to_string()
+}
+
+// OpenAI-Codex_backup_flow: Show filtered, bounded labels rather than complete paths.
+fn backup_warning_label(input: &str) -> String {
+    let leaf = input.rsplit(|c| c == '/' || c == '\\' || c == ':').next().unwrap_or("");
+    let mut label = String::new();
+    let mut scanned = 0usize;
+    let mut displayed = 0usize;
+    let mut truncated = false;
+    for ch in leaf.chars() {
+        if scanned == 512 {
+            truncated = true;
+            break;
+        }
+        scanned += 1;
+        if ch.is_control()
+            || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{206f}' | '\u{feff}')
+        {
+            continue;
+        }
+        if displayed == 80 {
+            truncated = true;
+            break;
+        }
+        label.push(ch);
+        displayed += 1;
+    }
+    if label.is_empty() {
+        label.push('—');
+    }
+    if truncated {
+        label.push('…');
+    }
+    label
+}
+
+struct PendingBackupWarning {
+    receiver: std::sync::mpsc::Receiver<bool>,
+    deadline: std::time::Instant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackupWarningWaitError {
+    TimedOut,
+    Disconnected,
+}
+
+fn receive_backup_warning(pending: PendingBackupWarning) -> Result<bool, BackupWarningWaitError> {
+    let remaining = pending
+        .deadline
+        .checked_duration_since(std::time::Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or(BackupWarningWaitError::TimedOut)?;
+    match pending.receiver.recv_timeout(remaining) {
+        Ok(_) if std::time::Instant::now() >= pending.deadline => {
+            Err(BackupWarningWaitError::TimedOut)
+        }
+        Ok(confirmed) => Ok(confirmed),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(BackupWarningWaitError::TimedOut),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(BackupWarningWaitError::Disconnected)
+        }
+    }
+}
+
+// OpenAI-Codex_backup_flow: Each prompt owns one lease and one bounded response deadline.
+async fn request_backup_warning(
+    app: &tauri::AppHandle,
+    language: &str,
+    warning: BackupWarning<'_>,
+) -> Result<(bool, std::time::Instant), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+
+    // The 120-second period begins before permit acquisition and builder creation.
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(120))
+        .ok_or_else(|| backup_warning_failure(language, BackupWarningFailure::Worker))?;
+    let guard = acquire_backup_warning(&BACKUP_WARNING_ACTIVE)
+        .ok_or_else(|| backup_warning_failure(language, BackupWarningFailure::Busy))?;
+    let zh = language.eq_ignore_ascii_case("zh-TW");
+    let (title, body, question, ok, cancel) = match (zh, warning) {
+        (true, BackupWarning::Settings) => (
+            "關閉自動備份",
+            "既有目標檔案可能在沒有原檔副本的情況下被覆寫。安裝或重新安裝失敗或日後解除安裝模組時，原檔可能無法還原。",
+            "確定關閉自動備份？", "關閉自動備份", "取消",
+        ),
+        (true, BackupWarning::Install { .. }) => (
+            "不備份直接安裝",
+            "自動備份已關閉。既有目標檔案可能在沒有原檔副本的情況下被覆寫。安裝或重新安裝失敗或日後解除安裝模組時，原檔可能無法還原。",
+            "繼續安裝？", "繼續安裝", "取消",
+        ),
+        (true, BackupWarning::Reinstall { .. }) => (
+            "不備份直接重新安裝",
+            "自動備份已關閉。既有目標檔案可能在沒有原檔副本的情況下被覆寫。安裝或重新安裝失敗或日後解除安裝模組時，原檔可能無法還原。",
+            "繼續重新安裝？", "繼續重新安裝", "取消",
+        ),
+        (false, BackupWarning::Settings) => (
+            "Turn off automatic backup",
+            "Existing target files may be overwritten without a copy. If installation or reinstallation fails or the mod is later uninstalled, the originals may not be recoverable.",
+            "Turn off automatic backup?", "Turn off backup", "Cancel",
+        ),
+        (false, BackupWarning::Install { .. }) => (
+            "Install without automatic backup",
+            "Automatic backup is off. Existing target files may be overwritten without a copy. If installation or reinstallation fails or the mod is later uninstalled, the originals may not be recoverable.",
+            "Continue installing?", "Continue", "Cancel",
+        ),
+        (false, BackupWarning::Reinstall { .. }) => (
+            "Reinstall without automatic backup",
+            "Automatic backup is off. Existing target files may be overwritten without a copy. If installation or reinstallation fails or the mod is later uninstalled, the originals may not be recoverable.",
+            "Continue reinstalling?", "Continue", "Cancel",
+        ),
+    };
+    let labels = match (zh, warning) {
+        (_, BackupWarning::Settings) => String::new(),
+        (true, BackupWarning::Install { path, mode }) => format!(
+            "\n\n套件與模式（已過濾標籤，上限 80 字元，過長以省略號顯示）：\n{}\n{}",
+            backup_warning_label(path), backup_warning_label(mode)
+        ),
+        (false, BackupWarning::Install { path, mode }) => format!(
+            "\n\nPackage and mode (filtered labels, maximum 80 characters, ellipsis if truncated):\n{}\n{}",
+            backup_warning_label(path), backup_warning_label(mode)
+        ),
+        (true, BackupWarning::Reinstall { id, name }) => format!(
+            "\n\n模組 ID：{id}\n名稱（已過濾標籤，上限 80 字元，過長以省略號顯示）：{}",
+            backup_warning_label(name)
+        ),
+        (false, BackupWarning::Reinstall { id, name }) => format!(
+            "\n\nMod ID: {id}\nName (filtered label, maximum 80 characters, ellipsis if truncated): {}",
+            backup_warning_label(name)
+        ),
+    };
+    let message = format!("{body}{labels}\n\n{question}");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let builder = app.dialog()
+        .message(message)
+        .title(title)
+        .buttons(MessageDialogButtons::OkCancelCustom(ok.into(), cancel.into()));
+    let task_guard = std::sync::Arc::clone(&guard);
+    let show_task = tauri::async_runtime::spawn_blocking(move || {
+        let _task_guard = task_guard;
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        builder.show(backup_warning_callback(sender, guard));
+    });
+    let pending = PendingBackupWarning { receiver, deadline };
+    let wait_result = tauri::async_runtime::spawn_blocking(move || receive_backup_warning(pending)).await;
+    // Do not await a native show that may never return.
+    drop(show_task);
+    let result = wait_result
+        .map_err(|_| backup_warning_failure(language, BackupWarningFailure::Worker))?;
+    let confirmed = match result {
+        Ok(confirmed) => confirmed,
+        Err(BackupWarningWaitError::TimedOut) => {
+            return Err(backup_warning_failure(language, BackupWarningFailure::TimedOut));
+        }
+        Err(BackupWarningWaitError::Disconnected) => {
+            return Err(backup_warning_failure(language, BackupWarningFailure::Disconnected));
+        }
+    };
+    ensure_backup_deadline(deadline, language)?;
+    Ok((confirmed, deadline))
+}
+
+fn ensure_backup_deadline(deadline: std::time::Instant, language: &str) -> Result<(), String> {
+    if std::time::Instant::now() >= deadline {
+        return Err(backup_warning_failure(language, BackupWarningFailure::TimedOut));
+    }
+    Ok(())
+}
+
+fn backup_resolved_game_root(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: &str,
+) -> Result<std::path::PathBuf, String> {
+    let (root, _) = resolve_page_target(conn, game_path, mode)?;
+    Ok(root)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ReinstallConfirmationTarget {
+    root: std::path::PathBuf,
+    name: String,
+    source_type: String,
+    install_path: String,
+    status: String,
+    mode: Option<String>,
+    files: Vec<(i64, String, Option<String>, String)>,
+}
+
+fn reinstall_confirmation_target(
+    conn: &Connection,
+    game_path: Option<&str>,
+    mode: &str,
+    mod_id: i64,
+) -> Result<ReinstallConfirmationTarget, String> {
+    let root = backup_resolved_game_root(conn, game_path, mode)?;
+    let (name, source_type, install_path, status, saved_mode) = conn
+        .query_row(
+            "SELECT name, source_type, install_path, status, mode FROM installed_mod WHERE id = ?1",
+            [mod_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT id, target_path, backup_path, file_hash FROM installed_mod_file \
+             WHERE installed_mod_id = ?1 ORDER BY id",
+        )
+        .map_err(|error| error.to_string())?;
+    let files = statement
+        .query_map([mod_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(ReinstallConfirmationTarget {
+        root, name, source_type, install_path, status, mode: saved_mode, files,
+    })
+}
+
+// OpenAI-Codex_backup_flow: Preserve existing validation and logging inside the locked operation.
+#[allow(clippy::too_many_arguments)]
+fn run_install_with_backup(
+    conn: &mut Connection,
+    game_path: Option<&str>,
+    mode: &str,
+    path: &str,
+    name: Option<&str>,
+    override_foreign_conflicts: bool,
+    expected_game_root: Option<&str>,
+    role: Option<&str>,
+    auto_backup: bool,
+) -> Result<gtavmm_core::install::InstallOutcome, String> {
+    check_install_preview_root(conn, game_path, mode, expected_game_root)?;
+    if role.is_some_and(|value| !value.is_empty()) {
+        let (_, provider) = resolve_page_target(conn, game_path, mode)?;
+        crate::install_role::classify(
+            std::path::Path::new(path), mode, provider.as_ref(), role,
+        )?;
+    }
+    let backup_root =
+        default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
+    install_mod_with_role_and_backup_impl(
+        conn, game_path, mode, path, name, override_foreign_conflicts,
+        &backup_root, role.filter(|value| !value.is_empty()), auto_backup,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_reinstall_with_backup(
+    conn: &mut Connection,
+    mod_id: i64,
+    new_source_path: &str,
+    version_label: &str,
+    mode: &str,
+    game_path: Option<&str>,
+    auto_backup: bool,
+) -> Result<gtavmm_core::install::InstallOutcome, String> {
+    let backup_root =
+        default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
+    let recycle_bin_root = default_recycle_bin_root()?;
+    let staging_root = default_staging_root()?;
+    reinstall_mod_with_optional_staging_impl(
+        conn, mod_id, new_source_path, version_label, mode, game_path,
+        &backup_root, &recycle_bin_root, Some(&staging_root), auto_backup,
+    )
 }
 
 #[tauri::command]
 // OpenAI-Codex: Preserve the existing flat IPC payload, including optional role/root guards.
 #[allow(clippy::too_many_arguments)]
-pub fn install_mod(
-    state: tauri::State<crate::AppState>,
+pub async fn install_mod(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
     game_path: Option<String>,
     mode: String,
     path: String,
@@ -642,51 +1068,43 @@ pub fn install_mod(
     override_foreign_conflicts: bool,
     expected_game_root: Option<String>,
     role: Option<String>,
-) -> Result<gtavmm_core::install::InstallOutcome, String> {
-    let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
-    // OpenAI-Codex_install_preflight_backend: Guard before app-data creation or any install write.
-    check_install_preview_root(
-        &conn,
-        game_path.as_deref(),
-        &mode,
-        expected_game_root.as_deref(),
-    )?;
-    // Validate role eligibility before creating the app-data backup directory.
-    if role.as_deref().is_some_and(|value| !value.is_empty()) {
-        let (_, provider) = resolve_page_target(&conn, game_path.as_deref(), &mode)?;
-        crate::install_role::classify(
-            std::path::Path::new(&path),
-            &mode,
-            provider.as_ref(),
-            role.as_deref(),
+) -> Result<gtavmm_core::install::InstallOutcome, BackupCommandError> {
+    let (snapshot, root_before) = {
+        let mut conn = state.conn.lock().map_err(|error| error.to_string())?;
+        let settings = load_user_settings_impl(&conn)?;
+        if settings.default_auto_backup {
+            return run_install_with_backup(
+                &mut conn, game_path.as_deref(), &mode, &path, name.as_deref(),
+                override_foreign_conflicts, expected_game_root.as_deref(), role.as_deref(), true,
+            ).map_err(BackupCommandError::from);
+        }
+        let snapshot = backup_confirm_snapshot(&conn)?;
+        if snapshot.settings != settings {
+            return Err("Settings changed. Review and retry.".to_string().into());
+        }
+        check_install_preview_root(
+            &conn, game_path.as_deref(), &mode, expected_game_root.as_deref(),
         )?;
+        let root = backup_resolved_game_root(&conn, game_path.as_deref(), &mode)?;
+        (snapshot, root)
+    };
+    let (confirmed, deadline) = request_backup_warning(
+        &app, &snapshot.settings.language, BackupWarning::Install { path: &path, mode: &mode },
+    ).await?;
+    if !confirmed {
+        return Err(backup_cancelled());
     }
-    // Each install gets its own timestamped folder under backups/, so restoring
-    // one mod never disturbs what another mod replaced.
-    let backup_root =
-        default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
-    if role.as_deref().is_some_and(|value| !value.is_empty()) {
-        install_mod_with_role_impl(
-            &mut conn,
-            game_path.as_deref(),
-            &mode,
-            &path,
-            name.as_deref(),
-            override_foreign_conflicts,
-            &backup_root,
-            role.as_deref(),
-        )
-    } else {
-        install_mod_impl(
-            &mut conn,
-            game_path.as_deref(),
-            &mode,
-            &path,
-            name.as_deref(),
-            override_foreign_conflicts,
-            &backup_root,
-        )
+    let mut conn = state.conn.lock().map_err(|error| error.to_string())?;
+    ensure_backup_deadline(deadline, &snapshot.settings.language)?;
+    let auto_backup = checked_backup_choice(&conn, &snapshot, confirmed)?;
+    if backup_resolved_game_root(&conn, game_path.as_deref(), &mode)? != root_before {
+        return Err("The game installation changed. Review and retry.".to_string().into());
     }
+    ensure_backup_deadline(deadline, &snapshot.settings.language)?;
+    run_install_with_backup(
+        &mut conn, game_path.as_deref(), &mode, &path, name.as_deref(),
+        override_foreign_conflicts, expected_game_root.as_deref(), role.as_deref(), auto_backup,
+    ).map_err(BackupCommandError::from)
 }
 
 pub fn profile_list_impl(conn: &Connection) -> Result<Vec<gtavmm_core::profile::Profile>, String> {
@@ -773,8 +1191,12 @@ pub fn profile_switch_impl(
     profile_id: i64,
     staging_root: &std::path::Path,
 ) -> Result<gtavmm_core::profile::SwitchOutcome, String> {
-    let result =
-        gtavmm_core::profile::switch(conn, profile_id, staging_root).map_err(|e| e.to_string());
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    let result = gtavmm_core::profile::switch(conn, profile_id, staging_root);
+    if matches!(&result, Err(gtavmm_core::CoreError::ModDisablingUnavailable)) {
+        return Err("GTAVMM_PROFILE_MOD_DISABLING_UNAVAILABLE".to_string());
+    }
+    let result = result.map_err(|e| e.to_string());
     if let Err(reason) = &result {
         let _ = gtavmm_core::app_log::error(&format!(
             "profile_switch failed for profile #{profile_id}: {reason}"
@@ -1274,8 +1696,9 @@ fn default_staging_root() -> Result<std::path::PathBuf, String> {
     Ok(app_data_root()?.join("staging"))
 }
 
-/// Where uninstall snapshots a mod before deleting it, so the removal can be
-/// undone for the 15 days the recycle bin keeps entries.
+/// OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code
+/// Root used when uninstall attempts to record a recycle-bin snapshot.
+/// Restoration is not guaranteed. This version pauses automatic expiry sweeping.
 fn default_recycle_bin_root() -> Result<std::path::PathBuf, String> {
     Ok(app_data_root()?.join("recycle_bin"))
 }
@@ -2151,7 +2574,12 @@ pub fn disable_mod_impl(
     mod_id: i64,
     staging_root: &std::path::Path,
 ) -> Result<(), String> {
-    let result = gtavmm_core::state::disable(conn, mod_id, staging_root).map_err(|e| e.to_string());
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    let result = gtavmm_core::state::disable(conn, mod_id, staging_root);
+    if let Err(error @ gtavmm_core::CoreError::ModDisablingUnavailable) = &result {
+        return Err(error.to_string());
+    }
+    let result = result.map_err(|e| e.to_string());
     if let Err(reason) = &result {
         let _ =
             gtavmm_core::app_log::error(&format!("disable_mod failed for id {mod_id}: {reason}"));
@@ -2306,6 +2734,7 @@ pub fn reinstall_mod_impl(
         backup_root,
         recycle_bin_root,
         None,
+        true,
     )
 }
 
@@ -2332,6 +2761,7 @@ pub fn reinstall_mod_with_staging_impl(
         backup_root,
         recycle_bin_root,
         Some(staging_root),
+        true,
     )
 }
 
@@ -2346,6 +2776,7 @@ fn reinstall_mod_with_optional_staging_impl(
     backup_root: &std::path::Path,
     recycle_bin_root: &std::path::Path,
     staging_root: Option<&std::path::Path>,
+    auto_backup: bool,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
     let (game_root, provider) = resolve_page_target(conn, game_path, mode)?;
     // OpenAI-Codex_lspdfr_role_app: Recover the recorded destination before core classification/uninstall.
@@ -2363,7 +2794,7 @@ fn reinstall_mod_with_optional_staging_impl(
         role,
     };
     let options = gtavmm_core::install::InstallOptions {
-        auto_backup: true,
+        auto_backup,
         override_foreign_conflicts: false,
     };
     let result = if let Some(staging_root) = staging_root {
@@ -2402,30 +2833,49 @@ fn reinstall_mod_with_optional_staging_impl(
 }
 
 #[tauri::command]
-pub fn reinstall_mod(
-    state: tauri::State<crate::AppState>,
+pub async fn reinstall_mod(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
     mod_id: i64,
     new_source_path: String,
     version_label: String,
     mode: String,
     game_path: Option<String>,
-) -> Result<gtavmm_core::install::InstallOutcome, String> {
-    let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let backup_root =
-        default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
-    let recycle_bin_root = default_recycle_bin_root()?;
-    let staging_root = default_staging_root()?;
-    reinstall_mod_with_staging_impl(
-        &mut conn,
-        mod_id,
-        &new_source_path,
-        &version_label,
-        &mode,
-        game_path.as_deref(),
-        &backup_root,
-        &recycle_bin_root,
-        &staging_root,
-    )
+) -> Result<gtavmm_core::install::InstallOutcome, BackupCommandError> {
+    let (snapshot, target_before) = {
+        let mut conn = state.conn.lock().map_err(|error| error.to_string())?;
+        let settings = load_user_settings_impl(&conn)?;
+        if settings.default_auto_backup {
+            return run_reinstall_with_backup(
+                &mut conn, mod_id, &new_source_path, &version_label, &mode,
+                game_path.as_deref(), true,
+            ).map_err(BackupCommandError::from);
+        }
+        let snapshot = backup_confirm_snapshot(&conn)?;
+        if snapshot.settings != settings {
+            return Err("Settings changed. Review and retry.".to_string().into());
+        }
+        let target = reinstall_confirmation_target(&conn, game_path.as_deref(), &mode, mod_id)?;
+        (snapshot, target)
+    };
+    let (confirmed, deadline) = request_backup_warning(
+        &app, &snapshot.settings.language,
+        BackupWarning::Reinstall { id: mod_id, name: &target_before.name },
+    ).await?;
+    if !confirmed {
+        return Err(backup_cancelled());
+    }
+    let mut conn = state.conn.lock().map_err(|error| error.to_string())?;
+    ensure_backup_deadline(deadline, &snapshot.settings.language)?;
+    let auto_backup = checked_backup_choice(&conn, &snapshot, confirmed)?;
+    if reinstall_confirmation_target(&conn, game_path.as_deref(), &mode, mod_id)? != target_before {
+        return Err("The reinstall target changed. Review and retry.".to_string().into());
+    }
+    ensure_backup_deadline(deadline, &snapshot.settings.language)?;
+    run_reinstall_with_backup(
+        &mut conn, mod_id, &new_source_path, &version_label, &mode,
+        game_path.as_deref(), auto_backup,
+    ).map_err(BackupCommandError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -2626,19 +3076,40 @@ pub fn update_user_settings_impl(
 }
 
 #[tauri::command]
-pub fn update_user_settings(
-    state: tauri::State<crate::AppState>,
+pub async fn update_user_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
     default_auto_backup: Option<bool>,
     game_install_path_override: Option<PathChange>,
     backup_root_override: Option<PathChange>,
-) -> Result<gtavmm_core::db::models::UserSettings, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+) -> Result<gtavmm_core::db::models::UserSettings, BackupCommandError> {
+    let snapshot = {
+        let conn = state.conn.lock().map_err(|error| error.to_string())?;
+        if default_auto_backup != Some(false) {
+            return update_user_settings_impl(
+                &conn, default_auto_backup,
+                game_install_path_override.unwrap_or_default(),
+                backup_root_override.unwrap_or_default(),
+            ).map_err(BackupCommandError::from);
+        }
+        backup_confirm_snapshot(&conn)?
+    };
+    let (confirmed, deadline) =
+        request_backup_warning(&app, &snapshot.settings.language, BackupWarning::Settings).await?;
+    if !confirmed {
+        return Err(backup_cancelled());
+    }
+    let conn = state.conn.lock().map_err(|error| error.to_string())?;
+    ensure_backup_deadline(deadline, &snapshot.settings.language)?;
+    recheck_backup_snapshot(&conn, &snapshot)?;
+    ensure_backup_deadline(deadline, &snapshot.settings.language)?;
     update_user_settings_impl(
         &conn,
         default_auto_backup,
         game_install_path_override.unwrap_or_default(),
         backup_root_override.unwrap_or_default(),
     )
+    .map_err(BackupCommandError::from)
 }
 
 /// Checks a manually chosen game folder before it is saved, so a wrong path is
@@ -2665,6 +3136,155 @@ pub fn validate_game_path(path: String) -> Result<DetectGameResult, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex_backup_flow: Compare same-connection changes and fail closed.
+    #[test]
+    fn backup_confirm_snapshot_detects_same_connection_aba() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let before = backup_confirm_snapshot(&conn).unwrap();
+        let mut changed = load_user_settings_impl(&conn).unwrap();
+        let original = changed.clone();
+        changed.default_auto_backup = !changed.default_auto_backup;
+        gtavmm_core::settings::save(&conn, &changed).unwrap();
+        gtavmm_core::settings::save(&conn, &original).unwrap();
+        assert_eq!(load_user_settings_impl(&conn).unwrap(), before.settings);
+        assert_ne!(backup_confirm_snapshot(&conn).unwrap(), before);
+    }
+
+    #[test]
+    fn backup_confirm_snapshot_rejects_missing_settings() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(backup_confirm_snapshot(&conn).is_err());
+    }
+
+    #[test]
+    fn backup_choice_rejects_declined_and_stale_confirmation() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let mut settings = load_user_settings_impl(&conn).unwrap();
+        settings.default_auto_backup = false;
+        gtavmm_core::settings::save(&conn, &settings).unwrap();
+        let before = backup_confirm_snapshot(&conn).unwrap();
+        assert!(matches!(
+            checked_backup_choice(&conn, &before, false),
+            Err(BackupCommandError::Cancelled { .. })
+        ));
+        assert_eq!(backup_confirm_snapshot(&conn).unwrap(), before);
+        settings.default_auto_backup = true;
+        gtavmm_core::settings::save(&conn, &settings).unwrap();
+        assert!(matches!(
+            checked_backup_choice(&conn, &before, true),
+            Err(BackupCommandError::Failure(_))
+        ));
+    }
+
+    #[test]
+    fn backup_command_errors_preserve_old_string_shape() {
+        assert_eq!(
+            serde_json::to_value(BackupCommandError::Failure("error".to_string())).unwrap(),
+            serde_json::json!("error")
+        );
+        assert_eq!(
+            serde_json::to_value(backup_cancelled()).unwrap(),
+            serde_json::json!({"code": "backup_confirmation_cancelled"})
+        );
+    }
+
+    // OpenAI-Codex_backup_flow: The native callback owns the lease even after timeout.
+    // OpenAI-Codex_backup_flow: A callback alone cannot release a still-running show task.
+    #[test]
+    fn callback_completion_keeps_lease_until_show_task_finishes() {
+        static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let callback_guard = acquire_backup_warning(&ACTIVE).unwrap();
+        let task_guard = std::sync::Arc::clone(&callback_guard);
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let callback = backup_warning_callback(sender, callback_guard);
+        callback(true);
+        assert!(acquire_backup_warning(&ACTIVE).is_none());
+        drop(task_guard);
+        assert!(acquire_backup_warning(&ACTIVE).is_some());
+    }
+
+    #[test]
+    fn dropped_callback_keeps_lease_while_show_task_is_pending() {
+        static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let callback_guard = acquire_backup_warning(&ACTIVE).unwrap();
+        let task_guard = std::sync::Arc::clone(&callback_guard);
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        drop(backup_warning_callback(sender, callback_guard));
+        assert!(acquire_backup_warning(&ACTIVE).is_none());
+        drop(task_guard);
+        assert!(acquire_backup_warning(&ACTIVE).is_some());
+    }
+
+    #[test]
+    fn expired_confirmation_deadline_fails_before_dispatch() {
+        let error = ensure_backup_deadline(std::time::Instant::now(), "en").unwrap_err();
+        assert!(error.contains("120 seconds"));
+    }
+
+    #[test]
+    fn expired_confirmation_discards_late_yes_but_keeps_guard_until_callback() {
+        static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let guard = acquire_backup_warning(&ACTIVE).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let callback = backup_warning_callback(sender, guard);
+        let pending = PendingBackupWarning { receiver, deadline: std::time::Instant::now() };
+        assert_eq!(receive_backup_warning(pending), Err(BackupWarningWaitError::TimedOut));
+        assert!(acquire_backup_warning(&ACTIVE).is_none());
+        callback(true);
+        assert!(acquire_backup_warning(&ACTIVE).is_some());
+    }
+
+    #[test]
+    fn dropping_confirmation_callback_releases_guard_and_disconnects() {
+        static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let guard = acquire_backup_warning(&ACTIVE).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let callback = backup_warning_callback(sender, guard);
+        drop(callback);
+        let pending = PendingBackupWarning {
+            receiver,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        };
+        assert_eq!(receive_backup_warning(pending), Err(BackupWarningWaitError::Disconnected));
+        assert!(acquire_backup_warning(&ACTIVE).is_some());
+    }
+
+    #[test]
+    fn queued_confirmation_after_deadline_is_rejected() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(true).unwrap();
+        let pending = PendingBackupWarning { receiver, deadline: std::time::Instant::now() };
+        assert_eq!(receive_backup_warning(pending), Err(BackupWarningWaitError::TimedOut));
+    }
+
+    #[test]
+    fn confirmation_response_before_deadline_is_observed() {
+        static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let guard = acquire_backup_warning(&ACTIVE).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let callback = backup_warning_callback(sender, guard);
+        callback(true);
+        let pending = PendingBackupWarning {
+            receiver,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        };
+        assert_eq!(receive_backup_warning(pending), Ok(true));
+        assert!(acquire_backup_warning(&ACTIVE).is_some());
+    }
+
+    #[test]
+    fn warning_label_omits_path_and_filters_bidi_and_controls() {
+        let label = backup_warning_label("C:\\private\\ab\u{202e}cd\n.ini");
+        assert_eq!(label, "abcd.ini");
+        let input = format!("C:\\private\\{}", "a".repeat(100));
+        let short = backup_warning_label(&input);
+        assert_eq!(short.chars().count(), 81);
+        assert!(short.ends_with('…'));
+        assert!(!short.contains("private"));
+    }
+
+
 
     // OpenAI-Codex: Draft preparation never reads credentials or makes a request.
     #[test]
@@ -2968,12 +3588,13 @@ mod tests {
         else {
             panic!("expected successful role reinstall");
         };
-        let staging = work.path().join("staging");
-        disable_mod_impl(&conn, installed_mod_id, &staging).unwrap();
+        let enabling_staging = tempfile::tempdir().unwrap();
+        seed_synthetic_single_file_disabled(&conn, installed_mod_id, &root, &enabling_staging);
         assert!(!target.exists());
-        enable_mod_impl(&conn, installed_mod_id, &staging).unwrap();
+        enable_mod_impl(&conn, installed_mod_id, enabling_staging.path()).unwrap();
         assert!(target.is_file());
-        disable_mod_impl(&conn, installed_mod_id, &staging).unwrap();
+        let reinstall_staging = tempfile::tempdir().unwrap();
+        seed_synthetic_single_file_disabled(&conn, installed_mod_id, &root, &reinstall_staging);
         reinstall_mod_with_staging_impl(
             &mut conn,
             installed_mod_id,
@@ -2983,7 +3604,7 @@ mod tests {
             root.path().to_str(),
             &work.path().join("backup3"),
             &work.path().join("recycle3"),
-            &staging,
+            reinstall_staging.path(),
         )
         .unwrap();
         assert!(target.is_file());
@@ -3767,6 +4388,42 @@ mod tests {
         assert!(set_mod_mode_impl(&conn, 9999, "legacy-sp").is_err());
     }
 
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    #[test]
+    fn install_mod_impl_refuses_empty_plan_and_preserves_state() {
+        let mut conn = gtavmm_core::db::open_in_memory().unwrap();
+        let game = fake_game_root();
+        let package = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let backup = work.path().join("backups");
+        let changes_before: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+
+        let error = install_mod_impl(
+            &mut conn,
+            Some(game.path().to_str().unwrap()),
+            "legacy-sp",
+            package.path().to_str().unwrap(),
+            None,
+            false,
+            &backup,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "unsupported mod format: the install plan contains no files");
+        assert!(list_mods_impl(&conn, None).unwrap().is_empty());
+        let changes_after: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(changes_after, changes_before);
+        assert_eq!(std::fs::read(game.path().join("GTA5.exe")).unwrap(), b"");
+        assert_eq!(std::fs::read_dir(game.path()).unwrap().count(), 1);
+        assert!(std::fs::read_dir(package.path()).unwrap().next().is_none());
+        assert!(!backup.exists());
+        assert!(conn.is_autocommit());
+    }
+
     #[test]
     fn install_mod_impl_writes_the_file_and_records_it() {
         let mut conn = gtavmm_core::db::open_in_memory().unwrap();
@@ -3996,24 +4653,154 @@ mod tests {
         assert_eq!(profile_list_impl(&conn).unwrap().len(), 1);
 
         let mod_id = insert_mod_row(&conn, "SomeMod", "disabled");
+        // OpenAI-Codex_fixture_review: Prepare a verifiable synthetic payload.
+        let game = tempfile::tempdir().unwrap();
+        let game_root = game.path();
+        assert_eq!(
+            conn.execute(
+                "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    mod_id,
+                ],
+            )
+            .unwrap(),
+            1
+        );
+        let staged_dir = staging.path().join(mod_id.to_string());
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        let staged = staged_dir.join("0");
+        std::fs::write(&staged, b"synthetic mod payload").unwrap();
+        let hash = gtavmm_core::util::hash_file(&staged).unwrap();
+        let target = game_root.join("SomeMod.asi");
+        assert!(matches!(
+            std::fs::symlink_metadata(staged_dir.join("manifest.json")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            std::fs::symlink_metadata(&target),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert_eq!(
+            conn.execute(
+                "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    mod_id,
+                    target.to_str().expect("synthetic target must be Unicode"),
+                    hash,
+                ],
+            )
+            .unwrap(),
+            1
+        );
+        gtavmm_core::providers::ensure_installed_mod_available(&conn, mod_id).unwrap();
         profile_add_mod_impl(&conn, profile_id, mod_id).unwrap();
         assert_eq!(
             profile_mod_ids_impl(&conn, profile_id).unwrap(),
             vec![mod_id]
         );
 
-        // Switching should enable the disabled mod belonging to this profile. There
-        // are no files to actually move for it (no installed_mod_file row), so this
-        // exercises the bookkeeping path, not real file I/O — that's covered by
-        // gtavmm_core::profile's own tests.
+        // OpenAI-Codex_fixture_review: Switch a verified synthetic payload.
         let outcome = profile_switch_impl(&conn, profile_id, staging.path()).unwrap();
         assert_eq!(outcome.enabled, vec![mod_id]);
+        assert!(outcome.disabled.is_empty());
+        assert_eq!(std::fs::read(&target).unwrap(), b"synthetic mod payload");
+        assert!(matches!(
+            std::fs::symlink_metadata(&staged),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        let status: String = conn
+            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "active");
+        assert!(profile_list_impl(&conn).unwrap()[0].is_active);
 
         profile_remove_mod_impl(&conn, profile_id, mod_id).unwrap();
         assert!(profile_mod_ids_impl(&conn, profile_id).unwrap().is_empty());
 
         profile_delete_impl(&conn, profile_id).unwrap();
         assert!(profile_list_impl(&conn).unwrap().is_empty());
+        let active_profile: Option<i64> = conn
+            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(active_profile, None);
+        assert_eq!(std::fs::read(&target).unwrap(), b"synthetic mod payload");
+    }
+
+    // OpenAI-Codex_fixture_review: Zero-file rejection must reach the staging guard.
+    #[test]
+    fn profile_switch_rejects_disabled_mod_without_file_rows() {
+        let conn = gtavmm_core::db::open_in_memory().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let game_root = temp.path().join("game");
+        let staging_root = temp.path().join("staging");
+        std::fs::create_dir_all(&game_root).unwrap();
+
+        let mod_id = insert_mod_row(&conn, "NoFiles", "disabled");
+        assert_eq!(
+            conn.execute(
+                "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    mod_id,
+                ],
+            )
+            .unwrap(),
+            1
+        );
+        let stage = staging_root.join(mod_id.to_string());
+        std::fs::create_dir_all(&stage).unwrap();
+        assert!(!stage.join("manifest.json").exists());
+        assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
+
+        let profile_id = profile_create_impl(&conn, "Empty files").unwrap();
+        profile_add_mod_impl(&conn, profile_id, mod_id).unwrap();
+        assert_eq!(profile_mod_ids_impl(&conn, profile_id).unwrap(), vec![mod_id]);
+        gtavmm_core::providers::ensure_installed_mod_available(&conn, mod_id).unwrap();
+
+        let file_count = || {
+            conn.query_row(
+                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [mod_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(file_count(), 0);
+        let active_before: Option<i64> = conn
+            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(active_before, None);
+        let events_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM install_event", [], |row| row.get(0))
+            .unwrap();
+
+        let error = gtavmm_core::profile::switch(&conn, profile_id, &staging_root).unwrap_err();
+        match error {
+            gtavmm_core::error::CoreError::UnsupportedFormat { reason } => assert_eq!(
+                reason,
+                format!(
+                    "disabled staging for mod {mod_id} is missing, unsafe, or does not match its file records; preserve it for recovery"
+                )
+            ),
+            other => panic!("unexpected profile switch error: {other:?}"),
+        }
+
+        assert_eq!(file_count(), 0);
+        let status: String = conn
+            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "disabled");
+        let active_after: Option<i64> = conn
+            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(active_after, active_before);
+        let events_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM install_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events_after, events_before);
+        assert_eq!(profile_mod_ids_impl(&conn, profile_id).unwrap(), vec![mod_id]);
+        assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
     }
 
     #[test]
@@ -4214,13 +5001,120 @@ mod tests {
         .unwrap()
     }
 
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code. Synthetic test setup only.
+    fn seed_synthetic_single_file_disabled(
+        conn: &Connection,
+        mod_id: i64,
+        game_dir: &tempfile::TempDir,
+        staging: &tempfile::TempDir,
+    ) {
+        assert_eq!(status_of(conn, mod_id), "active");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "fixture requires exactly one tracked file");
+        let (file_id, target_path, backup_path, recorded_hash): (i64, String, Option<String>, String) =
+            conn.query_row(
+                "SELECT id, target_path, backup_path, file_hash FROM installed_mod_file \
+                 WHERE installed_mod_id = ?1 ORDER BY id",
+                [mod_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert!(backup_path.is_none(), "fixture requires no overwritten original");
+        let target = std::path::PathBuf::from(target_path);
+        assert!(std::fs::symlink_metadata(&target).unwrap().file_type().is_file());
+        assert!(
+            std::fs::canonicalize(&target)
+                .unwrap()
+                .starts_with(std::fs::canonicalize(game_dir.path()).unwrap())
+        );
+        let mod_staging = staging.path().join(mod_id.to_string());
+        std::fs::create_dir(&mod_staging).unwrap();
+        let staged = mod_staging.join("0");
+        assert!(!staged.exists());
+        std::fs::rename(&target, &staged).unwrap();
+        let actual_hash = gtavmm_core::util::hash_file(&staged).unwrap();
+        assert_eq!(actual_hash, recorded_hash);
+        let manifest = serde_json::json!([{
+            "file_id": file_id,
+            "index": 0,
+            "hash": actual_hash,
+        }]);
+        std::fs::write(
+            mod_staging.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            conn.execute(
+                "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1 AND status = 'active'",
+                [mod_id],
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
     #[test]
-    fn disable_then_enable_moves_the_file_out_and_back() {
+    fn disable_pending_returns_error_and_preserves_the_mod() {
+        let (conn, game_dir, _work, staging, id) = installed_fixture();
+        let target = game_dir.path().join("LifecycleMod.asi");
+        let before = std::fs::read(&target).unwrap();
+
+        let error = disable_mod_impl(&conn, id, staging.path()).unwrap_err();
+
+        assert_eq!(
+            error,
+            "Mod disabling is unavailable. This feature is under development."
+        );
+        assert_eq!(status_of(&conn, id), "active");
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+    }
+
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    #[test]
+    fn profile_switch_disable_pending_returns_code_and_preserves_the_mod() {
+        let (conn, game_dir, _work, staging, id) = installed_fixture();
+        let target = game_dir.path().join("LifecycleMod.asi");
+        let before = std::fs::read(&target).unwrap();
+        let old = profile_create_impl(&conn, "Old").unwrap();
+        let new = profile_create_impl(&conn, "New").unwrap();
+        profile_add_mod_impl(&conn, old, id).unwrap();
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET active_profile_id = ?1 WHERE id = 1",
+                [old],
+            )
+            .unwrap(),
+            1
+        );
+
+        let error = profile_switch_impl(&conn, new, staging.path()).unwrap_err();
+
+        assert_eq!(error, "GTAVMM_PROFILE_MOD_DISABLING_UNAVAILABLE");
+        assert_eq!(status_of(&conn, id), "active");
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+        let active: Option<i64> = conn
+            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(active, Some(old));
+    }
+
+    #[test]
+    fn enable_restores_a_synthetically_staged_file() {
         let (conn, game_dir, _work, staging, id) = installed_fixture();
         let deployed = game_dir.path().join("LifecycleMod.asi");
         assert!(deployed.exists(), "install should have written the file");
 
-        disable_mod_impl(&conn, id, staging.path()).unwrap();
+        seed_synthetic_single_file_disabled(&conn, id, &game_dir, &staging);
         assert_eq!(status_of(&conn, id), "disabled");
         assert!(
             !deployed.exists(),
@@ -4233,16 +5127,29 @@ mod tests {
     }
 
     #[test]
-    fn disable_and_enable_refuse_when_the_mod_is_not_in_the_right_state() {
-        let (conn, _game_dir, _work, staging, id) = installed_fixture();
+    fn enable_rejects_active_and_disable_rejects_active_and_disabled() {
+        let (conn, game_dir, _work, staging, id) = installed_fixture();
 
         // Already active, so there is nothing to enable.
         let err = enable_mod_impl(&conn, id, staging.path()).unwrap_err();
         assert!(err.contains("not disabled"), "unexpected message: {err}");
 
-        disable_mod_impl(&conn, id, staging.path()).unwrap();
+        let target = game_dir.path().join("LifecycleMod.asi");
+        let active_bytes = std::fs::read(&target).unwrap();
         let err = disable_mod_impl(&conn, id, staging.path()).unwrap_err();
-        assert!(err.contains("not active"), "unexpected message: {err}");
+        assert!(err.contains("Mod disabling is unavailable."), "unexpected message: {err}");
+        assert_eq!(status_of(&conn, id), "active");
+        assert_eq!(std::fs::read(&target).unwrap(), active_bytes);
+        assert!(!staging.path().join(id.to_string()).exists());
+
+        seed_synthetic_single_file_disabled(&conn, id, &game_dir, &staging);
+        let staged = staging.path().join(id.to_string()).join("0");
+        let staged_bytes = std::fs::read(&staged).unwrap();
+        let err = disable_mod_impl(&conn, id, staging.path()).unwrap_err();
+        assert!(err.contains("Mod disabling is unavailable."), "unexpected message: {err}");
+        assert_eq!(status_of(&conn, id), "disabled");
+        assert_eq!(std::fs::read(&staged).unwrap(), staged_bytes);
+        assert!(!target.exists());
     }
 
     #[test]
@@ -4328,7 +5235,7 @@ mod tests {
         // OpenAI-Codex: Exercise the same helper used by the Tauri command.
         for mode in [None, Some("legacy-sp")] {
             let (mut conn, game_dir, work, staging, id) = installed_fixture();
-            disable_mod_impl(&conn, id, staging.path()).unwrap();
+            seed_synthetic_single_file_disabled(&conn, id, &game_dir, &staging);
             let recycle = work.path().join("disabled-recycle");
             uninstall_mod_with_staging_impl(
                 &mut conn,

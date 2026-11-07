@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { SUPPORTED_LANGUAGES } from "../i18n";
@@ -84,16 +84,39 @@ export function SettingsPage() {
   // saves as you go does not also have to report every field it touched.
   const [themeChoice, setThemeChoice] = useState<string>("system");
   const [settings, setSettings] = useState<CardSettings | null>(null);
+  // OpenAI-Codex_Responsible: Source_Code; OpenAI-Codex_dialog_evidence.
+  const [settingsEpoch, setSettingsEpoch] = useState(0);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const settingsGeneration = useRef(0);
+
+  useEffect(() => {
+    const changed = () => {
+      settingsGeneration.current += 1;
+      setSettingsReady(false);
+      setSettingsEpoch((value) => value + 1);
+    };
+    window.addEventListener("gtavmm:settings-changed", changed);
+    return () => window.removeEventListener("gtavmm:settings-changed", changed);
+  }, []);
 
   useEffect(() => {
     if (openCard !== null) return;
+    const request = ++settingsGeneration.current;
+    setSettingsReady(false);
     invoke<{ theme: string | null }>("load_startup_state")
       .then((st) => setThemeChoice(st.theme ?? "system"))
       .catch(() => undefined);
     invoke<CardSettings>("load_user_settings")
-      .then(setSettings)
-      .catch(() => undefined);
-  }, [openCard]);
+      .then((value) => {
+        if (request === settingsGeneration.current) { setSettings(value); setSettingsReady(true); }
+      })
+      .catch(() => {
+        if (request === settingsGeneration.current) { setSettings(null); setSettingsReady(false); }
+      });
+    return () => {
+      if (request === settingsGeneration.current) settingsGeneration.current += 1;
+    };
+  }, [openCard, settingsEpoch]);
 
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
   const [aiHasKey, setAiHasKey] = useState(false);
@@ -253,8 +276,9 @@ export function SettingsPage() {
     {
       id: "paths",
       icon: "#i-folder",
-      value: () =>
-        settings?.game_install_path_override
+      value: () => !settingsReady || !settings
+        ? t("settingsCards.paths_value_unavailable")
+        : settings.game_install_path_override
           ? t("settingsCards.paths_value_override")
           : t("settingsCards.paths_value_detected"),
     },
@@ -267,10 +291,10 @@ export function SettingsPage() {
     {
       id: "backup",
       icon: "#i-archive",
-      value: () =>
-        (settings?.default_auto_backup ?? true)
-          ? t("settingsCards.backup_value_on")
-          : t("settingsCards.backup_value_off"),
+      // OpenAI-Codex_dialog_evidence: This is the last loaded preference, not a live guarantee.
+      value: () => !settingsReady || !settings
+        ? t("settingsCards.backup_preference_unavailable")
+        : t(settings.default_auto_backup ? "settingsCards.backup_value_on" : "settingsCards.backup_value_off"),
     },
     { id: "prompts", icon: "#i-file-text", value: () => t("settingsCards.prompts_value") },
   ];

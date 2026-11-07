@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex_lml_inventory_impl
+// OpenAI-Codex_lml_hash_fs
 // OpenAI-Codex
 
 //! Read-only package observations, never installation permission. Metadata can
@@ -9,6 +10,12 @@ use crate::lml::{
     parse_manifest, LmlManifest, LocalReference, ReferenceShape, ResourceKind, MAX_MANIFEST_BYTES,
     MAX_PATH_BYTES,
 };
+use crate::{
+    error::CoreResult,
+    lml_fs::{checked_directory, invalid, open_regular},
+    lml_store::OperationFile,
+};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, Metadata},
@@ -41,6 +48,109 @@ pub struct PackageInventory {
     pub total_bytes: u64,
     pub resolved_declarations: Vec<Vec<String>>,
     pub unreferenced_files: Vec<String>,
+}
+
+/// Content observations with private construction. Namespace races remain
+/// possible; this is not an atomic filesystem snapshot or hard-link proof.
+#[derive(Debug, Clone)]
+pub struct HashedPackageSnapshot {
+    inventory: PackageInventory,
+    files: Vec<OperationFile>,
+    fingerprint: String,
+}
+impl HashedPackageSnapshot {
+    pub fn inventory(&self) -> &PackageInventory {
+        &self.inventory
+    }
+    pub fn files(&self) -> &[OperationFile] {
+        &self.files
+    }
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
+/// Streams every physical file including the original manifest and companions.
+/// Pre/post inventories bound namespace changes but cannot exclude all races.
+pub fn hash_package(root: &Path) -> CoreResult<HashedPackageSnapshot> {
+    let root = checked_directory(root)?;
+    let inventory = inspect_package(&root).map_err(|e| invalid(&e))?;
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    for entry in &inventory.files {
+        let mut file = open_regular(&root.join(&entry.relative_path))?.take(
+            entry
+                .metadata_bytes
+                .checked_add(1)
+                .ok_or_else(|| invalid("file size overflow"))?,
+        );
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            bytes = bytes
+                .checked_add(read as u64)
+                .ok_or_else(|| invalid("file byte overflow"))?;
+            if bytes > entry.metadata_bytes {
+                return Err(invalid("file grew during hashing"));
+            }
+            hash.update(&buffer[..read]);
+        }
+        if bytes != entry.metadata_bytes {
+            return Err(invalid("file shrank during hashing"));
+        }
+        total = total
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("total byte overflow"))?;
+        let sha256 = format!("{:x}", hash.finalize());
+        if entry.relative_path == inventory.manifest_path
+            && sha256 != format!("{:x}", Sha256::digest(&inventory.manifest_bytes))
+        {
+            return Err(invalid("manifest changed during hashing"));
+        }
+        files.push(OperationFile {
+            relative_path: entry.relative_path.clone(),
+            size: bytes,
+            sha256,
+        });
+    }
+    let after = inspect_package(&root).map_err(|e| invalid(&e))?;
+    if inventory.files != after.files
+        || inventory.manifest_path != after.manifest_path
+        || inventory.manifest_bytes != after.manifest_bytes
+        || inventory.total_bytes != total
+        || after.total_bytes != total
+    {
+        return Err(invalid("package inventory changed during hashing"));
+    }
+    files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let mut hash = Sha256::new();
+    hash.update(b"gtavmm-lml-package-v1\0");
+    hash.update((files.len() as u64).to_be_bytes());
+    for file in &files {
+        hash.update((file.relative_path.len() as u64).to_be_bytes());
+        hash.update(file.relative_path.as_bytes());
+        hash.update(file.size.to_be_bytes());
+        hash.update(file.sha256.as_bytes());
+    }
+    let fingerprint = format!("{:x}", hash.finalize());
+    Ok(HashedPackageSnapshot {
+        inventory,
+        files,
+        fingerprint,
+    })
+}
+
+pub fn revalidate_package(snapshot: &HashedPackageSnapshot) -> CoreResult<()> {
+    let current = hash_package(&snapshot.inventory.source_root)?;
+    if current.fingerprint != snapshot.fingerprint {
+        return Err(invalid("package content changed"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

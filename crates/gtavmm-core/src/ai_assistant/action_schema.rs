@@ -329,12 +329,44 @@ mod tests {
         let (game_root, staging_root, recycle_bin_root, backup_root) = ctx(dir.path());
         std::fs::create_dir(&game_root).unwrap();
         let target = game_root.join("mod.asi");
-        std::fs::write(&target, b"AI payload").unwrap();
         let provider = crate::providers::LegacySpProvider::new(game_root.clone());
         let mut conn = crate::db::open_in_memory().unwrap();
-        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('AI mod', 'asi', '', 'active')", []).unwrap();
+        conn.execute("INSERT INTO installed_mod (name, source_type, install_path, status) VALUES ('AI mod', 'asi', '', 'disabled')", []).unwrap();
         let id = conn.last_insert_rowid();
-        conn.execute("INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) VALUES (?1, ?2, 'hash')", rusqlite::params![id, target.to_string_lossy()]).unwrap();
+        // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code. Preserve manifest hash precedence.
+        let staged_dir = staging_root.join(id.to_string());
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        let staged = staged_dir.join("0");
+        std::fs::write(&staged, b"AI payload").unwrap();
+        let staged_hash = crate::util::hash_file(&staged).unwrap();
+        assert_ne!(staged_hash, "hash");
+        conn.execute(
+            "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
+             VALUES (?1, ?2, 'hash')",
+            rusqlite::params![id, target.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        let manifest = serde_json::json!([{
+            "file_id": file_id,
+            "index": 0,
+            "hash": staged_hash,
+        }]);
+        std::fs::write(staged_dir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        // OpenAI-Codex_lml_guard_review: Use the existing synthetic game root.
+        assert_eq!(
+            conn.execute(
+                "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    id,
+                ],
+            )
+            .unwrap(),
+            1
+        );
+        crate::providers::ensure_installed_mod_available(&conn, id).unwrap();
         let context = ExecutionContext {
             game_root: &game_root,
             staging_root: &staging_root,
@@ -342,12 +374,27 @@ mod tests {
             backup_root: &backup_root,
             provider: &provider,
         };
-        execute_action(&mut conn, &Action::DisableMod { mod_id: id }, &context).unwrap();
+        assert!(!target.exists());
+        assert_eq!(
+            crate::state::disabled_payloads(&conn, id, &staging_root)
+                .unwrap()
+                .len(),
+            1
+        );
         execute_action(&mut conn, &Action::UninstallMod { mod_id: id }, &context).unwrap();
         assert!(!target.exists());
+        assert_eq!(std::fs::read(&staged).unwrap(), b"AI payload");
+        let status: String = conn
+            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "uninstalled");
         let entry = crate::recycle_bin::list(&conn).unwrap().remove(0);
         crate::recycle_bin::restore(&mut conn, entry.id, &game_root, &backup_root).unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"AI payload");
+        let status: String = conn
+            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "active");
     }
 
     #[test]
@@ -365,6 +412,28 @@ mod tests {
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
+        // OpenAI-Codex_lml_guard_review: Use the existing synthetic game root.
+        assert_eq!(
+            conn.execute(
+                "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    mod_id,
+                ],
+            )
+            .unwrap(),
+            1
+        );
+        crate::providers::ensure_installed_mod_available(&conn, mod_id).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [mod_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
 
         let plan = vec![
             PlanItem {
@@ -384,19 +453,27 @@ mod tests {
             backup_root: &backup_root,
             provider: &provider,
         };
+        // OpenAI-Codex_disable_ai_audit: Both attempted actions must leave data untouched.
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         let results = execute_plan(&mut conn, &plan, &[0, 1], &exec_ctx);
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].index, 0);
-        assert!(results[0].result.is_ok());
+        assert!(matches!(
+            &results[0].result,
+            Err(crate::error::CoreError::ModDisablingUnavailable)
+        ));
         assert_eq!(results[1].index, 1);
         // OpenAI-Codex_atomic_review: Every result reports ledger lookup separately.
         assert!(results[0].manual_dlc_tasks.is_ok());
         assert!(results[1].manual_dlc_tasks.is_ok());
-        assert!(
-            results[1].result.is_err(),
-            "unknown mod id must fail, not silently succeed"
-        );
+        assert!(matches!(
+            &results[1].result,
+            Err(crate::error::CoreError::UnsupportedFormat { reason })
+                if reason.as_str() == "no installed mod with id 9999"
+        ));
 
         let status: String = conn
             .query_row(
@@ -405,7 +482,19 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(status, "disabled");
+        assert_eq!(status, "active");
+        let after: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM install_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, before);
+        assert_eq!(events, 0);
+        assert_eq!(std::fs::read_dir(&game_root).unwrap().count(), 0);
+        assert!(!staging_root.exists());
+        assert!(!recycle_bin_root.exists());
+        assert!(!backup_root.exists());
     }
 
     // OpenAI-Codex_atomic_review: A ledger error must not replace the action error.

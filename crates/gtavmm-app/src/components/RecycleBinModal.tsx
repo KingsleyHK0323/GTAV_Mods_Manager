@@ -47,6 +47,8 @@ export function RecycleBinModal({ open, onClose, entries, onRestored }: RecycleB
         </div>
         <div className="modal-body">
           {error && <p className="error">{error}</p>}
+          {/* OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code */}
+          <p role="status">{t("recycleBinModal.cleanup_paused")}</p>
           <p>{t("manualDlc.restore_notice")}</p>
           {entries.length === 0 && (
             <div className="rb-empty">

@@ -302,6 +302,8 @@ export function FiveMClientPage() {
             {t("modPageTools.recycle_view_all_button")}
           </button>
         </div>
+        {/* OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code */}
+        <p role="status">{t("recycleBinModal.cleanup_paused")}</p>
         {recycleError && (
           <p className="error" role="alert">
             {t("fivemClient.recycle_load_error", { error: recycleError })}{" "}

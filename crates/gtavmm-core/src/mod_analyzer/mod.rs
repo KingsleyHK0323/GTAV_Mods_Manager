@@ -482,7 +482,7 @@ fn extract_zip_with_limits(
     max_entries: usize,
     max_member_output_bytes: u64,
     max_total_output_bytes: u64,
-) -> CoreResult<tempfile::TempDir> {
+) -> CoreResult<(tempfile::TempDir, Option<String>)> {
     let file = std::fs::File::open(input)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| CoreError::UnsupportedFormat {
         reason: format!("not a valid zip archive: {e}"),
@@ -496,10 +496,14 @@ fn extract_zip_with_limits(
         ));
     }
     let mut entry_sizes = Vec::with_capacity(entry_count);
+    let mut single_root_asi = None;
     for index in 0..entry_count {
         let entry = archive
             .by_index(index)
             .map_err(|e| unsupported_archive_limit("ZIP", format!("invalid entry: {e}")))?;
+        if entry_count == 1 {
+            single_root_asi = single_root_asi_name(entry.name(), entry.is_dir());
+        }
         entry_sizes.push(entry.size());
     }
     validate_archive_limits(
@@ -517,7 +521,7 @@ fn extract_zip_with_limits(
         .map_err(|e| CoreError::UnsupportedFormat {
             reason: format!("failed to extract zip archive: {e}"),
         })?;
-    Ok(temp_dir)
+    Ok((temp_dir, single_root_asi))
 }
 
 fn safe_seven_zip_entry_path(
@@ -561,7 +565,7 @@ fn extract_seven_zip_with_limits(
     max_entries: usize,
     max_member_output_bytes: u64,
     max_total_output_bytes: u64,
-) -> CoreResult<tempfile::TempDir> {
+) -> CoreResult<(tempfile::TempDir, Option<String>)> {
     let mut archive = sevenz_rust::SevenZReader::open(input, sevenz_rust::Password::empty())
         .map_err(|e| CoreError::UnsupportedFormat {
             reason: format!("failed to read 7z archive: {e}"),
@@ -575,6 +579,12 @@ fn extract_seven_zip_with_limits(
         max_member_output_bytes,
         max_total_output_bytes,
     )?;
+    let single_root_asi = if archive_entries.len() == 1 {
+        let entry = &archive_entries[0];
+        single_root_asi_name(entry.name(), entry.is_directory())
+    } else {
+        None
+    };
 
     let temp_dir = tempfile::tempdir()?;
     archive
@@ -586,7 +596,7 @@ fn extract_seven_zip_with_limits(
         .map_err(|e| CoreError::UnsupportedFormat {
             reason: format!("failed to extract 7z archive: {e}"),
         })?;
-    Ok(temp_dir)
+    Ok((temp_dir, single_root_asi))
 }
 
 const MAX_RAR_ENTRY_COUNT: usize = 10_000;
@@ -678,7 +688,7 @@ fn is_reserved_windows_component(component: &str) -> bool {
         })
 }
 
-fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
+fn extract_rar(input: &Path) -> CoreResult<(tempfile::TempDir, Option<String>)> {
     let mut source = std::fs::File::open(input)?;
     let source_len = source.metadata()?.len();
     let scan_len = source_len.min(rars::SFX_SCAN_LIMIT as u64) as usize;
@@ -697,7 +707,10 @@ fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
     let mut entries = HashMap::new();
     let mut collision_keys = HashSet::new();
     let mut total_unpacked = 0_u64;
+    let mut single_root_asi = None;
+    let mut member_count = 0_usize;
     for member in archive.members() {
+        member_count = member_count.saturating_add(1);
         if entries.len() >= MAX_RAR_ENTRY_COUNT {
             return Err(unsupported_rar(format!(
                 "archive contains more than {MAX_RAR_ENTRY_COUNT} entries"
@@ -719,6 +732,11 @@ fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
 
         let decoded_name = member.decoded_name(None).map_err(unsupported_rar)?;
         let relative = rar_entry_relative_path(&decoded_name, member.meta.is_directory)?;
+        if member_count == 1 {
+            single_root_asi = std::str::from_utf8(&decoded_name)
+                .ok()
+                .and_then(|name| single_root_asi_name(name, member.meta.is_directory));
+        }
         let collision_key = relative.to_string_lossy().replace('\\', "/").to_lowercase();
         if !collision_keys.insert(collision_key) {
             return Err(unsupported_rar(
@@ -741,6 +759,9 @@ fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
             }
         }
         entries.insert(member.meta.name, (relative, member.meta.is_directory));
+    }
+    if member_count != 1 {
+        single_root_asi = None;
     }
 
     let temp_dir = tempfile::tempdir()?;
@@ -765,16 +786,77 @@ fn extract_rar(input: &Path) -> CoreResult<tempfile::TempDir> {
         })
         .map_err(unsupported_rar)?;
 
-    Ok(temp_dir)
+    Ok((temp_dir, single_root_asi))
+}
+
+// OpenAI-Codex_v1_install_review: Recognize only one unwrapped ASI member.
+fn single_root_asi_name(name: &str, is_directory: bool) -> Option<String> {
+    if is_directory || crate::lml::LocalReference::parse(name).is_err() {
+        return None;
+    }
+    let path = Path::new(name);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+        || !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("asi"))
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+// OpenAI-Codex_v1_install_review: Preserve folder classification and archive staging.
+fn route_single_root_asi(
+    plan: &mut ModPlan,
+    staging_root: &Path,
+    name: Option<&str>,
+    provider: &dyn crate::providers::ModeProvider,
+) -> CoreResult<()> {
+    let Some(name) = name else {
+        return Ok(());
+    };
+    if !matches!(&plan.format, ModFormat::FolderReplacer) || plan.files.len() != 1 {
+        return Ok(());
+    }
+    let staged = staging_root.join(name);
+    if plan.files[0].source != staged
+        || plan.files[0].target != provider.resolve_folder_replacer_target(Path::new(name))
+    {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(staging_root)?;
+    let Some(entry) = entries.next().transpose()? else {
+        return Ok(());
+    };
+    if entry.path() != staged || entries.next().transpose()?.is_some() {
+        return Ok(());
+    }
+    let metadata = std::fs::symlink_metadata(&staged)?;
+    if !metadata.file_type().is_file() {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Ok(());
+        }
+    }
+    plan.files[0].target = provider.resolve_asi_target(std::ffi::OsStr::new(name));
+    Ok(())
 }
 
 fn classify_rar(
     input: &Path,
     provider: &dyn crate::providers::ModeProvider,
 ) -> CoreResult<ModPlan> {
-    let temp_dir = extract_rar(input)?;
+    let (temp_dir, single_root_asi) = extract_rar(input)?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
+    route_single_root_asi(&mut plan, temp_dir.path(), single_root_asi.as_deref(), provider)?;
     if matches!(plan.format, ModFormat::FolderReplacer) {
         plan.format = ModFormat::Rar;
     }
@@ -788,7 +870,7 @@ fn classify_zip(
     input: &Path,
     provider: &dyn crate::providers::ModeProvider,
 ) -> CoreResult<ModPlan> {
-    let temp_dir = extract_zip_with_limits(
+    let (temp_dir, single_root_asi) = extract_zip_with_limits(
         input,
         MAX_ZIP_ENTRY_COUNT,
         MAX_ZIP_MEMBER_OUTPUT_BYTES,
@@ -796,6 +878,7 @@ fn classify_zip(
     )?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
+    route_single_root_asi(&mut plan, temp_dir.path(), single_root_asi.as_deref(), provider)?;
     // Only relabel a plain folder-replacer result as "Zip" — an AddOnPack or
     // Unsupported result from the folder walk must survive intact (this used to
     // unconditionally overwrite `format`, discarding e.g. an AddOnPack's `pack_name`
@@ -813,7 +896,7 @@ fn classify_seven_zip(
     input: &Path,
     provider: &dyn crate::providers::ModeProvider,
 ) -> CoreResult<ModPlan> {
-    let temp_dir = extract_seven_zip_with_limits(
+    let (temp_dir, single_root_asi) = extract_seven_zip_with_limits(
         input,
         MAX_SEVEN_ZIP_ENTRY_COUNT,
         MAX_SEVEN_ZIP_MEMBER_OUTPUT_BYTES,
@@ -821,6 +904,7 @@ fn classify_seven_zip(
     )?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
+    route_single_root_asi(&mut plan, temp_dir.path(), single_root_asi.as_deref(), provider)?;
     // See classify_zip's note on why this is conditional, not unconditional.
     if matches!(plan.format, ModFormat::FolderReplacer) {
         plan.format = ModFormat::SevenZip;
@@ -1087,6 +1171,191 @@ mod tests {
             std::fs::write(path, content).unwrap();
         }
         sevenz_rust::compress_to_path(&source_dir, seven_zip_path).unwrap();
+    }
+
+    // OpenAI-Codex_v1_install_review: Compare archive routing with the standalone contract.
+    fn assert_single_root_asi_archive(
+        archive: &Path,
+        expected_format: ModFormat,
+        asi: &Path,
+        game_root: &Path,
+    ) {
+        let sp = LegacySpProvider::new(game_root.to_path_buf());
+        let lspdfr = LegacyLspdfrProvider::new(game_root.to_path_buf());
+        for provider in [&sp as &dyn ModeProvider, &lspdfr as &dyn ModeProvider] {
+            let direct = classify(asi, provider).unwrap();
+            assert_eq!(direct.format, ModFormat::Asi);
+            let expected = direct.files[0].target.clone();
+            let plan = classify(archive, provider).unwrap();
+            assert_eq!(&plan.format, &expected_format);
+            assert_eq!(plan.files.len(), 1);
+            assert_eq!(plan.files[0].target, expected);
+            let staged = plan.files[0].source.clone();
+            assert_eq!(std::fs::read(&staged).unwrap(), b"synthetic asi payload");
+            let cloned_plan = plan.clone();
+            drop(plan);
+            assert!(staged.exists());
+            drop(cloned_plan);
+            assert!(!staged.exists());
+        }
+    }
+
+    #[test]
+    fn zip_single_root_asi_matches_standalone_target_and_keeps_staging_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let asi = dir.path().join("example.ASI");
+        std::fs::write(&asi, b"synthetic asi payload").unwrap();
+        let archive = dir.path().join("single.zip");
+        write_test_zip(&archive, &[("example.ASI", b"synthetic asi payload")]);
+        assert_single_root_asi_archive(&archive, ModFormat::Zip, &asi, &game_root);
+    }
+
+    #[test]
+    fn seven_zip_single_root_asi_matches_standalone_target_and_keeps_staging_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let asi = dir.path().join("example.ASI");
+        std::fs::write(&asi, b"synthetic asi payload").unwrap();
+        let archive = dir.path().join("single.7z");
+        let entry = sevenz_rust::SevenZArchiveEntry::from_path(&asi, "example.ASI".to_string());
+        let mut writer = sevenz_rust::SevenZWriter::create(&archive).unwrap();
+        writer
+            .push_archive_entry(entry, Some(std::fs::File::open(&asi).unwrap()))
+            .unwrap();
+        writer.finish().unwrap();
+        assert_single_root_asi_archive(&archive, ModFormat::SevenZip, &asi, &game_root);
+    }
+
+    #[test]
+    fn rar_single_root_asi_matches_standalone_target_and_keeps_staging_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let asi = dir.path().join("example.ASI");
+        std::fs::write(&asi, b"synthetic asi payload").unwrap();
+        let archive = dir.path().join("single.rar");
+        write_test_rar(&archive, &[("example.ASI", b"synthetic asi payload")]);
+        assert_single_root_asi_archive(&archive, ModFormat::Rar, &asi, &game_root);
+    }
+
+    fn write_explicit_seven_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut writer = sevenz_rust::SevenZWriter::create(path).unwrap();
+        for (index, (name, content)) in entries.iter().enumerate() {
+            let source = path.with_extension(format!("input-{index}"));
+            std::fs::write(&source, *content).unwrap();
+            let entry = sevenz_rust::SevenZArchiveEntry::from_path(&source, (*name).to_string());
+            writer
+                .push_archive_entry(entry, Some(std::fs::File::open(&source).unwrap()))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn asi_archives_with_other_entries_or_wrappers_keep_replacer_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let cases: &[(&str, &[(&str, &[u8])], &[&str])] = &[
+            (
+                "mixed",
+                &[("example.asi", b"asi"), ("example.ini", b"ini")],
+                &["example.asi", "example.ini"],
+            ),
+            (
+                "wrapped",
+                &[("wrapper/example.asi", b"asi")],
+                &["wrapper/example.asi"],
+            ),
+            ("other", &[("readme.txt", b"notes")], &["readme.txt"]),
+        ];
+        for extension in ["zip", "7z", "rar"] {
+            for (name, entries, expected_paths) in cases {
+                let archive = dir.path().join(format!("{name}.{extension}"));
+                let format = match extension {
+                    "zip" => {
+                        write_test_zip(&archive, entries);
+                        ModFormat::Zip
+                    }
+                    "7z" => {
+                        write_explicit_seven_zip(&archive, entries);
+                        ModFormat::SevenZip
+                    }
+                    "rar" => {
+                        write_test_rar(&archive, entries);
+                        ModFormat::Rar
+                    }
+                    _ => unreachable!(),
+                };
+                let plan = classify(&archive, &provider(&game_root)).unwrap();
+                assert_eq!(plan.format, format);
+                assert_eq!(plan.files.len(), expected_paths.len());
+                for expected in expected_paths.iter() {
+                    let target = game_root.join("mods").join(*expected);
+                    assert!(plan.files.iter().any(|file| file.target == target));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn asi_archives_with_lml_marker_or_dlc_keep_existing_classification() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir_all(&game_root).unwrap();
+        let lml = dir.path().join("lml.zip");
+        write_test_zip(
+            &lml,
+            &[("install.xml", b"manifest"), ("example.asi", b"asi")],
+        );
+        assert_lml_refused(classify(&lml, &provider(&game_root)).unwrap());
+
+        let dlc = dir.path().join("dlc.zip");
+        write_test_zip(&dlc, &[("dlc.rpf", b"dlc"), ("example.asi", b"asi")]);
+        let plan = classify(&dlc, &provider(&game_root)).unwrap();
+        assert!(matches!(&plan.format, ModFormat::AddOnPack { .. }));
+        assert!(plan.files.iter().all(|file| file.target.starts_with(game_root.join("mods"))));
+    }
+
+    // OpenAI-Codex_v1_install_review: Exercise the existing portable name policy.
+    #[test]
+    fn single_root_asi_name_refuses_unsafe_or_non_root_components() {
+        for name in [
+            "CON.asi",
+            "prn.asi",
+            "AUX.asi",
+            "NUL.asi",
+            "CONIN$.asi",
+            "CONOUT$.asi",
+            "COM1.asi",
+            "lpt9.asi",
+            "COM¹.asi",
+            "LPT².asi",
+            "CON .asi",
+            "bad<.asi",
+            "bad>.asi",
+            "bad\".asi",
+            "bad|.asi",
+            "bad?.asi",
+            "bad*.asi",
+            "D:stream.asi",
+            "wrapped/example.asi",
+            "wrapped\\example.asi",
+            "trailing.asi ",
+            "trailing.asi.",
+            "./example.asi",
+            "../example.asi",
+            ".asi",
+        ] {
+            assert_eq!(single_root_asi_name(name, false), None, "{name}");
+        }
+        for name in ["example.asi", "example.ASI", "警察.asi", "COM0.asi", "CONSOLE.asi"] {
+            assert_eq!(single_root_asi_name(name, false).as_deref(), Some(name));
+        }
+        assert_eq!(single_root_asi_name("example.asi", true), None);
     }
 
     #[test]

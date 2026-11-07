@@ -11,8 +11,11 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use gtavmm_core::ai_assistant::action_schema::{Action, PlanItem, PlanItemResult};
+use gtavmm_core::ai_assistant::known_fixes::RuleMatch;
 use gtavmm_core::db;
 use gtavmm_core::game_locator::{self, DetectResult};
+use gtavmm_core::CoreError;
 
 /// Which mode's `ModeProvider` to use against the detected/overridden game install.
 /// Orthogonal to the Legacy/Enhanced edition: this picks the mod-management
@@ -69,8 +72,8 @@ enum Command {
         /// Name to record this mod under (defaults to the file/folder name).
         #[arg(long)]
         name: Option<String>,
-        /// Proceed even if this collides with a different mod's files (required
-        /// after reviewing a `RequiresOverride` refusal).
+        // OpenAI-Codex_v1_removal_review: Confirm only conflicts without an identified owner.
+        /// Confirm overwriting existing files with no identified active owner after review.
         #[arg(long)]
         yes: bool,
         /// Skip backing up files this install would overwrite. Not recommended —
@@ -88,13 +91,13 @@ enum Command {
         source_path: String,
         /// Free-text label recorded in the new mod's name (e.g. "1.2.0").
         version: String,
-        /// Confirm overwriting another installed mod's files after reviewing conflicts.
+        /// Confirm replacement of existing files with no identified active owner after review.
         #[arg(long)]
         yes: bool,
     },
     /// Enable a disabled mod.
     Enable { id: i64 },
-    /// Disable an active mod.
+    /// Mod disabling is under development.
     Disable { id: i64 },
     /// Recycle bin operations.
     RecycleBin {
@@ -317,6 +320,9 @@ fn print_known_fix_plan(
     for (i, item) in plan.iter().enumerate() {
         println!("  [{i}] {:?}", item.action);
         println!("       reason: {}", item.reason);
+        if matches!(&item.action, Action::DisableMod { .. }) {
+            println!("       status: mod disabling is under development.");
+        }
     }
     Ok(plan)
 }
@@ -374,10 +380,50 @@ fn report_manual_dlc_tasks(conn: &rusqlite::Connection) {
     }
 }
 
+// OpenAI-Codex_disable_ai_audit: Identify the unavailable command without opening the DB.
+fn check_mod_disable_command(command: &Command) -> Result<()> {
+    if matches!(command, Command::Disable { .. }) {
+        return Err(CoreError::ModDisablingUnavailable.into());
+    }
+    Ok(())
+}
+
+fn is_mod_disabling_unavailable(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<CoreError>(),
+        Some(CoreError::ModDisablingUnavailable)
+    )
+}
+
+fn rule_requires_mod_disabling(rule: &RuleMatch) -> bool {
+    matches!(
+        rule,
+        RuleMatch::MultipleActiveDisableAllButFirst { .. }
+            | RuleMatch::DuplicateActiveNamesDisableAllButNewest
+    )
+}
+
+fn is_selected_disable_only(plan: &[PlanItem], approved: &[usize]) -> bool {
+    !approved.is_empty()
+        && approved.iter().all(|&index| {
+            plan.get(index)
+                .is_some_and(|item| matches!(&item.action, Action::DisableMod { .. }))
+        })
+}
+
+fn plan_reports_disable_unavailable(results: &[PlanItemResult]) -> bool {
+    results
+        .iter()
+        .any(|r| matches!(&r.result, Err(CoreError::ModDisablingUnavailable)))
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(err) = run(cli) {
         eprintln!("Error: {err:#}");
+        if is_mod_disabling_unavailable(&err) {
+            std::process::exit(1);
+        }
 
         let draft = gtavmm_core::crash_report::build(
             env!("CARGO_PKG_VERSION"),
@@ -407,6 +453,7 @@ fn run(cli: Cli) -> Result<()> {
     ) {
         gtavmm_core::providers::ensure_mode_available("fivem-server")?;
     }
+    check_mod_disable_command(&cli.command)?;
     let db_path = db::default_db_path()
         .ok_or_else(|| anyhow::anyhow!("could not resolve an app-data directory on this OS"))?;
     let mut conn = db::open(&db_path)?;
@@ -571,7 +618,7 @@ fn run(cli: Cli) -> Result<()> {
             );
             report_manual_dlc_tasks(&conn);
             operation?;
-            println!("Uninstalled mod #{id} (recoverable from the recycle bin for 15 days).");
+            println!("Uninstall command completed for mod #{id}. This program attempted to record a recycle-bin snapshot; this version has paused automatic expiry cleanup. Restoration is not guaranteed.");
         }
         Command::Reinstall {
             id,
@@ -609,8 +656,8 @@ fn run(cli: Cli) -> Result<()> {
                     files_written,
                 } => {
                     println!(
-                        "Reinstalled mod #{id} as #{installed_mod_id} ({files_written} file(s) written); \
-                         old mod row is now 'uninstalled', recoverable from the recycle bin."
+                        "Reinstallation reported success for mod #{id} as #{installed_mod_id} ({files_written} file(s) reported). \
+                         If the previous mod required uninstallation, this program attempted to record a recycle-bin snapshot; restoration is not guaranteed."
                     );
                 }
                 gtavmm_core::install::InstallOutcome::ProtectedFileBlocked(paths) => {
@@ -641,13 +688,10 @@ fn run(cli: Cli) -> Result<()> {
             gtavmm_core::state::enable(&conn, id, &staging_root)?;
             println!("Enabled mod #{id}.");
         }
-        Command::Disable { id } => {
-            let staging_root = db_path.parent().unwrap().join("staging");
-            gtavmm_core::state::disable(&conn, id, &staging_root)?;
-            println!("Disabled mod #{id}.");
-        }
+        Command::Disable { .. } => return Err(CoreError::ModDisablingUnavailable.into()),
         Command::RecycleBin { action } => match action {
             RecycleBinAction::List => {
+                eprintln!("This version has paused automatic recycle-bin expiry cleanup. Listed expiry times do not guarantee retention or restoration; other actions, versions, or programs may still remove snapshots.");
                 let mut stmt = conn.prepare(
                     "SELECT id, original_installed_mod_id, deleted_at, expires_at \
                      FROM recycle_bin_entry ORDER BY deleted_at DESC",
@@ -683,7 +727,7 @@ fn run(cli: Cli) -> Result<()> {
                 );
                 report_manual_dlc_tasks(&conn);
                 operation?;
-                println!("Restored recycle bin entry #{id}.");
+                println!("Restore command completed for recycle-bin entry #{id}; verify the mod and recycle-bin state.");
             }
         },
         Command::History { mod_id } => {
@@ -975,7 +1019,12 @@ fn run(cli: Cli) -> Result<()> {
             AiAction::ListKnownFixes => {
                 let rules = gtavmm_core::ai_assistant::known_fixes::load_known_fixes()?;
                 for r in rules {
-                    println!("{}  {}", r.id, r.title);
+                    let status = if rule_requires_mod_disabling(&r.rule_match) {
+                        " [unavailable: mod disabling is under development]"
+                    } else {
+                        ""
+                    };
+                    println!("{}  {}{}", r.id, r.title, status);
                 }
             }
             AiAction::PlanKnownFix { rule_id } => {
@@ -994,16 +1043,35 @@ fn run(cli: Cli) -> Result<()> {
                     (0..plan.len()).collect()
                 } else if !needs_approval.is_empty() {
                     println!(
-                        "\n{} item(s) need --yes to run: {:?}. Whitelisted item(s) will run without it: {:?}.",
+                        "\n{} item(s) are not whitelisted: {:?}. Whitelisted item(s) selected: {:?}. \
+Use --yes to select non-whitelisted items. Unavailable actions, including \
+mod disabling, cannot run even with --yes.",
                         needs_approval.len(), needs_approval, auto_approved
                     );
                     auto_approved
                 } else {
                     auto_approved
                 };
+                let mut unselected_disabling = false;
+                for (index, item) in plan.iter().enumerate() {
+                    if matches!(&item.action, Action::DisableMod { .. })
+                        && !approved.contains(&index)
+                    {
+                        unselected_disabling = true;
+                        println!(
+                            "  [{index}] mod disabling is unavailable and was not selected or run."
+                        );
+                    }
+                }
                 if approved.is_empty() {
-                    println!("\nNothing to run (pass --yes to execute non-whitelisted items).");
+                    println!(
+                        "\nNothing selected. --yes selects non-whitelisted items; \
+unavailable actions cannot run."
+                    );
                     return Ok(());
+                }
+                if is_selected_disable_only(&plan, &approved) {
+                    return Err(CoreError::ModDisablingUnavailable.into());
                 }
 
                 let (game_root, provider) = resolve_provider(&cli.game_path, cli.mode)?;
@@ -1025,6 +1093,7 @@ fn run(cli: Cli) -> Result<()> {
                     &mut conn, &plan, &approved, &exec_ctx,
                 );
                 println!();
+                let disabling_unavailable = plan_reports_disable_unavailable(&results);
                 for r in results {
                     match &r.manual_dlc_tasks {
                         Ok(tasks) => {
@@ -1049,6 +1118,13 @@ fn run(cli: Cli) -> Result<()> {
                         ),
                         Err(e) => println!("  [{}] failed: {e}", r.index),
                     }
+                }
+                if disabling_unavailable {
+                    eprintln!("Other selected actions may have completed; see per-item results.");
+                    return Err(CoreError::ModDisablingUnavailable.into());
+                }
+                if unselected_disabling {
+                    println!("Unavailable actions were not run; selected actions may have completed.");
                 }
             }
             AiAction::ShowAutoApprove => {
@@ -1125,4 +1201,86 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+// OpenAI-Codex_disable_ai_audit: Pure checks; no real DB or game access.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mod_disable_preflight_preserves_ai_disable_and_uninstall() {
+        let err = check_mod_disable_command(&Command::Disable { id: 7 }).unwrap_err();
+        assert!(is_mod_disabling_unavailable(&err));
+        assert!(check_mod_disable_command(&Command::Ai {
+            action: AiAction::Disable,
+        })
+        .is_ok());
+        assert!(check_mod_disable_command(&Command::Uninstall { id: 7 }).is_ok());
+    }
+
+    #[test]
+    fn unavailable_error_uses_typed_downcast_with_context() {
+        let err = anyhow::Error::new(CoreError::ModDisablingUnavailable).context("test");
+        assert!(is_mod_disabling_unavailable(&err));
+        let text_only = anyhow::anyhow!(
+            "Mod disabling is unavailable. This feature is under development."
+        );
+        assert!(!is_mod_disabling_unavailable(&text_only));
+    }
+
+    #[test]
+    fn both_known_fixes_are_marked_as_requiring_mod_disabling() {
+        let rules = gtavmm_core::ai_assistant::known_fixes::load_known_fixes().unwrap();
+        for id in [
+            "multiple-trainers-active-keep-first",
+            "duplicate-active-mod-names-keep-newest",
+        ] {
+            let rule = rules.iter().find(|r| r.id == id).unwrap();
+            assert!(rule_requires_mod_disabling(&rule.rule_match));
+        }
+    }
+
+    #[test]
+    fn only_selected_disable_actions_get_early_refusal() {
+        let plan = vec![
+            PlanItem {
+                action: Action::DisableMod { mod_id: 1 },
+                reason: "test".to_string(),
+            },
+            PlanItem {
+                action: Action::UninstallMod { mod_id: 2 },
+                reason: "test".to_string(),
+            },
+        ];
+        assert!(!is_selected_disable_only(&plan, &[]));
+        assert!(is_selected_disable_only(&plan, &[0]));
+        assert!(!is_selected_disable_only(&plan, &[0, 1]));
+        assert!(!is_selected_disable_only(&plan, &[3]));
+    }
+
+    #[test]
+    fn plan_result_classification_keeps_other_errors_distinct() {
+        let pending = PlanItemResult {
+            index: 0,
+            result: Err(CoreError::ModDisablingUnavailable),
+            manual_dlc_tasks: Ok(Vec::new()),
+        };
+        let success = PlanItemResult {
+            index: 1,
+            result: Ok(()),
+            manual_dlc_tasks: Ok(Vec::new()),
+        };
+        assert!(plan_reports_disable_unavailable(&[pending, success]));
+        let other = PlanItemResult {
+            index: 0,
+            result: Err(CoreError::ActionSchema {
+                reason: "unrelated action error".to_string(),
+            }),
+            manual_dlc_tasks: Err(CoreError::ActionSchema {
+                reason: "unrelated ledger error".to_string(),
+            }),
+        };
+        assert!(!plan_reports_disable_unavailable(&[other]));
+    }
 }

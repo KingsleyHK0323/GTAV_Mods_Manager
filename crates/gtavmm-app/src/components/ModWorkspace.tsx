@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./IconSprite";
 import { InstallWizard } from "./InstallWizard";
 import { ModTable } from "./ModTable";
-import { ModPageTools } from "./ModPageTools";
+import { ModPageTools, notifyRecycleChanged } from "./ModPageTools";
 import { ManualDlcTasks } from "./ManualDlcTasks";
 import { pickSaveFile } from "../lib/pickers";
 import type { InstallEvent, InstalledMod, PageMode } from "../types";
@@ -100,6 +100,12 @@ export function ModWorkspace({
     setManualDlcRevision((revision) => revision + 1);
   }, [loadMods]);
 
+  // OpenAI-Codex: Notify the currently mounted recycle panel after mod attempts.
+  const reloadAfterModOperation = useCallback(() => {
+    notifyRecycleChanged();
+    reloadAfterOperation();
+  }, [reloadAfterOperation]);
+
   useEffect(() => {
     loadMods();
   }, [loadMods]);
@@ -178,7 +184,7 @@ export function ModWorkspace({
       <InstallWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        onInstalled={reloadAfterOperation}
+        onInstalled={reloadAfterModOperation}
         mode={pageMode}
       />
 
@@ -277,7 +283,7 @@ export function ModWorkspace({
             {mods && mods.length > 0 && (
               <ModTable
                 mods={visible}
-                onChanged={reloadAfterOperation}
+                onChanged={reloadAfterModOperation}
                 mode={pageMode}
                 showCategory={Boolean(categories)}
                 bulkStateActions={bulkStateActions}

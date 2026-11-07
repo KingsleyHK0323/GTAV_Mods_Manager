@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { SettingsModal } from "./SettingsModal";
@@ -204,26 +204,75 @@ export function GamePathsPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+// OpenAI-Codex: Distinguish saved preferences from current App behavior.
+// OpenAI-Codex_Responsible: Source_Code; OpenAI-Codex_dialog_evidence.
+function isBackupConfirmationCancelled(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && error.code === "backup_confirmation_cancelled";
+}
+
 /** Backup defaults and where full backups are written. */
 export function BackupPanel({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [settingsReady, setSettingsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const lifecycle = useRef(0);
+  const readGeneration = useRef(0);
+  const updateInFlight = useRef(false);
 
   useEffect(() => {
-    invoke<UserSettings>("load_user_settings").then(setSettings).catch((e) => setError(String(e)));
+    const epoch = ++lifecycle.current;
+    const refresh = () => {
+      const request = ++readGeneration.current;
+      setLoadError(null);
+      setLoading(true);
+      setSettingsReady(false);
+      void invoke<UserSettings>("load_user_settings").then((value) => {
+        if (lifecycle.current === epoch && readGeneration.current === request) {
+          setSettings(value);
+          setSettingsReady(true);
+        }
+      }).catch((e) => {
+        if (lifecycle.current === epoch && readGeneration.current === request) setLoadError(String(e));
+      }).finally(() => {
+        if (lifecycle.current === epoch && readGeneration.current === request) setLoading(false);
+      });
+    };
+    window.addEventListener("gtavmm:settings-changed", refresh);
+    refresh();
+    return () => {
+      window.removeEventListener("gtavmm:settings-changed", refresh);
+      lifecycle.current += 1;
+      readGeneration.current += 1;
+    };
   }, []);
 
   async function update(patch: Record<string, unknown>) {
+    if (updateInFlight.current) return;
+    updateInFlight.current = true;
+    const epoch = lifecycle.current;
     setBusy(true);
     setError(null);
+    setNotice(null);
+    readGeneration.current += 1;
+    setSettingsReady(false);
+    setLoading(false);
     try {
-      setSettings(await invoke<UserSettings>("update_user_settings", patch));
+      await invoke<UserSettings>("update_user_settings", patch);
     } catch (e) {
-      setError(String(e));
+      if (lifecycle.current === epoch) {
+        if (isBackupConfirmationCancelled(e)) setNotice(t("settingsCards.backup_change_cancelled"));
+        else setError(String(e));
+      }
     } finally {
-      setBusy(false);
+      updateInFlight.current = false;
+      window.dispatchEvent(new Event("gtavmm:settings-changed"));
+      if (lifecycle.current === epoch) setBusy(false);
     }
   }
 
@@ -235,21 +284,37 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <SettingsModal title={t("settingsCards.backup_title")} wide onClose={onClose}>
-      {error && <p className="error">{error}</p>}
+      {loadError !== null && <p className="error" role="alert">{loadError.trim().length > 0 ? loadError : t("settingsCards.backup_error_fallback")}</p>}
+      {error !== null && <p className="error" role="alert">{error.trim().length > 0 ? error : t("settingsCards.backup_error_fallback")}</p>}
+      {notice !== null && <p role="status">{notice}</p>}
 
       <div
         className="override-row"
+        aria-busy={busy || loading}
         style={{ borderColor: "var(--border)", background: "var(--surface-2)", marginBottom: "var(--gap)" }}
       >
-        <input
-          type="checkbox"
-          id="autoBackup"
-          checked={settings?.default_auto_backup ?? true}
-          disabled={busy || !settings}
-          onChange={(e) => update({ defaultAutoBackup: e.target.checked })}
-        />
-        <label htmlFor="autoBackup">{t("settingsCards.backup_auto_label")}</label>
+        {settings && (
+          <input
+            type="checkbox"
+            id="autoBackup"
+            checked={settings.default_auto_backup}
+            disabled={busy || loading || !settingsReady}
+            onChange={(event) => void update({ defaultAutoBackup: event.currentTarget.checked })}
+            aria-labelledby="backupAutoLabel"
+            aria-describedby="backupAutoHelp"
+          />
+        )}
+        <span id="backupAutoLabel">{t("settingsCards.backup_auto_label")}</span>
+        <span role="status">
+          {busy ? t("settingsCards.backup_change_pending")
+            : loading ? t("settingsCards.backup_preference_loading")
+            : !settingsReady || !settings
+              ? t(settings ? "settingsCards.backup_last_loaded_unavailable" : "settingsCards.backup_preference_unavailable")
+              : t(settings.default_auto_backup ? "settingsCards.backup_saved_on" : "settingsCards.backup_saved_off")}
+        </span>
       </div>
+
+      <p className="page-sub" id="backupAutoHelp">{t("settingsCards.backup_auto_help")}</p>
 
       <div className="field-group">
         <label>{t("settingsCards.backup_location")}</label>
@@ -258,21 +323,29 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
             <use href="#i-folder" />
           </svg>
           <div className="path-text">
-            {settings?.backup_root_override ? (
-              <span className="value mono">{settings.backup_root_override}</span>
+            {!settings ? (
+              <span className="value mono empty">{t("settingsCards.backup_preference_unavailable")}</span>
+            ) : settings.backup_root_override !== null ? (
+              <span className="value mono">
+                {settings.backup_root_override.length === 0
+                  ? t("settingsCards.backup_empty_location")
+                  : settings.backup_root_override.trim().length === 0
+                    ? t("settingsCards.backup_whitespace_location")
+                    : settings.backup_root_override}
+              </span>
             ) : (
               <span className="value mono empty">{t("settingsCards.backup_default_location")}</span>
             )}
           </div>
-          <button className="btn-ghost" type="button" onClick={chooseLocation} disabled={busy}>
+          <button className="btn-ghost" type="button" onClick={chooseLocation} disabled>
             {t("onboarding.change")}
           </button>
-          {settings?.backup_root_override && (
+          {settings && settings.backup_root_override !== null && (
             <button
               className="icon-btn"
               type="button"
               onClick={() => update({ backupRootOverride: { action: "clear" } })}
-              disabled={busy}
+              disabled
             >
               {t("settingsCards.paths_clear")}
             </button>

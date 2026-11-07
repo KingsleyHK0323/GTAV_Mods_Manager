@@ -57,6 +57,13 @@ pub fn open_in_memory() -> CoreResult<Connection> {
 /// since `profile_schema.sql`'s tables already exist by the time it runs there).
 fn run_migrations(conn: &Connection) -> CoreResult<()> {
     let user_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    if !(0..=CURRENT_SCHEMA_VERSION).contains(&user_version) {
+        return Err(crate::error::CoreError::UnsupportedDatabaseSchemaVersion {
+            found: user_version,
+            supported: CURRENT_SCHEMA_VERSION,
+        });
+    }
     if user_version < 1 {
         conn.execute_batch(SCHEMA_SQL)?;
     }
@@ -459,7 +466,7 @@ fn run_migrations(conn: &Connection) -> CoreResult<()> {
                 END;",
         )?;
     }
-    if user_version < CURRENT_SCHEMA_VERSION {
+    if user_version < 16 {
         migrate_lml_v16(conn)?;
     }
     Ok(())
@@ -522,13 +529,135 @@ fn migrate_lml_v16(conn: &Connection) -> CoreResult<()> {
             tx.execute_batch(&format!("CREATE TRIGGER {table}_no_{action} BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'immutable LML journal'); END;"))?;
         }
     }
-    tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+    tx.pragma_update(None, "user_version", 16)?;
     tx.commit()?;
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    fn version_guard_schema(conn: &Connection) -> Vec<(String, String, String, Option<String>)> {
+        let mut stmt = conn
+            .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    }
+
+    fn version_guard_rows(conn: &Connection) -> Vec<(i64, String)> {
+        let mut stmt = conn
+            .prepare("SELECT id, value FROM guard_anchor ORDER BY id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    }
+
+    fn create_version_guard_anchor(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE guard_anchor (id INTEGER PRIMARY KEY, value TEXT NOT NULL); \
+             INSERT INTO guard_anchor VALUES (1, 'keep'); \
+             CREATE TRIGGER guard_anchor_no_update BEFORE UPDATE ON guard_anchor \
+             BEGIN SELECT RAISE(ABORT, 'anchor changed'); END;",
+        )
+        .unwrap();
+    }
+
+    fn assert_guard_error(error: &crate::error::CoreError, requested: i32) {
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "unsupported database schema version {requested} (supported range: 0..={CURRENT_SCHEMA_VERSION})"
+            )
+        );
+        assert!(matches!(
+            error,
+            crate::error::CoreError::UnsupportedDatabaseSchemaVersion { found, supported }
+                if *found == requested && *supported == CURRENT_SCHEMA_VERSION
+        ));
+    }
+
+    fn assert_unknown_version_rejected(requested: i32) {
+        let conn = Connection::open_in_memory().unwrap();
+        create_version_guard_anchor(&conn);
+        conn.pragma_update(None, "user_version", requested).unwrap();
+        let read_version = || {
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap()
+        };
+        assert_eq!(read_version(), requested);
+        let before_schema = version_guard_schema(&conn);
+        let before_rows = version_guard_rows(&conn);
+        let before_changes: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        let error = match run_migrations(&conn) {
+            Err(error) => error,
+            Ok(()) => panic!("unknown schema version {requested} was accepted"),
+        };
+        assert_guard_error(&error, requested);
+        assert_eq!(read_version(), requested);
+        assert_eq!(version_guard_schema(&conn), before_schema);
+        assert_eq!(version_guard_rows(&conn), before_rows);
+        let after_changes: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after_changes, before_changes);
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn future_database_version_is_rejected_before_migration() {
+        let requested = CURRENT_SCHEMA_VERSION.checked_add(1).unwrap();
+        assert_unknown_version_rejected(requested);
+    }
+
+    #[test]
+    fn negative_database_version_is_rejected_before_migration() {
+        assert_unknown_version_rejected(-1);
+    }
+
+    #[test]
+    fn public_open_rejects_future_database_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("future-version.sqlite3");
+        let requested = CURRENT_SCHEMA_VERSION.checked_add(1).unwrap();
+        let (before_schema, before_rows) = {
+            let conn = Connection::open(&path).unwrap();
+            create_version_guard_anchor(&conn);
+            conn.pragma_update(None, "user_version", requested).unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, requested);
+            (version_guard_schema(&conn), version_guard_rows(&conn))
+        };
+        let error = match open(&path) {
+            Err(error) => error,
+            Ok(_) => panic!("public open accepted unknown schema version {requested}"),
+        };
+        assert_guard_error(&error, requested);
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, requested);
+        assert_eq!(version_guard_schema(&conn), before_schema);
+        assert_eq!(version_guard_rows(&conn), before_rows);
+    }
+
     // OpenAI-Codex: Historical fixtures may never have contained LML tables.
     #[test]
     fn lml_fixture_cleanup_preserves_a_baseline_without_lml_tables() {
@@ -554,6 +683,42 @@ mod tests {
         )
         .unwrap();
     }
+    // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
+    #[test]
+    fn lml_v16_records_version_16_and_preserves_existing_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE installed_mod (id INTEGER PRIMARY KEY, name TEXT NOT NULL); \
+             INSERT INTO installed_mod VALUES (42, 'existing'); \
+             PRAGMA user_version = 15;",
+        )
+        .unwrap();
+
+        migrate_lml_v16(&conn).unwrap();
+
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 16);
+        let existing: (i64, String) = conn
+            .query_row("SELECT id, name FROM installed_mod WHERE id = 42", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(existing, (42, "existing".to_string()));
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+                 ('lml_operation', 'lml_operation_file', 'lml_operation_event', 'lml_package')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 4);
+        assert!(conn.is_autocommit());
+    }
+
     #[test]
     fn lml_v16_failure_rolls_back_schema_and_version() {
         let conn = open_in_memory().unwrap();

@@ -22,6 +22,12 @@ interface InstallWizardProps {
 
 type Step = "pick" | "analyzing" | "review" | "installing" | "done" | "error";
 
+// OpenAI-Codex_Responsible: Source_Code; OpenAI-Codex_dialog_evidence.
+function isBackupConfirmationCancelled(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && error.code === "backup_confirmation_cancelled";
+}
+
 /**
  * The provider behind a page, for the copy that describes what to pick.
  *
@@ -53,6 +59,13 @@ export function InstallWizard({
   const [role, setRole] = useState<ManagedDllRole | null>(null);
   const roleRef = useRef<ManagedDllRole | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // OpenAI-Codex_ui_report_review: Scope file-risk guidance to the install request context.
+  // OpenAI-Codex_Source_Code: Track warnings for the current install context.
+  const [installFailureContext, setInstallFailureContext] = useState<{
+    mode: PageMode;
+    gamePath: string | null;
+  } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<InstallOutcome | null>(null);
   const [scanResult, setScanResult] = useState<ScanOutcome | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -84,6 +97,8 @@ export function InstallWizard({
     setRole(null);
     roleRef.current = null;
     setError(null);
+    setInstallFailureContext(null);
+    setNotice(null);
     setOutcome(null);
     setScanResult(null);
     setScanning(false);
@@ -96,6 +111,7 @@ export function InstallWizard({
 
   async function pickAndAnalyze() {
     if (inFlight.current !== null || !open) return;
+    setInstallFailureContext(null);
     const request = ++generation.current;
     inFlight.current = request;
     const current = () => mounted.current && request === generation.current &&
@@ -136,6 +152,7 @@ export function InstallWizard({
   async function chooseRole(value: string) {
     if (!path || !preview?.role_required || inFlight.current !== null) return;
     if (value !== "generalRph" && value !== "callout") return;
+    setInstallFailureContext(null);
     const selectedRole: ManagedDllRole = value;
     const request = ++generation.current;
     inFlight.current = request;
@@ -144,6 +161,7 @@ export function InstallWizard({
     setPreview(null);
     setOutcome(null);
     setError(null);
+    setNotice(null);
     setScanResult(null);
     setScanning(false);
     setStep("analyzing");
@@ -170,12 +188,15 @@ export function InstallWizard({
   async function runInstall(overrideForeignConflicts: boolean) {
     if (!path || !preview || blocked || inFlight.current !== null) return;
     if (overrideForeignConflicts && !(step === "done" && outcome && "RequiresOverride" in outcome)) return;
+    setInstallFailureContext(null);
     const request = ++generation.current;
     inFlight.current = request;
     const current = () => mounted.current && request === generation.current &&
       context.current.open && context.current.mode === mode && context.current.gamePath === gamePath;
     setStep("installing");
     setError(null);
+    setNotice(null);
+    setOutcome(null);
     try {
       const result = await invoke<InstallOutcome>("install_mod", {
         gamePath,
@@ -188,7 +209,17 @@ export function InstallWizard({
       });
       if (current()) { setOutcome(result); setStep("done"); }
     } catch (e) {
-      if (current()) { setError(String(e)); setStep("error"); }
+      if (current()) {
+        if (isBackupConfirmationCancelled(e)) {
+          setInstallFailureContext(null);
+          setNotice(t("installWizard.backup_cancelled"));
+          setStep("review");
+        } else {
+          setError(String(e));
+          setInstallFailureContext({ mode, gamePath });
+          setStep("error");
+        }
+      }
     } finally {
       if (inFlight.current === request) inFlight.current = null;
       onInstalled();
@@ -218,6 +249,8 @@ export function InstallWizard({
           )}
 
           {step === "analyzing" && <p>{t("installWizard.analyzing")}</p>}
+
+          {step === "review" && notice && <p role="status">{notice}</p>}
 
           {step === "review" && plan && (
             <>
@@ -330,13 +363,25 @@ export function InstallWizard({
               <p>{t("installWizard.override_body")}</p>
               {outcome.RequiresOverride.foreign_conflicts.map((c, i) => (
                 <p key={i} className="mono" style={{ fontSize: 11 }}>
-                  {c.path} — {t("installWizard.owned_by", { name: c.owner_name })}
+                  {/* OpenAI-Codex_Responsible: Source_Code; OpenAI-Codex_v1_removal_review: Identify files with no identified active owner. */}
+                  {c.path} — {c.owner_mod_id === null
+                    ? t("installWizard.preflight_untracked")
+                    : t("installWizard.owned_by", { name: c.owner_name })}
                 </p>
               ))}
             </div>
           )}
 
-          {step === "error" && <p className="error">{error}</p>}
+          {step === "error" && (
+            <>
+              <p className="error">{error}</p>
+              {installFailureContext !== null &&
+                installFailureContext.mode === mode &&
+                installFailureContext.gamePath === gamePath && (
+                  <p role="status">{t("installWizard.install_failure_file_warning")}</p>
+                )}
+            </>
+          )}
         </div>
 
         <div className="modal-foot">
