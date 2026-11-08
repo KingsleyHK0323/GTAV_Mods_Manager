@@ -1124,7 +1124,9 @@ unavailable actions cannot run."
                     return Err(CoreError::ModDisablingUnavailable.into());
                 }
                 if unselected_disabling {
-                    println!("Unavailable actions were not run; selected actions may have completed.");
+                    println!(
+                        "Unavailable actions were not run; selected actions may have completed."
+                    );
                 }
             }
             AiAction::ShowAutoApprove => {
@@ -1223,9 +1225,8 @@ mod tests {
     fn unavailable_error_uses_typed_downcast_with_context() {
         let err = anyhow::Error::new(CoreError::ModDisablingUnavailable).context("test");
         assert!(is_mod_disabling_unavailable(&err));
-        let text_only = anyhow::anyhow!(
-            "Mod disabling is unavailable. This feature is under development."
-        );
+        let text_only =
+            anyhow::anyhow!("Mod disabling is unavailable. This feature is under development.");
         assert!(!is_mod_disabling_unavailable(&text_only));
     }
 

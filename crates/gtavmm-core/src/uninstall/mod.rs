@@ -168,9 +168,7 @@ fn validate_recycle_snapshot_paths(paths: &[PathBuf]) -> CoreResult<()> {
         })?;
         let low = key.to_lowercase();
         let high = key.to_uppercase();
-        if recycle_snapshot_prefix_hit(&lower, &low)
-            || recycle_snapshot_prefix_hit(&upper, &high)
-        {
+        if recycle_snapshot_prefix_hit(&lower, &low) || recycle_snapshot_prefix_hit(&upper, &high) {
             return Err(CoreError::UnsupportedFormat {
                 reason: format!("recycle snapshot paths overlap: {}", relative.display()),
             });
@@ -569,7 +567,11 @@ pub(crate) fn seed_disabled_fixture_from_staging(
             Err(error) => panic!("synthetic staged metadata: {error}"),
         }
     }
-    std::fs::write(stage.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(
+        stage.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         conn.execute(
             "UPDATE installed_mod SET status = 'disabled' WHERE id = ?1 AND status = 'active'",
@@ -964,7 +966,9 @@ mod tests {
                 .unwrap();
             assert_eq!(changes_after, changes_before);
             assert_eq!(
-                mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+                mod_status(&fixture.conn, fixture.mod_id)
+                    .unwrap()
+                    .as_deref(),
                 Some("active")
             );
         }
@@ -982,7 +986,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+            mod_status(&fixture.conn, fixture.mod_id)
+                .unwrap()
+                .as_deref(),
             Some("uninstalled")
         );
         let snapshot: String = fixture
@@ -1074,7 +1080,9 @@ mod tests {
                 .unwrap();
             assert_eq!(changes_after, changes_before);
             assert_eq!(
-                mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+                mod_status(&fixture.conn, fixture.mod_id)
+                    .unwrap()
+                    .as_deref(),
                 Some("disabled")
             );
         }
@@ -1093,7 +1101,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            mod_status(&fixture.conn, fixture.mod_id).unwrap().as_deref(),
+            mod_status(&fixture.conn, fixture.mod_id)
+                .unwrap()
+                .as_deref(),
             Some("uninstalled")
         );
         let snapshot: String = fixture
@@ -1352,7 +1362,10 @@ mod tests {
             }
             std::fs::rename(root.join("a.asi"), fixture_stage.join("1")).unwrap();
             crate::uninstall::seed_disabled_fixture_from_staging(&conn, id, &staging);
-            assert_eq!(std::fs::read(fixture_stage.join("1")).unwrap(), b"a payload");
+            assert_eq!(
+                std::fs::read(fixture_stage.join("1")).unwrap(),
+                b"a payload"
+            );
             if missing_first {
                 assert!(!fixture_stage.join("0").exists());
                 let manifest: Vec<serde_json::Value> = serde_json::from_slice(
@@ -1372,7 +1385,10 @@ mod tests {
                 let actual_hash = crate::util::hash_file(&fixture_stage.join("1")).unwrap();
                 assert_eq!(manifest[0]["hash"].as_str(), Some(actual_hash.as_str()));
             } else {
-                assert_eq!(std::fs::read(fixture_stage.join("0")).unwrap(), b"z payload");
+                assert_eq!(
+                    std::fs::read(fixture_stage.join("0")).unwrap(),
+                    b"z payload"
+                );
                 assert_eq!(
                     crate::state::disabled_payloads(&conn, id, &staging)
                         .unwrap()
@@ -1692,7 +1708,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('TestMod', 'asi', ?1, 'active')",
-            [game_root.to_str().expect("synthetic game root must be Unicode")],
+            [game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -1877,7 +1895,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('My Addon Car', 'folder', ?1, 'active')",
-            [game_root.to_str().expect("synthetic game root must be Unicode")],
+            [game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();

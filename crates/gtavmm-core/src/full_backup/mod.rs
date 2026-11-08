@@ -118,10 +118,7 @@ fn create_with_edition_clock(
 
     let full_backup_dir = backup_root.join("full");
     std::fs::create_dir_all(&full_backup_dir)?;
-    let zip_path = full_backup_dir.join(format!(
-        "mods_{}.zip",
-        now().format("%Y%m%d%H%M%S")
-    ));
+    let zip_path = full_backup_dir.join(format!("mods_{}.zip", now().format("%Y%m%d%H%M%S")));
 
     // OpenAI-Codex: Preserve occupied backup archives and their error source.
     let file = std::fs::OpenOptions::new()
@@ -333,8 +330,8 @@ mod tests {
         )
         .unwrap();
         let before = std::fs::read(&first).unwrap();
-        let error =
-            create_with_edition_clock(&game_root, &backup_root, None, fixed_backup_time).unwrap_err();
+        let error = create_with_edition_clock(&game_root, &backup_root, None, fixed_backup_time)
+            .unwrap_err();
         assert!(matches!(
             &error,
             CoreError::FullBackupNameCollision(source)

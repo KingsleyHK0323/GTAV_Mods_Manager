@@ -182,21 +182,24 @@ fn verify_page_install_metadata(
         "SELECT 1 FROM installed_mod \
          WHERE id = ?1 AND mode = ?2 AND mode_inferred = 0 AND category IS ?3 LIMIT 1",
     )?;
-    let query_result: rusqlite::Result<()> =
-        match statement.query(rusqlite::params![installed_mod_id, metadata.mode, metadata.category]) {
-            Ok(mut rows) => {
-                let mut matched = false;
-                loop {
-                    match rows.next() {
-                        Ok(Some(_)) => matched = true,
-                        Ok(None) if matched => break Ok(()),
-                        Ok(None) => break Err(rusqlite::Error::QueryReturnedNoRows),
-                        Err(error) => break Err(error),
-                    }
+    let query_result: rusqlite::Result<()> = match statement.query(rusqlite::params![
+        installed_mod_id,
+        metadata.mode,
+        metadata.category
+    ]) {
+        Ok(mut rows) => {
+            let mut matched = false;
+            loop {
+                match rows.next() {
+                    Ok(Some(_)) => matched = true,
+                    Ok(None) if matched => break Ok(()),
+                    Ok(None) => break Err(rusqlite::Error::QueryReturnedNoRows),
+                    Err(error) => break Err(error),
                 }
             }
-            Err(error) => Err(error),
-        };
+        }
+        Err(error) => Err(error),
+    };
     let finalize_result = statement.finalize();
     // OpenAI-Codex_ui_report_review: Keep the observed query error if finalization also fails.
     query_result.and(finalize_result).map_err(CoreError::from)
@@ -379,15 +382,17 @@ fn refuse_backup_path_overlaps(
     for file in &plan.files {
         if let Some(slot) = slots.overlap(&file.target)? {
             return Err(CoreError::UnsupportedFormat {
-                reason: format!("backup destination overlaps planned target: {}", slot.display()),
+                reason: format!(
+                    "backup destination overlaps planned target: {}",
+                    slot.display()
+                ),
             });
         }
     }
 
     let stored = {
-        let mut statement = conn.prepare(
-            "SELECT id, target_path, backup_path FROM installed_mod_file ORDER BY id",
-        )?;
+        let mut statement = conn
+            .prepare("SELECT id, target_path, backup_path FROM installed_mod_file ORDER BY id")?;
         let mut rows = statement.query([])?;
         let mut stored = Vec::new();
         while let Some(row) = rows.next()? {
@@ -403,14 +408,18 @@ fn refuse_backup_path_overlaps(
         stored
     };
     for (id, target, backup) in stored {
-        let target_hit = slots.overlap(Path::new(&target)).map_err(|error| {
-            CoreError::UnsupportedFormat {
-                reason: format!("cannot verify recorded target path for file {id}: {error}"),
-            }
-        })?;
+        let target_hit =
+            slots
+                .overlap(Path::new(&target))
+                .map_err(|error| CoreError::UnsupportedFormat {
+                    reason: format!("cannot verify recorded target path for file {id}: {error}"),
+                })?;
         if let Some(slot) = target_hit {
             return Err(CoreError::UnsupportedFormat {
-                reason: format!("backup destination overlaps a recorded target: {}", slot.display()),
+                reason: format!(
+                    "backup destination overlaps a recorded target: {}",
+                    slot.display()
+                ),
             });
         }
         if let Some(backup) = backup {
@@ -421,7 +430,10 @@ fn refuse_backup_path_overlaps(
             })?;
             if let Some(slot) = backup_hit {
                 return Err(CoreError::UnsupportedFormat {
-                    reason: format!("backup destination is already referenced: {}", slot.display()),
+                    reason: format!(
+                        "backup destination is already referenced: {}",
+                        slot.display()
+                    ),
                 });
             }
         }
@@ -458,11 +470,12 @@ fn refuse_targets_overlapping_recorded_backups(
         backups
     };
     for (id, backup) in backups {
-        let hit = targets.overlap(Path::new(&backup)).map_err(|error| {
-            CoreError::UnsupportedFormat {
-                reason: format!("cannot verify recorded backup path for file {id}: {error}"),
-            }
-        })?;
+        let hit =
+            targets
+                .overlap(Path::new(&backup))
+                .map_err(|error| CoreError::UnsupportedFormat {
+                    reason: format!("cannot verify recorded backup path for file {id}: {error}"),
+                })?;
         if let Some(target) = hit {
             return Err(CoreError::UnsupportedFormat {
                 reason: format!(
@@ -492,9 +505,7 @@ fn source_guard_absolute(path: &Path) -> CoreResult<PathBuf> {
         match component {
             std::path::Component::Normal(part) => absolute.push(part),
             std::path::Component::CurDir => {}
-            std::path::Component::Prefix(_) | std::path::Component::RootDir
-                if absolute_input =>
-            {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir if absolute_input => {
                 absolute.push(component.as_os_str());
             }
             _ => {
@@ -608,12 +619,18 @@ fn refuse_reinstall_sources_overlapping_old_paths(
         let source = source_guard_absolute(source)?;
         if let Some(target) = old_targets.overlap(&source)? {
             return Err(CoreError::UnsupportedFormat {
-                reason: format!("reinstall source overlaps an old target: {}", target.display()),
+                reason: format!(
+                    "reinstall source overlaps an old target: {}",
+                    target.display()
+                ),
             });
         }
         if let Some(backup) = old_backups.overlap(&source)? {
             return Err(CoreError::UnsupportedFormat {
-                reason: format!("reinstall source overlaps an old backup: {}", backup.display()),
+                reason: format!(
+                    "reinstall source overlaps an old backup: {}",
+                    backup.display()
+                ),
             });
         }
     }
@@ -626,10 +643,7 @@ fn refuse_overlapping_planned_targets(plan: &ModPlan) -> CoreResult<()> {
     for file in &plan.files {
         if seen.overlap(&file.target)?.is_some() {
             return Err(CoreError::UnsupportedFormat {
-                reason: format!(
-                    "planned install targets overlap: {}",
-                    file.target.display()
-                ),
+                reason: format!("planned install targets overlap: {}", file.target.display()),
             });
         }
         seen.insert(file.target.clone())?;
@@ -858,7 +872,11 @@ fn install_with_expected_restores(
                 "UPDATE installed_mod SET mode = ?1, mode_inferred = 0, category = ?3 WHERE id = ?2",
             )?;
             let update_result = statement
-                .execute(rusqlite::params![metadata.mode, installed_mod_id, metadata.category])
+                .execute(rusqlite::params![
+                    metadata.mode,
+                    installed_mod_id,
+                    metadata.category
+                ])
                 .and_then(|count| {
                     if count == 1 {
                         Ok(())
@@ -1232,7 +1250,8 @@ fn reinstall_impl(
     // OpenAI-Codex: Check source aliases before removing the old mod.
     refuse_source_path_overlaps(&plan, new_source_path, backup_root, options.auto_backup)?;
     // OpenAI-Codex: Check classified sources before uninstalling the old mod.
-    let reinstall_sources: Vec<PathBuf> = plan.files.iter().map(|file| file.source.clone()).collect();
+    let reinstall_sources: Vec<PathBuf> =
+        plan.files.iter().map(|file| file.source.clone()).collect();
     refuse_reinstall_sources_overlapping_old_paths(conn, mod_id, &status, &reinstall_sources)?;
     let preserved_mode =
         preserve_lspdfr_reinstall_role(conn, mod_id, new_source_path, game_root, &plan)?;
@@ -1973,8 +1992,10 @@ mod tests {
         .unwrap();
         // OpenAI-Codex_v1_removal_review: The original version was recycled.
         let InstallOutcome::Success {
-            installed_mod_id: new_id, ..
-        } = outcome else {
+            installed_mod_id: new_id,
+            ..
+        } = outcome
+        else {
             panic!("expected successful reinstall");
         };
         let old_status: String = conn
@@ -2628,7 +2649,9 @@ mod tests {
         let report = conflict::analyze(&conn, &[]).unwrap();
         assert!(!report.has_protected_hits());
         assert!(!report.requires_explicit_override());
-        assert!(dlc_manual::pack_names_for_paths(&game_root, &[]).unwrap().is_empty());
+        assert!(dlc_manual::pack_names_for_paths(&game_root, &[])
+            .unwrap()
+            .is_empty());
 
         let tree_before = snapshot_backup_tree(temp.path());
         let db_before = snapshot_backup_database(&conn);
@@ -3243,7 +3266,8 @@ mod tests {
                     let mut conn = crate::db::open_in_memory().unwrap();
                     let old_plan = crate::mod_analyzer::classify(&old_source, &provider).unwrap();
                     let InstallOutcome::Success {
-                        installed_mod_id: old_id, ..
+                        installed_mod_id: old_id,
+                        ..
                     } = install(
                         &mut conn,
                         "Old",
@@ -3253,7 +3277,8 @@ mod tests {
                         InstallOptions::default(),
                         &old_source,
                     )
-                    .unwrap() else {
+                    .unwrap()
+                    else {
                         panic!("expected initial installation");
                     };
                     let old_target = root.join("mods/update/x64/dlcpacks/Shared/dlc.rpf");
@@ -3298,11 +3323,18 @@ mod tests {
                         vec![new_pack.to_string()]
                     );
                     let old_report = conflict::analyze(&conn, &[old_target.clone()]).unwrap();
-                    assert!(old_report.foreign_conflicts.iter().any(|c| c.owner_mod_id == Some(old_id)));
+                    assert!(old_report
+                        .foreign_conflicts
+                        .iter()
+                        .any(|c| c.owner_mod_id == Some(old_id)));
                     if let Some(id) = foreign_id {
-                        assert!(old_report.foreign_conflicts.iter().any(|c| c.owner_mod_id == Some(id)));
+                        assert!(old_report
+                            .foreign_conflicts
+                            .iter()
+                            .any(|c| c.owner_mod_id == Some(id)));
                     }
-                    let targets: Vec<PathBuf> = plan.files.iter().map(|file| file.target.clone()).collect();
+                    let targets: Vec<PathBuf> =
+                        plan.files.iter().map(|file| file.target.clone()).collect();
                     let report = conflict::analyze(&conn, &targets).unwrap();
                     assert!(!report.has_protected_hits());
                     if new_pack == "Other" {
@@ -3310,32 +3342,55 @@ mod tests {
                     }
                     let backup = dir.path().join("new-backups");
                     let recycle = dir.path().join("recycle");
-                    assert!(crate::providers::ensure_installed_mod_available(&conn, old_id).is_ok());
+                    assert!(
+                        crate::providers::ensure_installed_mod_available(&conn, old_id).is_ok()
+                    );
                     assert!(crate::providers::ensure_game_root_available(&root).is_ok());
-                    assert!(crate::uninstall::preflight_recycle_snapshot_paths(&conn, old_id, &root).is_ok());
+                    assert!(crate::uninstall::preflight_recycle_snapshot_paths(
+                        &conn, old_id, &root
+                    )
+                    .is_ok());
                     assert!(refuse_reinstall_sources_overlapping_old_paths(
-                        &conn, old_id, "active", &[new_source.clone()]
-                    ).is_ok());
+                        &conn,
+                        old_id,
+                        "active",
+                        &[new_source.clone()]
+                    )
+                    .is_ok());
                     assert!(crate::lml_store::ensure_generic_targets_allowed(
-                        &conn, &root, &[backup.clone()]
-                    ).is_ok());
+                        &conn,
+                        &root,
+                        &[backup.clone()]
+                    )
+                    .is_ok());
                     assert!(source_type_str(&plan.format).is_ok());
                     assert!(refuse_overlapping_planned_targets(&plan).is_ok());
-                    assert!(ensure_lml_backup_paths_allowed(&conn, &root, &backup, &plan, true).is_ok());
+                    assert!(
+                        ensure_lml_backup_paths_allowed(&conn, &root, &backup, &plan, true).is_ok()
+                    );
                     assert!(refuse_existing_backup_slots(&backup, &plan, true).is_ok());
                     assert!(refuse_backup_path_overlaps(&conn, &backup, &plan, true).is_ok());
                     assert!(refuse_targets_overlapping_recorded_backups(&conn, &plan).is_ok());
                     assert!(refuse_source_path_overlaps(&plan, &new_source, &backup, true).is_ok());
-                    let sources: Vec<PathBuf> = plan.files.iter().map(|file| file.source.clone()).collect();
+                    let sources: Vec<PathBuf> =
+                        plan.files.iter().map(|file| file.source.clone()).collect();
                     assert!(refuse_reinstall_sources_overlapping_old_paths(
                         &conn, old_id, "active", &sources
-                    ).is_ok());
+                    )
+                    .is_ok());
                     assert!(preserve_lspdfr_reinstall_role(
-                        &conn, old_id, &new_source, &root, &plan
-                    ).unwrap().is_none());
+                        &conn,
+                        old_id,
+                        &new_source,
+                        &root,
+                        &plan
+                    )
+                    .unwrap()
+                    .is_none());
                     assert!(crate::lml_store::ensure_generic_targets_allowed(
                         &conn, &root, &targets
-                    ).is_ok());
+                    )
+                    .is_ok());
                     for file in &plan.files {
                         assert!(std::fs::metadata(&file.source).unwrap().is_file());
                         match std::fs::metadata(&file.target) {
@@ -3366,7 +3421,10 @@ mod tests {
                         },
                     );
                     match (foreign_id, outcome) {
-                        (Some(expected_owner), Err(CoreError::ForeignConflict { path, owner_mod_id })) => {
+                        (
+                            Some(expected_owner),
+                            Err(CoreError::ForeignConflict { path, owner_mod_id }),
+                        ) => {
                             assert_eq!(owner_mod_id, expected_owner);
                             assert_eq!(path, old_target);
                             assert_eq!(snapshot_backup_tree(dir.path()), tree_before);
@@ -3395,36 +3453,61 @@ mod tests {
                                 assert!(source_type_str(&rechecked_plan.format).is_ok());
                                 assert!(refuse_overlapping_planned_targets(&rechecked_plan).is_ok());
                                 assert!(ensure_lml_backup_paths_allowed(
-                                    &conn, &root, &backup, &rechecked_plan, true
-                                ).is_ok());
+                                    &conn,
+                                    &root,
+                                    &backup,
+                                    &rechecked_plan,
+                                    true
+                                )
+                                .is_ok());
                                 assert!(refuse_existing_backup_slots(
-                                    &backup, &rechecked_plan, true
-                                ).is_ok());
+                                    &backup,
+                                    &rechecked_plan,
+                                    true
+                                )
+                                .is_ok());
                                 assert!(refuse_backup_path_overlaps(
-                                    &conn, &backup, &rechecked_plan, true
-                                ).is_ok());
+                                    &conn,
+                                    &backup,
+                                    &rechecked_plan,
+                                    true
+                                )
+                                .is_ok());
                                 assert!(refuse_targets_overlapping_recorded_backups(
-                                    &conn, &rechecked_plan
-                                ).is_ok());
+                                    &conn,
+                                    &rechecked_plan
+                                )
+                                .is_ok());
                                 assert!(refuse_source_path_overlaps(
-                                    &rechecked_plan, &new_source, &backup, true
-                                ).is_ok());
+                                    &rechecked_plan,
+                                    &new_source,
+                                    &backup,
+                                    true
+                                )
+                                .is_ok());
                                 assert!(crate::lml_store::ensure_generic_targets_allowed(
-                                    &conn, &root, std::slice::from_ref(&new_target)
-                                ).is_ok());
-                                let new_report = conflict::analyze(
-                                    &conn, std::slice::from_ref(&new_target)
-                                ).unwrap();
+                                    &conn,
+                                    &root,
+                                    std::slice::from_ref(&new_target)
+                                )
+                                .is_ok());
+                                let new_report =
+                                    conflict::analyze(&conn, std::slice::from_ref(&new_target))
+                                        .unwrap();
                                 assert!(!new_report.has_protected_hits());
                                 assert_eq!(new_report.foreign_conflicts.len(), 1);
                                 assert_eq!(new_report.foreign_conflicts[0].owner_mod_id, None);
                                 assert_eq!(new_report.foreign_conflicts[0].path, new_target);
-                                let old_report = conflict::analyze(
-                                    &conn, std::slice::from_ref(&old_target)
-                                ).unwrap();
-                                assert!(old_report.foreign_conflicts.iter()
+                                let old_report =
+                                    conflict::analyze(&conn, std::slice::from_ref(&old_target))
+                                        .unwrap();
+                                assert!(old_report
+                                    .foreign_conflicts
+                                    .iter()
                                     .any(|item| item.owner_mod_id == Some(old_id)));
-                                assert!(old_report.foreign_conflicts.iter()
+                                assert!(old_report
+                                    .foreign_conflicts
+                                    .iter()
                                     .any(|item| item.owner_mod_id == Some(expected_owner)));
 
                                 let retry_tree_before = snapshot_backup_tree(dir.path());
@@ -3447,10 +3530,19 @@ mod tests {
                                     match (confirmed, retry) {
                                         (false, Ok(InstallOutcome::RequiresOverride(report))) => {
                                             assert_eq!(report.foreign_conflicts.len(), 1);
-                                            assert_eq!(report.foreign_conflicts[0].owner_mod_id, None);
-                                            assert_eq!(report.foreign_conflicts[0].path, new_target);
+                                            assert_eq!(
+                                                report.foreign_conflicts[0].owner_mod_id,
+                                                None
+                                            );
+                                            assert_eq!(
+                                                report.foreign_conflicts[0].path,
+                                                new_target
+                                            );
                                         }
-                                        (true, Err(CoreError::ForeignConflict { path, owner_mod_id })) => {
+                                        (
+                                            true,
+                                            Err(CoreError::ForeignConflict { path, owner_mod_id }),
+                                        ) => {
                                             assert_eq!(owner_mod_id, expected_owner);
                                             assert_eq!(path, old_target);
                                         }
@@ -3458,11 +3550,13 @@ mod tests {
                                             panic!("unexpected confirmation result: {unexpected:?}")
                                         }
                                     }
-                                    let status: String = conn.query_row(
-                                        "SELECT status FROM installed_mod WHERE id = ?1",
-                                        [old_id],
-                                        |row| row.get(0),
-                                    ).unwrap();
+                                    let status: String = conn
+                                        .query_row(
+                                            "SELECT status FROM installed_mod WHERE id = ?1",
+                                            [old_id],
+                                            |row| row.get(0),
+                                        )
+                                        .unwrap();
                                     let retry_intents: i64 = conn.query_row(
                                         "SELECT COUNT(*) FROM manual_dlc_event WHERE operation = 'reinstall' AND phase = 'intent'",
                                         [],
@@ -3470,27 +3564,45 @@ mod tests {
                                     ).unwrap();
                                     assert_eq!(status, "active");
                                     assert_eq!(retry_intents, 0);
-                                    assert_eq!(std::fs::read(&old_target).unwrap(), b"foreign payload");
-                                    assert_eq!(std::fs::read(&new_target).unwrap(), b"untracked target");
+                                    assert_eq!(
+                                        std::fs::read(&old_target).unwrap(),
+                                        b"foreign payload"
+                                    );
+                                    assert_eq!(
+                                        std::fs::read(&new_target).unwrap(),
+                                        b"untracked target"
+                                    );
                                     assert!(!recycle.exists());
                                     assert!(!backup.exists());
                                     assert_eq!(snapshot_backup_tree(dir.path()), retry_tree_before);
-                                    assert_eq!(snapshot_backup_database(&conn), retry_database_before);
+                                    assert_eq!(
+                                        snapshot_backup_database(&conn),
+                                        retry_database_before
+                                    );
                                 }
                             }
                         }
-                        (None, Ok(InstallOutcome::Success { installed_mod_id, .. })) => {
+                        (
+                            None,
+                            Ok(InstallOutcome::Success {
+                                installed_mod_id, ..
+                            }),
+                        ) => {
                             assert_eq!(std::fs::read(&new_target).unwrap(), b"new payload");
-                            let old_status: String = conn.query_row(
-                                "SELECT status FROM installed_mod WHERE id = ?1",
-                                [old_id],
-                                |row| row.get(0),
-                            ).unwrap();
-                            let new_status: String = conn.query_row(
-                                "SELECT status FROM installed_mod WHERE id = ?1",
-                                [installed_mod_id],
-                                |row| row.get(0),
-                            ).unwrap();
+                            let old_status: String = conn
+                                .query_row(
+                                    "SELECT status FROM installed_mod WHERE id = ?1",
+                                    [old_id],
+                                    |row| row.get(0),
+                                )
+                                .unwrap();
+                            let new_status: String = conn
+                                .query_row(
+                                    "SELECT status FROM installed_mod WHERE id = ?1",
+                                    [installed_mod_id],
+                                    |row| row.get(0),
+                                )
+                                .unwrap();
                             assert_eq!(old_status, "uninstalled");
                             assert_eq!(new_status, "active");
                             let entries = crate::recycle_bin::list(&conn).unwrap();
@@ -3512,7 +3624,9 @@ mod tests {
 
     #[test]
     fn reinstall_checks_existing_conflicts_before_removing_the_old_version() {
-        for (tracked, allow_override) in [(true, false), (true, true), (false, false), (false, true)] {
+        for (tracked, allow_override) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
             let dir = tempfile::tempdir().unwrap();
             let game_root = dir.path().join("game");
             let provider = crate::providers::LegacySpProvider::new(game_root.clone());
@@ -3583,12 +3697,17 @@ mod tests {
                 assert!(matches!(outcome, Ok(InstallOutcome::RequiresOverride(_))));
             } else {
                 let InstallOutcome::Success {
-                    installed_mod_id: new_id, ..
-                } = outcome.unwrap() else {
+                    installed_mod_id: new_id,
+                    ..
+                } = outcome.unwrap()
+                else {
                     panic!("expected unowned overwrite to succeed");
                 };
                 assert!(!game_root.join("old.asi").exists());
-                assert_eq!(std::fs::read(game_root.join("shared.asi")).unwrap(), b"new content");
+                assert_eq!(
+                    std::fs::read(game_root.join("shared.asi")).unwrap(),
+                    b"new content"
+                );
                 assert_eq!(std::fs::read(backup.join("0.bak")).unwrap(), b"shared.asi");
                 let old_status: String = conn
                     .query_row(
@@ -4143,7 +4262,9 @@ mod tests {
         snapshot
     }
 
-    fn snapshot_backup_database(conn: &Connection) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+    fn snapshot_backup_database(
+        conn: &Connection,
+    ) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
         let mut statement = conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type='table' \
@@ -4256,7 +4377,10 @@ mod tests {
         let report = conflict::analyze(&conn, &[target_a.clone(), target_b.clone()]).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 2);
-        assert!(report.foreign_conflicts.iter().all(|item| item.owner_mod_id.is_none()));
+        assert!(report
+            .foreign_conflicts
+            .iter()
+            .all(|item| item.owner_mod_id.is_none()));
         let tree_before = snapshot_backup_tree(temp.path());
         let database_before = snapshot_backup_database(&conn);
         let changes_before: i64 = conn
@@ -4326,10 +4450,15 @@ mod tests {
         assert!(matches!(control, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&target_a).unwrap(), b"new A");
         assert_eq!(std::fs::read(&target_b).unwrap(), b"new B");
-        assert_eq!(std::fs::read(safe_backup.join("0.bak")).unwrap(), b"original A");
-        assert_eq!(std::fs::read(safe_backup.join("1.bak")).unwrap(), b"original B");
+        assert_eq!(
+            std::fs::read(safe_backup.join("0.bak")).unwrap(),
+            b"original A"
+        );
+        assert_eq!(
+            std::fs::read(safe_backup.join("1.bak")).unwrap(),
+            b"original B"
+        );
         assert_eq!(std::fs::read(unrelated).unwrap(), b"unrelated");
-
     }
 
     // OpenAI-Codex: Earlier targets cannot become later backup destinations.
@@ -4418,7 +4547,10 @@ mod tests {
         assert!(matches!(control, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&target_a).unwrap(), b"new A");
         assert_eq!(std::fs::read(&target_b).unwrap(), b"new B");
-        assert_eq!(std::fs::read(safe_backup.join("1.bak")).unwrap(), b"original B");
+        assert_eq!(
+            std::fs::read(safe_backup.join("1.bak")).unwrap(),
+            b"original B"
+        );
     }
 
     // OpenAI-Codex: A missing target can still belong to another mod.
@@ -4475,9 +4607,11 @@ mod tests {
             }
             let expected_status = if owner_disabled { "disabled" } else { "active" };
             let owner_status: String = conn
-                .query_row("SELECT status FROM installed_mod WHERE id = ?1", [owner_id], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [owner_id],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert_eq!(owner_status, expected_status);
             assert!(!owner_target.exists());
@@ -4554,9 +4688,11 @@ mod tests {
             );
             assert!(!owner_target.exists());
             let owner_status_after: String = conn
-                .query_row("SELECT status FROM installed_mod WHERE id = ?1", [owner_id], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [owner_id],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert_eq!(owner_status_after, expected_status);
             if owner_disabled {
@@ -4822,7 +4958,10 @@ mod tests {
             &recycle_root,
             InstallOptions::default(),
         );
-        let expected_error = format!("reinstall source overlaps an old backup: {}", old_backup.display());
+        let expected_error = format!(
+            "reinstall source overlaps an old backup: {}",
+            old_backup.display()
+        );
         assert!(matches!(
             result,
             Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -4848,7 +4987,10 @@ mod tests {
         .unwrap();
         assert!(matches!(control, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&safe_source).unwrap(), b"new mod");
-        assert_eq!(std::fs::read(game_root.join("safe.asi")).unwrap(), b"new mod");
+        assert_eq!(
+            std::fs::read(game_root.join("safe.asi")).unwrap(),
+            b"new mod"
+        );
     }
 
     // OpenAI-Codex: An old deployed archive cannot also be the new package.
@@ -4904,7 +5046,10 @@ mod tests {
             &recycle_root,
             InstallOptions::default(),
         );
-        let expected_error = format!("reinstall source overlaps an old target: {}", archive.display());
+        let expected_error = format!(
+            "reinstall source overlaps an old target: {}",
+            archive.display()
+        );
         assert!(matches!(
             result,
             Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -4930,7 +5075,10 @@ mod tests {
         .unwrap();
         assert!(matches!(control, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&safe_source).unwrap(), b"new mod");
-        assert_eq!(std::fs::read(game_root.join("safe.asi")).unwrap(), b"new mod");
+        assert_eq!(
+            std::fs::read(game_root.join("safe.asi")).unwrap(),
+            b"new mod"
+        );
     }
 
     // OpenAI-Codex: A source folder may contain the old mod's numbered backup.
@@ -4984,7 +5132,10 @@ mod tests {
             &recycle_root,
             InstallOptions::default(),
         );
-        let expected_error = format!("reinstall source overlaps an old backup: {}", old_backup.display());
+        let expected_error = format!(
+            "reinstall source overlaps an old backup: {}",
+            old_backup.display()
+        );
         assert!(matches!(
             result,
             Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -5009,7 +5160,10 @@ mod tests {
         .unwrap();
         assert!(matches!(control, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&package_payload).unwrap(), b"new mod");
-        assert_eq!(std::fs::read(game_root.join("safe.asi")).unwrap(), b"safe mod");
+        assert_eq!(
+            std::fs::read(game_root.join("safe.asi")).unwrap(),
+            b"safe mod"
+        );
     }
 
     // OpenAI-Codex: Disabled removal does not consume the recorded old backup.
@@ -5055,10 +5209,8 @@ mod tests {
             1
         );
         assert_eq!(std::fs::read(&old_target).unwrap(), b"old original");
-        let manifest_before = std::fs::read(
-            staging_root.join(mod_id.to_string()).join("manifest.json"),
-        )
-        .unwrap();
+        let manifest_before =
+            std::fs::read(staging_root.join(mod_id.to_string()).join("manifest.json")).unwrap();
         let result = reinstall_with_staging(
             &mut conn,
             mod_id,
@@ -5075,7 +5227,10 @@ mod tests {
         assert!(matches!(result, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&old_backup).unwrap(), b"old original");
         assert_eq!(std::fs::read(&old_target).unwrap(), b"old original");
-        assert_eq!(std::fs::read(game_root.join("new_package.asi")).unwrap(), b"old original");
+        assert_eq!(
+            std::fs::read(game_root.join("new_package.asi")).unwrap(),
+            b"old original"
+        );
         assert_eq!(
             std::fs::read(staging_root.join(mod_id.to_string()).join("0")).unwrap(),
             b"old mod"
@@ -5085,9 +5240,11 @@ mod tests {
             manifest_before
         );
         let old_status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(old_status, "uninstalled");
         let snapshot_dir: String = conn
@@ -5101,7 +5258,6 @@ mod tests {
             std::fs::read(Path::new(&snapshot_dir).join("old.asi")).unwrap(),
             b"old mod"
         );
-
     }
 
     // OpenAI-Codex_lml_guard_audit: Reject active snapshot collisions before DLC intent.
@@ -5134,11 +5290,7 @@ mod tests {
                 conn.execute(
                     "INSERT INTO installed_mod_file (installed_mod_id, target_path, file_hash) \
                      VALUES (?1, ?2, ?3)",
-                    rusqlite::params![
-                        mod_id,
-                        target.to_str().unwrap(),
-                        hash_file(target).unwrap()
-                    ],
+                    rusqlite::params![mod_id, target.to_str().unwrap(), hash_file(target).unwrap()],
                 )
                 .unwrap();
             }
@@ -5161,7 +5313,9 @@ mod tests {
                 .query_row("SELECT total_changes()", [], |row| row.get(0))
                 .unwrap();
             let intents_before: i64 = conn
-                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
 
             let provider = crate::providers::LegacySpProvider::new(game_root.clone());
@@ -5178,7 +5332,8 @@ mod tests {
             );
             if overlapping {
                 let relative = second.strip_prefix(&game_root).unwrap();
-                let expected_error = format!("recycle snapshot paths overlap: {}", relative.display());
+                let expected_error =
+                    format!("recycle snapshot paths overlap: {}", relative.display());
                 assert!(matches!(
                     result,
                     Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -5189,12 +5344,18 @@ mod tests {
                     .query_row("SELECT total_changes()", [], |row| row.get(0))
                     .unwrap();
                 let intents_after: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert_eq!(changes_after, changes_before);
                 assert_eq!(intents_after, intents_before);
                 let status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 assert_eq!(status, "active");
                 assert_eq!(std::fs::read(&first).unwrap(), b"old first");
@@ -5202,17 +5363,28 @@ mod tests {
                 assert!(!recycle_root.exists());
             } else {
                 let new_mod_id = match result {
-                    Ok(InstallOutcome::Success { installed_mod_id, files_written }) => {
+                    Ok(InstallOutcome::Success {
+                        installed_mod_id,
+                        files_written,
+                    }) => {
                         assert_eq!(files_written, 1);
                         installed_mod_id
                     }
                     other => panic!("expected a successful disjoint reinstall: {other:?}"),
                 };
                 let old_status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 let new_status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [new_mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [new_mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 assert_eq!(old_status, "uninstalled");
                 assert_eq!(new_status, "active");
@@ -5251,7 +5423,10 @@ mod tests {
                 );
                 assert!(!first.exists());
                 assert!(!second.exists());
-                assert_eq!(std::fs::read(game_root.join("new.asi")).unwrap(), b"new payload");
+                assert_eq!(
+                    std::fs::read(game_root.join("new.asi")).unwrap(),
+                    b"new payload"
+                );
             }
         }
     }
@@ -5323,7 +5498,9 @@ mod tests {
                 .query_row("SELECT total_changes()", [], |row| row.get(0))
                 .unwrap();
             let intents_before: i64 = conn
-                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             let result = reinstall_with_staging(
                 &mut conn,
@@ -5339,7 +5516,8 @@ mod tests {
             );
             if overlapping {
                 let relative = second.strip_prefix(&game_root).unwrap();
-                let expected_error = format!("recycle snapshot paths overlap: {}", relative.display());
+                let expected_error =
+                    format!("recycle snapshot paths overlap: {}", relative.display());
                 assert!(matches!(
                     result,
                     Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -5350,21 +5528,33 @@ mod tests {
                     .query_row("SELECT total_changes()", [], |row| row.get(0))
                     .unwrap();
                 let intents_after: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert_eq!(changes_after, changes_before);
                 assert_eq!(intents_after, intents_before);
             } else {
                 // OpenAI-Codex_lml_guard_audit: Verify the complete disjoint legacy outcome.
                 let new_mod_id = match &result {
-                    Ok(InstallOutcome::Success { installed_mod_id, .. }) => *installed_mod_id,
+                    Ok(InstallOutcome::Success {
+                        installed_mod_id, ..
+                    }) => *installed_mod_id,
                     other => panic!("expected a successful legacy reinstall: {other:?}"),
                 };
                 let old_status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 let new_status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [new_mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [new_mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 assert_eq!(old_status, "uninstalled");
                 assert_eq!(new_status, "active");
@@ -5377,7 +5567,9 @@ mod tests {
                         )
                         .unwrap();
                     let phases = statement
-                        .query_map([mod_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                        .query_map([mod_id], |row| {
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                        })
                         .unwrap()
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .unwrap();
@@ -5409,10 +5601,15 @@ mod tests {
                 assert!(!stage.join("manifest.json").exists());
                 assert!(matches!(result, Ok(InstallOutcome::Success { .. })));
                 let intents_after: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert!(intents_after > intents_before);
-                assert_eq!(std::fs::read(game_root.join("new.asi")).unwrap(), b"new payload");
+                assert_eq!(
+                    std::fs::read(game_root.join("new.asi")).unwrap(),
+                    b"new payload"
+                );
                 assert_eq!(std::fs::read(stage.join("0")).unwrap(), b"first staged");
                 assert_eq!(std::fs::read(stage.join("1")).unwrap(), b"second staged");
             }
@@ -5481,7 +5678,11 @@ mod tests {
                 file_ids
             );
             let status: String = conn
-                .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [mod_id],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert_eq!(status, "disabled");
             assert!(crate::providers::ensure_installed_mod_available(&conn, mod_id).is_ok());
@@ -5495,7 +5696,9 @@ mod tests {
                 .query_row("SELECT total_changes()", [], |row| row.get(0))
                 .unwrap();
             let events_before: i64 = conn
-                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             let provider = crate::providers::LegacySpProvider::new(game_root.clone());
             let result = reinstall_with_staging(
@@ -5512,7 +5715,8 @@ mod tests {
             );
             if overlapping {
                 let relative = first.strip_prefix(&game_root).unwrap();
-                let expected_error = format!("recycle snapshot paths overlap: {}", relative.display());
+                let expected_error =
+                    format!("recycle snapshot paths overlap: {}", relative.display());
                 assert!(matches!(
                     result,
                     Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -5523,12 +5727,18 @@ mod tests {
                     .query_row("SELECT total_changes()", [], |row| row.get(0))
                     .unwrap();
                 let events_after: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM manual_dlc_event", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert_eq!(changes_after, changes_before);
                 assert_eq!(events_after, events_before);
                 let status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 assert_eq!(status, "disabled");
                 assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
@@ -5536,17 +5746,28 @@ mod tests {
                 assert!(!game_root.join("new.asi").exists());
             } else {
                 let new_mod_id = match result {
-                    Ok(InstallOutcome::Success { installed_mod_id, files_written }) => {
+                    Ok(InstallOutcome::Success {
+                        installed_mod_id,
+                        files_written,
+                    }) => {
                         assert_eq!(files_written, 1);
                         installed_mod_id
                     }
                     other => panic!("expected a successful manifest reinstall: {other:?}"),
                 };
                 let old_status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 let new_status: String = conn
-                    .query_row("SELECT status FROM installed_mod WHERE id = ?1", [new_mod_id], |row| row.get(0))
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [new_mod_id],
+                        |row| row.get(0),
+                    )
                     .unwrap();
                 assert_eq!(old_status, "uninstalled");
                 assert_eq!(new_status, "active");
@@ -5559,7 +5780,9 @@ mod tests {
                         )
                         .unwrap();
                     let phases = statement
-                        .query_map([mod_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                        .query_map([mod_id], |row| {
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                        })
                         .unwrap()
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .unwrap();
@@ -5591,7 +5814,10 @@ mod tests {
                 assert_eq!(std::fs::read(stage.join("1")).unwrap(), b"second payload");
                 assert!(!first.exists());
                 assert!(!second.exists());
-                assert_eq!(std::fs::read(game_root.join("new.asi")).unwrap(), b"new payload");
+                assert_eq!(
+                    std::fs::read(game_root.join("new.asi")).unwrap(),
+                    b"new payload"
+                );
             }
         }
     }
@@ -5602,7 +5828,10 @@ mod tests {
         fn old_rows(
             conn: &rusqlite::Connection,
             mod_id: i64,
-        ) -> (Vec<rusqlite::types::Value>, Vec<Vec<rusqlite::types::Value>>) {
+        ) -> (
+            Vec<rusqlite::types::Value>,
+            Vec<Vec<rusqlite::types::Value>>,
+        ) {
             let mut mod_statement = conn
                 .prepare("SELECT * FROM installed_mod WHERE id = ?1")
                 .unwrap();
@@ -5666,7 +5895,8 @@ mod tests {
         );
         let relative = old_target.strip_prefix(&game_root).unwrap();
         let expected_error = format!("recycle snapshot paths overlap: {}", relative.display());
-        let preflight = crate::uninstall::preflight_recycle_snapshot_paths(&conn, mod_id, &game_root);
+        let preflight =
+            crate::uninstall::preflight_recycle_snapshot_paths(&conn, mod_id, &game_root);
         assert!(matches!(
             preflight,
             Err(CoreError::UnsupportedFormat { reason }) if reason == expected_error
@@ -5692,7 +5922,10 @@ mod tests {
             InstallOptions::default(),
         );
         let new_mod_id = match result {
-            Ok(InstallOutcome::Success { installed_mod_id, files_written }) => {
+            Ok(InstallOutcome::Success {
+                installed_mod_id,
+                files_written,
+            }) => {
                 assert_eq!(files_written, 1);
                 installed_mod_id
             }
@@ -5700,14 +5933,21 @@ mod tests {
         };
         assert_ne!(new_mod_id, mod_id);
         let status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [new_mod_id], |row| row.get(0))
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [new_mod_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(status, "active");
         assert_eq!(old_rows(&conn, mod_id), before);
         assert!(!old_target.exists());
         assert_eq!(std::fs::read(&unrelated).unwrap(), b"unrelated data");
         assert_eq!(std::fs::read(&source).unwrap(), b"new payload");
-        assert_eq!(std::fs::read(game_root.join("new.asi")).unwrap(), b"new payload");
+        assert_eq!(
+            std::fs::read(game_root.join("new.asi")).unwrap(),
+            b"new payload"
+        );
         let recycle_after: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM recycle_bin_entry WHERE original_installed_mod_id = ?1",
@@ -5727,7 +5967,9 @@ mod tests {
                 )
                 .unwrap();
             let phases = statement
-                .query_map([mod_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                .query_map([mod_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
                 .unwrap()
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap();
@@ -5819,7 +6061,10 @@ mod tests {
         assert!(matches!(control, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&target_a).unwrap(), b"new A");
         assert_eq!(std::fs::read(&target_b).unwrap(), b"new B");
-        assert_eq!(std::fs::read(backup_root.join("0.bak")).unwrap(), b"original A");
+        assert_eq!(
+            std::fs::read(backup_root.join("0.bak")).unwrap(),
+            b"original A"
+        );
     }
 
     // OpenAI-Codex: One planned target must not mutate a later planned source.
@@ -6136,9 +6381,11 @@ mod tests {
             }
             let expected_status = if owner_disabled { "disabled" } else { "active" };
             let owner_status: String = conn
-                .query_row("SELECT status FROM installed_mod WHERE id = ?1", [owner_id], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [owner_id],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert_eq!(owner_status, expected_status);
             assert!(!missing_backup.exists());
@@ -6215,9 +6462,11 @@ mod tests {
             );
             assert!(!missing_backup.exists());
             let owner_status_after: String = conn
-                .query_row("SELECT status FROM installed_mod WHERE id = ?1", [owner_id], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT status FROM installed_mod WHERE id = ?1",
+                    [owner_id],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert_eq!(owner_status_after, expected_status);
             if owner_disabled {
@@ -6323,14 +6572,7 @@ mod tests {
         };
         let mut conn = crate::db::open_in_memory().unwrap();
         let operation_id = begin_operation(&mut conn, &operation).unwrap();
-        record_phase(
-            &mut conn,
-            operation_id,
-            Phase::Prepared,
-            Phase::Staged,
-            "",
-        )
-        .unwrap();
+        record_phase(&mut conn, operation_id, Phase::Prepared, Phase::Staged, "").unwrap();
 
         let source = write_source(temp_a.path(), "incoming.asi", b"incoming A");
         let target = root_a.join("existing.asi");
@@ -6403,7 +6645,9 @@ mod tests {
 
         // OpenAI-Codex: Refuse the same backup before removing an old mod.
         let control_id = match &control {
-            InstallOutcome::Success { installed_mod_id, .. } => *installed_mod_id,
+            InstallOutcome::Success {
+                installed_mod_id, ..
+            } => *installed_mod_id,
             _ => panic!("the control installation must succeed"),
         };
         assert!(crate::providers::ensure_installed_mod_available(&conn, control_id).is_ok());
@@ -6432,10 +6676,16 @@ mod tests {
                 if reason == "LML metadata: generic target overlaps an LML reservation"
         ));
         assert_eq!(std::fs::read(&control_target).unwrap(), b"incoming A");
-        assert_eq!(std::fs::read(control_backup.join("0.bak")).unwrap(), b"control original");
+        assert_eq!(
+            std::fs::read(control_backup.join("0.bak")).unwrap(),
+            b"control original"
+        );
         assert_eq!(std::fs::read(&source).unwrap(), b"incoming A");
 
-        assert_eq!(std::fs::read(&reinstall_target).unwrap(), b"original at new target");
+        assert_eq!(
+            std::fs::read(&reinstall_target).unwrap(),
+            b"original at new target"
+        );
         assert!(!recycle_root.exists());
         assert_eq!(snapshot_stage(&stage_b), stage_before);
         assert_eq!(snapshot_database(&conn), reinstall_db_before);
@@ -6461,7 +6711,10 @@ mod tests {
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"reserved B sentinel");
         assert_eq!(std::fs::read(&target).unwrap(), b"original A");
         assert_eq!(std::fs::read(&source).unwrap(), b"incoming A");
-        assert_eq!(std::fs::read(stage_b.join("install.xml")).unwrap(), manifest);
+        assert_eq!(
+            std::fs::read(stage_b.join("install.xml")).unwrap(),
+            manifest
+        );
         assert_eq!(
             load_operation(&conn, operation_id).unwrap().unwrap(),
             reservation_before
@@ -6510,8 +6763,10 @@ mod tests {
         .unwrap();
         assert!(matches!(later, InstallOutcome::Success { .. }));
         assert_eq!(std::fs::read(&later_target).unwrap(), b"incoming A");
-        assert_eq!(std::fs::read(later_backup.join("0.bak")).unwrap(), b"later original");
+        assert_eq!(
+            std::fs::read(later_backup.join("0.bak")).unwrap(),
+            b"later original"
+        );
         assert_eq!(snapshot_stage(&stage_b), stage_before);
-
     }
 }

@@ -640,15 +640,16 @@ fn finalize_published_rows_for_test(
         return Err(invalid("invalid synthetic source metadata"));
     }
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let op = load_in_transaction(&tx, operation_id)?
-        .ok_or_else(|| invalid("missing operation"))?;
+    let op = load_in_transaction(&tx, operation_id)?.ok_or_else(|| invalid("missing operation"))?;
     validate(&op.header)?;
     if op.header.root_key != op.header.root_display
         || current(&tx, operation_id)? != Phase::Publishing
         || op.registered
         || op.installed_mod_id.is_some()
     {
-        return Err(invalid("operation is not eligible for metadata registration"));
+        return Err(invalid(
+            "operation is not eligible for metadata registration",
+        ));
     }
     let root = absolute(&op.header.root_display)?;
     let base = format!("{root}/lml/{}", op.header.target);
@@ -767,7 +768,15 @@ mod tests {
                 Some("synthetic/source"),
             )
             .unwrap();
-            let row: (String, String, String, String, Option<String>, Option<String>, i64) = c
+            let row: (
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = c
                 .query_row(
                     "SELECT name,source_type,install_path,status,source_path,mode,mode_inferred \
                      FROM installed_mod WHERE id=?1",
@@ -921,7 +930,11 @@ mod tests {
                 ),
                 "{label}: unexpected error {error:?}"
             );
-            assert_eq!(synthetic_database_snapshot(&c), original_database, "{label}");
+            assert_eq!(
+                synthetic_database_snapshot(&c),
+                original_database,
+                "{label}"
+            );
             let state = load_operation(&c, id).unwrap().unwrap();
             assert_eq!(state, original_operation, "{label}");
             assert_eq!(
@@ -1275,11 +1288,7 @@ mod tests {
         std::fs::write(&target, b"keep").unwrap();
         let mut rows = Vec::new();
 
-        for (status, with_target) in [
-            ("active", false),
-            ("active", true),
-            ("disabled", true),
-        ] {
+        for (status, with_target) in [("active", false), ("active", true), ("disabled", true)] {
             c.execute(
                 "INSERT INTO installed_mod (name, source_type, install_path, status, mode) \
                  VALUES ('blank', 'asi', '', ?1, 'legacy-sp')",
@@ -1419,7 +1428,10 @@ mod tests {
     fn pending_and_unknown_modes_precede_lml_and_empty_root() {
         for (mode, expected) in [
             ("enhanced-sp", "GTA V Enhanced support is under development"),
-            ("enhanced-lspdfr", "GTA V Enhanced support is under development"),
+            (
+                "enhanced-lspdfr",
+                "GTA V Enhanced support is under development",
+            ),
             ("fivem-client", "FiveM support is under development"),
             ("fivem-server", "FiveM support is under development"),
             ("fivem-converter", "FiveM support is under development"),
@@ -1460,7 +1472,10 @@ mod tests {
             c.pragma_update(None, "query_only", true).unwrap();
             let before = diagnostic_changes(&c);
 
-            match (case, crate::providers::ensure_installed_mod_available(&c, 1)) {
+            match (
+                case,
+                crate::providers::ensure_installed_mod_available(&c, 1),
+            ) {
                 (0 | 1, Err(CoreError::Database(_))) => {}
                 (2, Err(CoreError::UnsupportedFormat { reason })) => assert_eq!(
                     reason,
@@ -1532,14 +1547,16 @@ mod tests {
         let before = diagnostic_changes(&c);
 
         match crate::providers::ensure_installed_mod_available(&c, mod_id) {
-            Err(CoreError::UnsupportedFormat { reason }) => assert_eq!(
-                reason,
-                "GTA V Enhanced support is under development"
-            ),
+            Err(CoreError::UnsupportedFormat { reason }) => {
+                assert_eq!(reason, "GTA V Enhanced support is under development")
+            }
             other => panic!("unexpected result: {other:?}"),
         }
 
-        assert_eq!(std::fs::read(root.join("GTA5_Enhanced.exe")).unwrap(), b"synthetic");
+        assert_eq!(
+            std::fs::read(root.join("GTA5_Enhanced.exe")).unwrap(),
+            b"synthetic"
+        );
         assert_eq!(diagnostic_changes(&c), before);
         assert!(c.is_autocommit());
     }

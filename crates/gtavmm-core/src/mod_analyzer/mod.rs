@@ -856,7 +856,12 @@ fn classify_rar(
     let (temp_dir, single_root_asi) = extract_rar(input)?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
-    route_single_root_asi(&mut plan, temp_dir.path(), single_root_asi.as_deref(), provider)?;
+    route_single_root_asi(
+        &mut plan,
+        temp_dir.path(),
+        single_root_asi.as_deref(),
+        provider,
+    )?;
     if matches!(plan.format, ModFormat::FolderReplacer) {
         plan.format = ModFormat::Rar;
     }
@@ -878,7 +883,12 @@ fn classify_zip(
     )?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
-    route_single_root_asi(&mut plan, temp_dir.path(), single_root_asi.as_deref(), provider)?;
+    route_single_root_asi(
+        &mut plan,
+        temp_dir.path(),
+        single_root_asi.as_deref(),
+        provider,
+    )?;
     // Only relabel a plain folder-replacer result as "Zip" — an AddOnPack or
     // Unsupported result from the folder walk must survive intact (this used to
     // unconditionally overwrite `format`, discarding e.g. an AddOnPack's `pack_name`
@@ -904,7 +914,12 @@ fn classify_seven_zip(
     )?;
     let name_hint = input.file_stem().and_then(|s| s.to_str());
     let mut plan = classify_folder_with_name_hint(temp_dir.path(), provider, name_hint)?;
-    route_single_root_asi(&mut plan, temp_dir.path(), single_root_asi.as_deref(), provider)?;
+    route_single_root_asi(
+        &mut plan,
+        temp_dir.path(),
+        single_root_asi.as_deref(),
+        provider,
+    )?;
     // See classify_zip's note on why this is conditional, not unconditional.
     if matches!(plan.format, ModFormat::FolderReplacer) {
         plan.format = ModFormat::SevenZip;
@@ -1317,7 +1332,10 @@ mod tests {
         write_test_zip(&dlc, &[("dlc.rpf", b"dlc"), ("example.asi", b"asi")]);
         let plan = classify(&dlc, &provider(&game_root)).unwrap();
         assert!(matches!(&plan.format, ModFormat::AddOnPack { .. }));
-        assert!(plan.files.iter().all(|file| file.target.starts_with(game_root.join("mods"))));
+        assert!(plan
+            .files
+            .iter()
+            .all(|file| file.target.starts_with(game_root.join("mods"))));
     }
 
     // OpenAI-Codex_v1_install_review: Exercise the existing portable name policy.
@@ -1352,7 +1370,13 @@ mod tests {
         ] {
             assert_eq!(single_root_asi_name(name, false), None, "{name}");
         }
-        for name in ["example.asi", "example.ASI", "警察.asi", "COM0.asi", "CONSOLE.asi"] {
+        for name in [
+            "example.asi",
+            "example.ASI",
+            "警察.asi",
+            "COM0.asi",
+            "CONSOLE.asi",
+        ] {
             assert_eq!(single_root_asi_name(name, false).as_deref(), Some(name));
         }
         assert_eq!(single_root_asi_name("example.asi", true), None);

@@ -110,7 +110,10 @@ struct ProfileSwitchSnapshot {
     files: Vec<(i64, i64, String, Option<String>, String)>,
 }
 
-fn profile_switch_snapshot(conn: &Connection, profile_id: i64) -> CoreResult<ProfileSwitchSnapshot> {
+fn profile_switch_snapshot(
+    conn: &Connection,
+    profile_id: i64,
+) -> CoreResult<ProfileSwitchSnapshot> {
     if !conn.is_autocommit() {
         return profile_switch_snapshot_in_transaction(conn, profile_id);
     }
@@ -125,10 +128,14 @@ fn profile_switch_snapshot_in_transaction(
     profile_id: i64,
 ) -> CoreResult<ProfileSwitchSnapshot> {
     let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM profile WHERE id=?1)", [profile_id], |r| r.get(0)
+        "SELECT EXISTS(SELECT 1 FROM profile WHERE id=?1)",
+        [profile_id],
+        |r| r.get(0),
     )?;
     let active_profile: Option<i64> = conn.query_row(
-        "SELECT active_profile_id FROM user_settings WHERE id=1", [], |r| r.get(0)
+        "SELECT active_profile_id FROM user_settings WHERE id=1",
+        [],
+        |r| r.get(0),
     )?;
     let memberships = {
         let mut stmt = conn.prepare(
@@ -138,21 +145,28 @@ fn profile_switch_snapshot_in_transaction(
         rows.collect::<rusqlite::Result<Vec<(i64, i64)>>>()?
     };
     let mods = {
-        let mut stmt = conn.prepare(
-            "SELECT id,status,install_path,mode FROM installed_mod ORDER BY id"
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-        rows.collect::<rusqlite::Result<Vec<(i64,String,String,Option<String>)>>>()?
+        let mut stmt =
+            conn.prepare("SELECT id,status,install_path,mode FROM installed_mod ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<Vec<(i64, String, String, Option<String>)>>>()?
     };
     let files = {
         let mut stmt = conn.prepare(
             "SELECT id,installed_mod_id,target_path,backup_path,file_hash \
-             FROM installed_mod_file ORDER BY installed_mod_id,id"
+             FROM installed_mod_file ORDER BY installed_mod_id,id",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-        rows.collect::<rusqlite::Result<Vec<(i64,i64,String,Option<String>,String)>>>()?
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<(i64, i64, String, Option<String>, String)>>>()?
     };
-    Ok(ProfileSwitchSnapshot { exists, active_profile, memberships, mods, files })
+    Ok(ProfileSwitchSnapshot {
+        exists,
+        active_profile,
+        memberships,
+        mods,
+        files,
+    })
 }
 
 fn profile_switch_changed() -> crate::error::CoreError {
@@ -162,7 +176,9 @@ fn profile_switch_changed() -> crate::error::CoreError {
 }
 
 fn profile_switch_require_snapshot(
-    conn: &Connection, profile_id: i64, expected: &ProfileSwitchSnapshot,
+    conn: &Connection,
+    profile_id: i64,
+    expected: &ProfileSwitchSnapshot,
 ) -> CoreResult<()> {
     if profile_switch_snapshot(conn, profile_id)? != *expected {
         return Err(profile_switch_changed());
@@ -172,19 +188,34 @@ fn profile_switch_require_snapshot(
 
 impl ProfileSwitchSnapshot {
     fn status(&self, id: i64) -> Option<&str> {
-        self.mods.iter().find(|row| row.0 == id).map(|row| row.1.as_str())
+        self.mods
+            .iter()
+            .find(|row| row.0 == id)
+            .map(|row| row.1.as_str())
     }
     fn targets(&self, profile_id: i64) -> HashSet<i64> {
-        self.memberships.iter().filter(|row| row.0 == profile_id).map(|row| row.1).collect()
+        self.memberships
+            .iter()
+            .filter(|row| row.0 == profile_id)
+            .map(|row| row.1)
+            .collect()
     }
     fn other_active(&self, profile_id: i64) -> HashSet<i64> {
-        self.memberships.iter()
+        self.memberships
+            .iter()
             .filter(|row| row.0 != profile_id && self.status(row.1) == Some("active"))
-            .map(|row| row.1).collect()
+            .map(|row| row.1)
+            .collect()
     }
     fn transition(&mut self, id: i64, from: &str, to: &str) -> CoreResult<()> {
-        let row = self.mods.iter_mut().find(|row| row.0 == id).ok_or_else(profile_switch_changed)?;
-        if row.1 != from { return Err(profile_switch_changed()); }
+        let row = self
+            .mods
+            .iter_mut()
+            .find(|row| row.0 == id)
+            .ok_or_else(profile_switch_changed)?;
+        if row.1 != from {
+            return Err(profile_switch_changed());
+        }
         row.1 = to.to_owned();
         Ok(())
     }
@@ -202,15 +233,18 @@ fn profile_owner_preflight(snapshot: &ProfileSwitchSnapshot, profile_id: i64) ->
     let targets = snapshot.targets(profile_id);
     let other_active = snapshot.other_active(profile_id);
     let outgoing: HashSet<i64> = other_active.difference(&targets).copied().collect();
-    let incoming: HashSet<i64> = targets.iter().copied()
-        .filter(|id| snapshot.status(*id) == Some("disabled")).collect();
-    if outgoing.is_empty() && incoming.is_empty() { return Ok(()); }
+    let incoming: HashSet<i64> = targets
+        .iter()
+        .copied()
+        .filter(|id| snapshot.status(*id) == Some("disabled"))
+        .collect();
+    if outgoing.is_empty() && incoming.is_empty() {
+        return Ok(());
+    }
 
     // OpenAI-Codex_fresh_guard_review: Refuse active mods with unknown targets.
     for row in &snapshot.mods {
-        if row.1.as_str() == "active"
-            && !snapshot.files.iter().any(|file| file.1 == row.0)
-        {
+        if row.1.as_str() == "active" && !snapshot.files.iter().any(|file| file.1 == row.0) {
             return Err(CoreError::UnsupportedFormat {
                 reason: format!(
                     "profile switch cannot determine targets for active mod {}: no file records",
@@ -225,17 +259,24 @@ fn profile_owner_preflight(snapshot: &ProfileSwitchSnapshot, profile_id: i64) ->
         }
     }
     for row in &snapshot.files {
-        if !outgoing.contains(&row.1) && !incoming.contains(&row.1) { continue; }
+        if !outgoing.contains(&row.1) && !incoming.contains(&row.1) {
+            continue;
+        }
         match std::fs::symlink_metadata(&row.2) {
             Ok(metadata) if metadata.file_type().is_file() => {}
-            Ok(_) => return Err(CoreError::UnsupportedFormat {
-                reason: format!("profile target is not a regular file: {}", row.2),
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                && outgoing.contains(&row.1) => {
+            Ok(_) => {
                 return Err(CoreError::UnsupportedFormat {
-                    reason: format!("missing target for profile outgoing mod #{} file #{}: {}",
-                        row.1, row.0, row.2),
+                    reason: format!("profile target is not a regular file: {}", row.2),
+                })
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && outgoing.contains(&row.1) =>
+            {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: format!(
+                        "missing target for profile outgoing mod #{} file #{}: {}",
+                        row.1, row.0, row.2
+                    ),
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -246,18 +287,33 @@ fn profile_owner_preflight(snapshot: &ProfileSwitchSnapshot, profile_id: i64) ->
     let mut active_paths = Vec::new();
     let mut incoming_paths = Vec::new();
     for row in &snapshot.files {
-        let status = snapshot.status(row.1).ok_or_else(|| CoreError::UnsupportedFormat {
-            reason: format!("cannot identify owner mod #{} of recorded file #{}", row.1, row.0),
-        })?;
+        let status = snapshot
+            .status(row.1)
+            .ok_or_else(|| CoreError::UnsupportedFormat {
+                reason: format!(
+                    "cannot identify owner mod #{} of recorded file #{}",
+                    row.1, row.0
+                ),
+            })?;
         if !matches!(status, "active" | "disabled" | "uninstalled") {
             return Err(profile_switch_changed());
         }
         let active = status == "active";
-        if !active && !incoming.contains(&row.1) { continue; }
+        if !active && !incoming.contains(&row.1) {
+            continue;
+        }
         let path = std::path::PathBuf::from(&row.2);
         let identity = crate::lml_store::backup_guard_identity(&path)?;
-        let entry = ProfileGuardTarget { owner: row.1, path, identity };
-        if active { active_paths.push(entry); } else { incoming_paths.push(entry); }
+        let entry = ProfileGuardTarget {
+            owner: row.1,
+            path,
+            identity,
+        };
+        if active {
+            active_paths.push(entry);
+        } else {
+            incoming_paths.push(entry);
+        }
     }
     // OpenAI-Codex_fresh_guard_review: Refuse overlapping targets within planned mods.
     for paths in [&active_paths[..], &incoming_paths[..]] {
@@ -272,20 +328,26 @@ fn profile_owner_preflight(snapshot: &ProfileSwitchSnapshot, profile_id: i64) ->
                     return Err(CoreError::UnsupportedFormat {
                         reason: format!(
                             "profile mod #{} has overlapping recorded targets: {} and {}",
-                            left.owner, left.path.display(), right.path.display()
+                            left.owner,
+                            left.path.display(),
+                            right.path.display()
                         ),
                     });
                 }
             }
         }
     }
-    for own in active_paths.iter().filter(|entry| outgoing.contains(&entry.owner)) {
+    for own in active_paths
+        .iter()
+        .filter(|entry| outgoing.contains(&entry.owner))
+    {
         for other in &active_paths {
             if own.owner != other.owner
                 && crate::lml_store::backup_guard_overlap(&own.identity, &other.identity)
             {
                 return Err(CoreError::ForeignConflict {
-                    path: other.path.clone(), owner_mod_id: other.owner,
+                    path: other.path.clone(),
+                    owner_mod_id: other.owner,
                 });
             }
         }
@@ -294,7 +356,8 @@ fn profile_owner_preflight(snapshot: &ProfileSwitchSnapshot, profile_id: i64) ->
         for owner in &active_paths {
             if crate::lml_store::backup_guard_overlap(&next.identity, &owner.identity) {
                 return Err(CoreError::ForeignConflict {
-                    path: owner.path.clone(), owner_mod_id: owner.owner,
+                    path: owner.path.clone(),
+                    owner_mod_id: owner.owner,
                 });
             }
         }
@@ -305,8 +368,13 @@ fn profile_owner_preflight(snapshot: &ProfileSwitchSnapshot, profile_id: i64) ->
                 && crate::lml_store::backup_guard_overlap(&left.identity, &right.identity)
             {
                 return Err(CoreError::UnsupportedFormat {
-                    reason: format!("profile mods #{} and #{} have overlapping targets: {} and {}",
-                        left.owner, right.owner, left.path.display(), right.path.display()),
+                    reason: format!(
+                        "profile mods #{} and #{} have overlapping targets: {} and {}",
+                        left.owner,
+                        right.owner,
+                        left.path.display(),
+                        right.path.display()
+                    ),
                 });
             }
         }
@@ -343,7 +411,9 @@ pub fn switch(
 
     // OpenAI-Codex_fresh_guard_review: Keep an auditable profile switch snapshot.
     let mut profile_expected = profile_switch_snapshot(conn, profile_id)?;
-    if !profile_expected.exists { return Err(profile_switch_changed()); }
+    if !profile_expected.exists {
+        return Err(profile_switch_changed());
+    }
 
     let target_mods: HashSet<i64> = mod_ids_in_profile(conn, profile_id)?.into_iter().collect();
 
@@ -507,13 +577,20 @@ mod tests {
             "INSERT INTO installed_mod (name,source_type,install_path,status,mode) \
              VALUES (?1,'asi',?2,'active','legacy-sp')",
             rusqlite::params![name, game.to_str().expect("synthetic root must be Unicode")],
-        ).unwrap();
+        )
+        .unwrap();
         let id = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO installed_mod_file (installed_mod_id,target_path,backup_path,file_hash) \
              VALUES (?1,?2,?3,?4)",
-            rusqlite::params![id, target.to_str().unwrap(), backup.map(|p| p.to_str().unwrap()), digest],
-        ).unwrap();
+            rusqlite::params![
+                id,
+                target.to_str().unwrap(),
+                backup.map(|p| p.to_str().unwrap()),
+                digest
+            ],
+        )
+        .unwrap();
         id
     }
 
@@ -573,17 +650,14 @@ mod tests {
         id
     }
 
-    fn owner_seed_stage(
-        conn: &Connection,
-        staging: &Path,
-        id: i64,
-        payloads: &[&[u8]],
-    ) {
+    fn owner_seed_stage(conn: &Connection, staging: &Path, id: i64, payloads: &[&[u8]]) {
         let ids = {
-            let mut statement = conn.prepare(
-                "SELECT id FROM installed_mod_file WHERE installed_mod_id=?1 ORDER BY id"
-            ).unwrap();
-            let rows = statement.query_map([id], |row| row.get::<_, i64>(0)).unwrap();
+            let mut statement = conn
+                .prepare("SELECT id FROM installed_mod_file WHERE installed_mod_id=?1 ORDER BY id")
+                .unwrap();
+            let rows = statement
+                .query_map([id], |row| row.get::<_, i64>(0))
+                .unwrap();
             rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
         };
         assert!(!ids.is_empty());
@@ -654,25 +728,42 @@ mod tests {
     }
 
     fn owner_status(conn: &Connection, id: i64) -> String {
-        conn.query_row("SELECT status FROM installed_mod WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        conn.query_row("SELECT status FROM installed_mod WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
     }
 
     type OwnerTestEvent = (i64, Option<i64>, String, String, i64, Option<String>);
     fn owner_events(conn: &Connection) -> Vec<OwnerTestEvent> {
-        let mut stmt = conn.prepare(
-            "SELECT id,installed_mod_id,event_type,timestamp,success,error_message \
-             FROM install_event ORDER BY id"
-        ).unwrap();
-        let rows = stmt.query_map([], |r| Ok((
-            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?
-        ))).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id,installed_mod_id,event_type,timestamp,success,error_message \
+             FROM install_event ORDER BY id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap();
         rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
     }
 
     fn owner_require_stage(conn: &Connection, id: i64, staging: &Path, expected: &[&[u8]]) {
         let dir = staging.join(id.to_string());
         let manifest_path = dir.join("manifest.json");
-        assert!(std::fs::symlink_metadata(&manifest_path).unwrap().file_type().is_file());
+        assert!(std::fs::symlink_metadata(&manifest_path)
+            .unwrap()
+            .file_type()
+            .is_file());
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         let items = manifest.as_array().unwrap();
@@ -683,9 +774,18 @@ mod tests {
             assert_eq!(path.as_path(), dir.join(i.to_string()).as_path());
             assert_eq!(std::fs::read(path).unwrap().as_slice(), expected[i]);
             let hash = crate::util::hash_file(path).unwrap();
-            assert_eq!(items[i].get("file_id").and_then(|v| v.as_i64()), Some(*file_id));
-            assert_eq!(items[i].get("index").and_then(|v| v.as_u64()), Some(i as u64));
-            assert_eq!(items[i].get("hash").and_then(|v| v.as_str()), Some(hash.as_str()));
+            assert_eq!(
+                items[i].get("file_id").and_then(|v| v.as_i64()),
+                Some(*file_id)
+            );
+            assert_eq!(
+                items[i].get("index").and_then(|v| v.as_u64()),
+                Some(i as u64)
+            );
+            assert_eq!(
+                items[i].get("hash").and_then(|v| v.as_str()),
+                Some(hash.as_str())
+            );
         }
     }
 
@@ -698,14 +798,32 @@ mod tests {
         }
         assert_eq!(owner_status(&f.conn, f.outgoing_id), "active");
         assert_eq!(owner_status(&f.conn, f.incoming_id), "disabled");
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.outgoing_profile));
-        owner_require_stage(&f.conn, f.incoming_id, &f.staging,
-            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]]);
-        assert!(matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing_id.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound));
-        assert_eq!(std::fs::read(&f.outgoing_target).unwrap(), b"outgoing payload");
-        assert_eq!(std::fs::read(&f.outgoing_backup).unwrap(), b"outgoing original");
-        assert_eq!(std::fs::read(&f.incoming_backup).unwrap(), b"alpha original");
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.outgoing_profile)
+        );
+        owner_require_stage(
+            &f.conn,
+            f.incoming_id,
+            &f.staging,
+            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]],
+        );
+        assert!(
+            matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing_id.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert_eq!(
+            std::fs::read(&f.outgoing_target).unwrap(),
+            b"outgoing payload"
+        );
+        assert_eq!(
+            std::fs::read(&f.outgoing_backup).unwrap(),
+            b"outgoing original"
+        );
+        assert_eq!(
+            std::fs::read(&f.incoming_backup).unwrap(),
+            b"alpha original"
+        );
     }
 
     fn owner_refusal_preserves_fixture(f: &ProfilePreflightFixture, target: &Path, owners: &[i64]) {
@@ -720,8 +838,14 @@ mod tests {
             }
             _ => panic!("expected a recorded active-owner conflict"),
         }
-        assert!(profile_preflight_tree(f.temp.path()) == tree, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db,
+            "synthetic database changed"
+        );
         assert_eq!(owner_events(&f.conn), events);
         assert_eq!(profile_preflight_changes(&f.conn), changes);
         owner_require_fixture(f, &[]);
@@ -731,23 +855,37 @@ mod tests {
     fn owner_retained_incoming_case(shared: bool) {
         let f = profile_preflight_fixture();
         std::fs::write(&f.incoming_alpha, b"retained active owner").unwrap();
-        let other = owner_add_active(&f.conn, &f.temp.path().join("game"),
-            &f.incoming_alpha, None, "Retained");
+        let other = owner_add_active(
+            &f.conn,
+            &f.temp.path().join("game"),
+            &f.incoming_alpha,
+            None,
+            "Retained",
+        );
         if shared {
             add_mod(&f.conn, f.outgoing_profile, other).unwrap();
             add_mod(&f.conn, f.incoming_profile, other).unwrap();
         }
-        let memberships: i64 = f.conn.query_row(
-            "SELECT COUNT(*) FROM profile_mod WHERE installed_mod_id=?1", [other], |r| r.get(0)
-        ).unwrap();
+        let memberships: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM profile_mod WHERE installed_mod_id=?1",
+                [other],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(memberships, if shared { 2 } else { 0 });
         assert_eq!(owner_status(&f.conn, other), "active");
         owner_require_fixture(&f, &[other]);
-        let report = crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.incoming_alpha)).unwrap();
+        let report =
+            crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.incoming_alpha)).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 1);
         assert_eq!(report.foreign_conflicts[0].owner_mod_id, Some(other));
-        assert_eq!(report.foreign_conflicts[0].path.as_path(), f.incoming_alpha.as_path());
+        assert_eq!(
+            report.foreign_conflicts[0].path.as_path(),
+            f.incoming_alpha.as_path()
+        );
         owner_refusal_preserves_fixture(&f, &f.incoming_alpha, &[other]);
     }
 
@@ -764,18 +902,29 @@ mod tests {
     // OpenAI-Codex_fresh_test_review: Outgoing targets cannot overlap another active owner.
     fn owner_outgoing_collision_case(shared: bool) {
         let f = profile_preflight_fixture();
-        let other = owner_add_active(&f.conn, &f.temp.path().join("game"),
-            &f.outgoing_target, None, "Another active owner");
+        let other = owner_add_active(
+            &f.conn,
+            &f.temp.path().join("game"),
+            &f.outgoing_target,
+            None,
+            "Another active owner",
+        );
         add_mod(&f.conn, f.outgoing_profile, other).unwrap();
-        if shared { add_mod(&f.conn, f.incoming_profile, other).unwrap(); }
+        if shared {
+            add_mod(&f.conn, f.incoming_profile, other).unwrap();
+        }
         assert_eq!(owner_status(&f.conn, other), "active");
         owner_require_fixture(&f, &[other]);
-        let report = crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.outgoing_target)).unwrap();
+        let report =
+            crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.outgoing_target)).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 2);
         for id in [f.outgoing_id, other] {
-            assert!(report.foreign_conflicts.iter().any(|item|
-                item.owner_mod_id == Some(id) && item.path.as_path() == f.outgoing_target.as_path()));
+            assert!(report
+                .foreign_conflicts
+                .iter()
+                .any(|item| item.owner_mod_id == Some(id)
+                    && item.path.as_path() == f.outgoing_target.as_path()));
         }
         if shared {
             owner_refusal_preserves_fixture(&f, &f.outgoing_target, &[other]);
@@ -816,14 +965,25 @@ mod tests {
         let to = create(conn, "To profile").unwrap();
         add_mod(conn, from, outgoing).unwrap();
         add_mod(conn, to, incoming).unwrap();
-        assert_eq!(conn.execute("UPDATE user_settings SET active_profile_id=?1 WHERE id=1", [from]).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET active_profile_id=?1 WHERE id=1",
+                [from]
+            )
+            .unwrap(),
+            1
+        );
         (from, to)
     }
 
     fn owner_handoff_file_info(conn: &Connection, id: i64) -> (String, Option<String>, String) {
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id=?1", [id], |r| r.get(0)
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
         conn.query_row(
             "SELECT target_path,backup_path,file_hash FROM installed_mod_file WHERE installed_mod_id=?1",
@@ -832,7 +992,13 @@ mod tests {
     }
 
     // This duplicate is synthetic: normal enable removes the staged payload.
-    fn owner_make_duplicate_active_stage(conn: &Connection, staging: &Path, id: i64, target: &Path, bytes: &[u8]) {
+    fn owner_make_duplicate_active_stage(
+        conn: &Connection,
+        staging: &Path,
+        id: i64,
+        target: &Path,
+        bytes: &[u8],
+    ) {
         crate::providers::ensure_installed_mod_available(conn, id).unwrap();
         assert_eq!(owner_status(conn, id), "active");
         assert_eq!(std::fs::read(target).unwrap().as_slice(), bytes);
@@ -861,9 +1027,18 @@ mod tests {
             std::fs::write(&out, b"same backup bytes").unwrap();
             std::fs::write(&incoming, b"same backup bytes").unwrap();
             (Some(out), Some(incoming))
-        } else { (None, None) };
+        } else {
+            (None, None)
+        };
         let conn = crate::db::open_in_memory().unwrap();
-        let incoming = owner_add_disabled(&conn, &game, &target, in_backup.as_deref(), "Incoming", b"same payload");
+        let incoming = owner_add_disabled(
+            &conn,
+            &game,
+            &target,
+            in_backup.as_deref(),
+            "Incoming",
+            b"same payload",
+        );
         owner_seed_stage(&conn, &staging, incoming, &[&b"same payload"[..]]);
         owner_require_stage(&conn, incoming, &staging, &[&b"same payload"[..]]);
         std::fs::write(&target, b"same payload").unwrap();
@@ -873,9 +1048,18 @@ mod tests {
         }
         let (from_profile, to_profile) = owner_handoff_profiles(&conn, outgoing, incoming);
         OwnerHandoffFixture {
-            temp, conn, staging, target, from_profile, to_profile, outgoing, incoming,
-            outgoing_bytes: b"same payload", incoming_bytes: b"same payload",
-            outgoing_backup: out_backup, incoming_backup: in_backup,
+            temp,
+            conn,
+            staging,
+            target,
+            from_profile,
+            to_profile,
+            outgoing,
+            incoming,
+            outgoing_bytes: b"same payload",
+            incoming_bytes: b"same payload",
+            outgoing_backup: out_backup,
+            incoming_backup: in_backup,
             duplicate_outgoing_stage: duplicate_stage,
         }
     }
@@ -901,24 +1085,40 @@ mod tests {
         std::fs::copy(&target, &backup_b).unwrap();
         std::fs::write(&target, b"B payload").unwrap();
         let b = owner_add_active(&conn, &game, &target, Some(&backup_b), "B");
-        for id in [a, b] { crate::providers::ensure_installed_mod_available(&conn, id).unwrap(); }
+        for id in [a, b] {
+            crate::providers::ensure_installed_mod_available(&conn, id).unwrap();
+        }
         assert_eq!(owner_status(&conn, a), "active");
         assert_eq!(owner_status(&conn, b), "active");
         // Construct only synthetic test state; never call production disable.
         owner_seed_stage(&conn, &staging, b, &[&b"B payload"[..]]);
         std::fs::copy(&backup_b, &target).unwrap();
-        assert_eq!(conn.execute(
-            "UPDATE installed_mod SET status='disabled' WHERE id=?1", [b]
-        ).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE installed_mod SET status='disabled' WHERE id=?1",
+                [b]
+            )
+            .unwrap(),
+            1
+        );
         owner_seed_event(&conn, b, "disable");
         assert_eq!(std::fs::read(&target).unwrap(), b"A payload");
         owner_require_stage(&conn, a, &staging, &[&b"A payload"[..]]);
         owner_require_stage(&conn, b, &staging, &[&b"B payload"[..]]);
         let (from_profile, to_profile) = owner_handoff_profiles(&conn, a, b);
         OwnerHandoffFixture {
-            temp, conn, staging, target, from_profile, to_profile, outgoing: a, incoming: b,
-            outgoing_bytes: b"A payload", incoming_bytes: b"B payload",
-            outgoing_backup: Some(backup_a), incoming_backup: Some(backup_b),
+            temp,
+            conn,
+            staging,
+            target,
+            from_profile,
+            to_profile,
+            outgoing: a,
+            incoming: b,
+            outgoing_bytes: b"A payload",
+            incoming_bytes: b"B payload",
+            outgoing_backup: Some(backup_a),
+            incoming_backup: Some(backup_b),
             duplicate_outgoing_stage: true,
         }
     }
@@ -930,31 +1130,57 @@ mod tests {
         assert_eq!(owner_status(&f.conn, f.outgoing), "active");
         assert_eq!(owner_status(&f.conn, f.incoming), "disabled");
         assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.from_profile));
-        assert_eq!(mod_ids_in_profile(&f.conn, f.from_profile).unwrap(), vec![f.outgoing]);
-        assert_eq!(mod_ids_in_profile(&f.conn, f.to_profile).unwrap(), vec![f.incoming]);
-        assert!(std::fs::symlink_metadata(&f.target).unwrap().file_type().is_file());
-        assert_eq!(std::fs::read(&f.target).unwrap().as_slice(), f.outgoing_bytes);
+        assert_eq!(
+            mod_ids_in_profile(&f.conn, f.from_profile).unwrap(),
+            vec![f.outgoing]
+        );
+        assert_eq!(
+            mod_ids_in_profile(&f.conn, f.to_profile).unwrap(),
+            vec![f.incoming]
+        );
+        assert!(std::fs::symlink_metadata(&f.target)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert_eq!(
+            std::fs::read(&f.target).unwrap().as_slice(),
+            f.outgoing_bytes
+        );
         crate::protected_files::check_write(&f.target).unwrap();
         let out_row = owner_handoff_file_info(&f.conn, f.outgoing);
         let in_row = owner_handoff_file_info(&f.conn, f.incoming);
         assert_eq!(Path::new(&out_row.0), f.target.as_path());
         assert_eq!(Path::new(&in_row.0), f.target.as_path());
-        assert_eq!(out_row.1.as_deref(), f.outgoing_backup.as_deref().map(|p| p.to_str().unwrap()));
-        assert_eq!(in_row.1.as_deref(), f.incoming_backup.as_deref().map(|p| p.to_str().unwrap()));
+        assert_eq!(
+            out_row.1.as_deref(),
+            f.outgoing_backup.as_deref().map(|p| p.to_str().unwrap())
+        );
+        assert_eq!(
+            in_row.1.as_deref(),
+            f.incoming_backup.as_deref().map(|p| p.to_str().unwrap())
+        );
         assert_eq!(out_row.2, crate::util::hash_file(&f.target).unwrap());
         owner_require_stage(&f.conn, f.incoming, &f.staging, &[f.incoming_bytes]);
-        assert_eq!(in_row.2, crate::util::hash_file(&f.staging.join(f.incoming.to_string()).join("0")).unwrap());
+        assert_eq!(
+            in_row.2,
+            crate::util::hash_file(&f.staging.join(f.incoming.to_string()).join("0")).unwrap()
+        );
         if f.duplicate_outgoing_stage {
             owner_require_stage(&f.conn, f.outgoing, &f.staging, &[f.outgoing_bytes]);
         } else {
-            assert!(matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing.to_string())),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound));
+            assert!(
+                matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing.to_string())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            );
         }
         let report = crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.target)).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 1);
         assert_eq!(report.foreign_conflicts[0].owner_mod_id, Some(f.outgoing));
-        assert_eq!(report.foreign_conflicts[0].path.as_path(), f.target.as_path());
+        assert_eq!(
+            report.foreign_conflicts[0].path.as_path(),
+            f.target.as_path()
+        );
         let tree = profile_preflight_tree(f.temp.path());
         let db = profile_preflight_db(&f.conn);
         let events = owner_events(&f.conn);
@@ -966,14 +1192,23 @@ mod tests {
             }
             _ => panic!("expected outgoing-owner same-target refusal"),
         }
-        assert!(profile_preflight_tree(f.temp.path()) == tree, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db,
+            "synthetic database changed"
+        );
         assert_eq!(owner_events(&f.conn), events);
         assert_eq!(profile_preflight_changes(&f.conn), changes);
         assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.from_profile));
         assert_eq!(owner_status(&f.conn, f.outgoing), "active");
         assert_eq!(owner_status(&f.conn, f.incoming), "disabled");
-        assert_eq!(std::fs::read(&f.target).unwrap().as_slice(), f.outgoing_bytes);
+        assert_eq!(
+            std::fs::read(&f.target).unwrap().as_slice(),
+            f.outgoing_bytes
+        );
         owner_require_stage(&f.conn, f.incoming, &f.staging, &[f.incoming_bytes]);
         if f.duplicate_outgoing_stage {
             owner_require_stage(&f.conn, f.outgoing, &f.staging, &[f.outgoing_bytes]);
@@ -1005,7 +1240,10 @@ mod tests {
         assert!(std::fs::symlink_metadata(b).unwrap().file_type().is_file());
         assert_eq!(std::fs::read(a).unwrap(), b"same backup bytes");
         assert_eq!(std::fs::read(b).unwrap(), b"same backup bytes");
-        assert_eq!(crate::util::hash_file(a).unwrap(), crate::util::hash_file(b).unwrap());
+        assert_eq!(
+            crate::util::hash_file(a).unwrap(),
+            crate::util::hash_file(b).unwrap()
+        );
         owner_handoff_must_refuse_unchanged(&f);
     }
 
@@ -1021,11 +1259,20 @@ mod tests {
         let backup_a = f.outgoing_backup.as_ref().unwrap();
         let backup_b = f.incoming_backup.as_ref().unwrap();
         assert_ne!(backup_a.parent(), backup_b.parent());
-        assert!(std::fs::symlink_metadata(backup_a).unwrap().file_type().is_file());
-        assert!(std::fs::symlink_metadata(backup_b).unwrap().file_type().is_file());
+        assert!(std::fs::symlink_metadata(backup_a)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert!(std::fs::symlink_metadata(backup_b)
+            .unwrap()
+            .file_type()
+            .is_file());
         assert_eq!(std::fs::read(backup_a).unwrap(), b"original");
         assert_eq!(std::fs::read(backup_b).unwrap(), b"A payload");
-        assert_eq!(crate::util::hash_file(backup_b).unwrap(), crate::util::hash_file(&f.target).unwrap());
+        assert_eq!(
+            crate::util::hash_file(backup_b).unwrap(),
+            crate::util::hash_file(&f.target).unwrap()
+        );
         owner_handoff_must_refuse_unchanged(&f);
     }
 
@@ -1035,12 +1282,17 @@ mod tests {
             "INSERT INTO installed_mod (name,source_type,install_path,status,mode) \
              VALUES (?1,'asi',?2,'active','legacy-sp')",
             rusqlite::params![name, game.to_str().expect("synthetic root must be Unicode")],
-        ).unwrap();
+        )
+        .unwrap();
         conn.last_insert_rowid()
     }
 
     #[derive(Clone, Copy, Debug)]
-    enum OwnerEmptyRole { Outgoing, Shared, Unassigned }
+    enum OwnerEmptyRole {
+        Outgoing,
+        Shared,
+        Unassigned,
+    }
 
     struct OwnerEmptyFixture {
         temp: tempfile::TempDir,
@@ -1064,7 +1316,14 @@ mod tests {
         std::fs::create_dir(&game).unwrap();
         let incoming_target = game.join("incoming.asi");
         let conn = crate::db::open_in_memory().unwrap();
-        let incoming = owner_add_disabled(&conn, &game, &incoming_target, None, "Incoming", b"incoming payload");
+        let incoming = owner_add_disabled(
+            &conn,
+            &game,
+            &incoming_target,
+            None,
+            "Incoming",
+            b"incoming payload",
+        );
         owner_seed_stage(&conn, &staging, incoming, &[&b"incoming payload"[..]]);
         let empty = owner_add_empty_active(&conn, &game, "Empty active");
         let (outgoing, outgoing_target, outgoing_backup) = match role {
@@ -1086,26 +1345,50 @@ mod tests {
             add_mod(&conn, from_profile, empty).unwrap();
             add_mod(&conn, to_profile, empty).unwrap();
         }
-        assert_eq!(conn.execute("UPDATE user_settings SET active_profile_id=?1 WHERE id=1", [from_profile]).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET active_profile_id=?1 WHERE id=1",
+                [from_profile]
+            )
+            .unwrap(),
+            1
+        );
         OwnerEmptyFixture {
-            temp, conn, staging, incoming_target, outgoing_target, outgoing_backup,
-            from_profile, to_profile, incoming, outgoing, empty, role,
+            temp,
+            conn,
+            staging,
+            incoming_target,
+            outgoing_target,
+            outgoing_backup,
+            from_profile,
+            to_profile,
+            incoming,
+            outgoing,
+            empty,
+            role,
         }
     }
 
     fn owner_empty_memberships(conn: &Connection, id: i64) -> Vec<i64> {
-        let mut stmt = conn.prepare(
-            "SELECT profile_id FROM profile_mod WHERE installed_mod_id=?1 ORDER BY profile_id"
-        ).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT profile_id FROM profile_mod WHERE installed_mod_id=?1 ORDER BY profile_id",
+            )
+            .unwrap();
         let rows = stmt.query_map([id], |r| r.get(0)).unwrap();
         rows.collect::<rusqlite::Result<Vec<i64>>>().unwrap()
     }
 
     fn owner_empty_must_refuse(role: OwnerEmptyRole) {
         let f = owner_empty_fixture(role);
-        let count: i64 = f.conn.query_row(
-            "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id=?1", [f.empty], |r| r.get(0)
-        ).unwrap();
+        let count: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id=?1",
+                [f.empty],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
         assert_eq!(owner_status(&f.conn, f.empty), "active");
         assert_eq!(owner_status(&f.conn, f.outgoing), "active");
@@ -1116,7 +1399,10 @@ mod tests {
             OwnerEmptyRole::Shared => vec![f.from_profile, f.to_profile],
             OwnerEmptyRole::Unassigned => vec![],
         };
-        assert_eq!(owner_empty_memberships(&f.conn, f.empty), expected_memberships);
+        assert_eq!(
+            owner_empty_memberships(&f.conn, f.empty),
+            expected_memberships
+        );
         for id in [f.empty, f.outgoing, f.incoming] {
             crate::providers::ensure_installed_mod_available(&f.conn, id).unwrap();
         }
@@ -1134,23 +1420,29 @@ mod tests {
             assert_eq!(std::fs::read(backup).unwrap(), b"outgoing original");
         }
         let actual_outgoing = {
-            let mut stmt = f.conn.prepare(
-                "SELECT DISTINCT pm.installed_mod_id FROM profile_mod pm \
+            let mut stmt = f
+                .conn
+                .prepare(
+                    "SELECT DISTINCT pm.installed_mod_id FROM profile_mod pm \
                  JOIN installed_mod m ON m.id=pm.installed_mod_id \
                  WHERE pm.profile_id!=?1 AND m.status='active' \
                  AND NOT EXISTS (SELECT 1 FROM profile_mod t WHERE t.profile_id=?1 \
                                  AND t.installed_mod_id=pm.installed_mod_id) \
-                 ORDER BY pm.installed_mod_id"
-            ).unwrap();
+                 ORDER BY pm.installed_mod_id",
+                )
+                .unwrap();
             let rows = stmt.query_map([f.to_profile], |r| r.get(0)).unwrap();
             rows.collect::<rusqlite::Result<Vec<i64>>>().unwrap()
         };
         let actual_incoming = {
-            let mut stmt = f.conn.prepare(
-                "SELECT pm.installed_mod_id FROM profile_mod pm \
+            let mut stmt = f
+                .conn
+                .prepare(
+                    "SELECT pm.installed_mod_id FROM profile_mod pm \
                  JOIN installed_mod m ON m.id=pm.installed_mod_id \
-                 WHERE pm.profile_id=?1 AND m.status='disabled' ORDER BY pm.installed_mod_id"
-            ).unwrap();
+                 WHERE pm.profile_id=?1 AND m.status='disabled' ORDER BY pm.installed_mod_id",
+                )
+                .unwrap();
             let rows = stmt.query_map([f.to_profile], |r| r.get(0)).unwrap();
             rows.collect::<rusqlite::Result<Vec<i64>>>().unwrap()
         };
@@ -1163,12 +1455,21 @@ mod tests {
         match switch(&f.conn, f.to_profile, &f.staging) {
             Err(crate::error::CoreError::UnsupportedFormat { reason }) => assert_eq!(
                 reason,
-                format!("profile switch cannot determine targets for active mod {}: no file records", f.empty)
+                format!(
+                    "profile switch cannot determine targets for active mod {}: no file records",
+                    f.empty
+                )
             ),
             _ => panic!("expected the active-mod no-file-records refusal"),
         }
-        assert!(profile_preflight_tree(f.temp.path()) == tree, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db,
+            "synthetic database changed"
+        );
         assert_eq!(owner_events(&f.conn), events);
         assert_eq!(profile_preflight_changes(&f.conn), changes);
         assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.from_profile));
@@ -1203,13 +1504,24 @@ mod tests {
         let to = create(&conn, "To").unwrap();
         add_mod(&conn, from, shared).unwrap();
         add_mod(&conn, to, shared).unwrap();
-        assert_eq!(conn.execute("UPDATE user_settings SET active_profile_id=?1 WHERE id=1", [from]).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET active_profile_id=?1 WHERE id=1",
+                [from]
+            )
+            .unwrap(),
+            1
+        );
         assert_eq!(owner_empty_memberships(&conn, shared), vec![from, to]);
         assert!(owner_empty_memberships(&conn, unassigned).is_empty());
         for id in [shared, unassigned] {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id=?1", [id], |r| r.get(0)
-            ).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(count, 0);
             assert_eq!(owner_status(&conn, id), "active");
             crate::providers::ensure_installed_mod_available(&conn, id).unwrap();
@@ -1221,11 +1533,21 @@ mod tests {
             let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
             rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
         };
-        let active_col = columns.iter().position(|name| name == "active_profile_id").unwrap() + 1;
+        let active_col = columns
+            .iter()
+            .position(|name| name == "active_profile_id")
+            .unwrap()
+            + 1;
         let mut expected_db = profile_preflight_db(&conn);
-        let settings = expected_db.iter_mut().find(|(name, _)| name == "user_settings").unwrap();
+        let settings = expected_db
+            .iter_mut()
+            .find(|(name, _)| name == "user_settings")
+            .unwrap();
         assert_eq!(settings.1.len(), 1);
-        assert_eq!(settings.1[0][active_col], rusqlite::types::Value::Integer(from));
+        assert_eq!(
+            settings.1[0][active_col],
+            rusqlite::types::Value::Integer(from)
+        );
         settings.1[0][active_col] = rusqlite::types::Value::Integer(to);
         let tree = profile_preflight_tree(temp.path());
         let events = owner_events(&conn);
@@ -1250,28 +1572,51 @@ mod tests {
         let conn = crate::db::open_in_memory().unwrap();
         let previous = create(&conn, "Previous empty profile").unwrap();
         let target = create(&conn, "Target empty profile").unwrap();
-        assert_eq!(conn.execute("UPDATE user_settings SET active_profile_id=?1 WHERE id=1", [previous]).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET active_profile_id=?1 WHERE id=1",
+                [previous]
+            )
+            .unwrap(),
+            1
+        );
         assert!(mod_ids_in_profile(&conn, previous).unwrap().is_empty());
         assert!(mod_ids_in_profile(&conn, target).unwrap().is_empty());
-        let mod_count: i64 = conn.query_row("SELECT COUNT(*) FROM installed_mod", [], |r| r.get(0)).unwrap();
+        let mod_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(mod_count, 0);
         let baseline = profile_preflight_db(&conn);
         assert!(conn.is_autocommit());
         conn.execute("BEGIN DEFERRED", []).unwrap();
         assert!(!conn.is_autocommit());
-        assert_eq!(conn.execute("UPDATE user_settings SET language='synthetic-caller-marker' WHERE id=1", []).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET language='synthetic-caller-marker' WHERE id=1",
+                []
+            )
+            .unwrap(),
+            1
+        );
         let outcome = switch(&conn, target, Path::new("unused-staging")).unwrap();
         assert!(outcome.enabled.is_empty());
         assert!(outcome.disabled.is_empty());
         assert!(!conn.is_autocommit());
         assert_eq!(active_profile_id(&conn).unwrap(), Some(target));
-        let marker: String = conn.query_row("SELECT language FROM user_settings WHERE id=1", [], |r| r.get(0)).unwrap();
+        let marker: String = conn
+            .query_row("SELECT language FROM user_settings WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(marker, "synthetic-caller-marker");
         // This is the caller's explicit rollback, not an action by switch.
         conn.execute("ROLLBACK", []).unwrap();
         assert!(conn.is_autocommit());
         assert_eq!(active_profile_id(&conn).unwrap(), Some(previous));
-        assert!(profile_preflight_db(&conn) == baseline, "caller rollback did not restore the DB");
+        assert!(
+            profile_preflight_db(&conn) == baseline,
+            "caller rollback did not restore the DB"
+        );
     }
 
     // OpenAI-Codex_fresh_test_review: Both incoming mods are disabled, not active owners.
@@ -1280,16 +1625,28 @@ mod tests {
         let f = profile_preflight_fixture();
         let game = f.temp.path().join("game");
         let second_original = game.join("second-incoming.asi");
-        let second = owner_add_disabled(&f.conn, &game, &second_original, None, "Second incoming", b"second payload");
+        let second = owner_add_disabled(
+            &f.conn,
+            &game,
+            &second_original,
+            None,
+            "Second incoming",
+            b"second payload",
+        );
         crate::providers::ensure_installed_mod_available(&f.conn, second).unwrap();
         owner_seed_stage(&f.conn, &f.staging, second, &[&b"second payload"[..]]);
         owner_require_stage(&f.conn, second, &f.staging, &[&b"second payload"[..]]);
         assert!(matches!(std::fs::symlink_metadata(&second_original),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound));
-        assert_eq!(f.conn.execute(
-            "UPDATE installed_mod_file SET target_path=?1 WHERE installed_mod_id=?2",
-            rusqlite::params![f.incoming_alpha.to_str().unwrap(), second],
-        ).unwrap(), 1);
+        assert_eq!(
+            f.conn
+                .execute(
+                    "UPDATE installed_mod_file SET target_path=?1 WHERE installed_mod_id=?2",
+                    rusqlite::params![f.incoming_alpha.to_str().unwrap(), second],
+                )
+                .unwrap(),
+            1
+        );
         add_mod(&f.conn, f.incoming_profile, second).unwrap();
         owner_require_fixture(&f, &[second]);
         assert_eq!(owner_status(&f.conn, second), "disabled");
@@ -1301,50 +1658,80 @@ mod tests {
             rusqlite::params![f.incoming_alpha.to_str().unwrap(), f.incoming_id, second], |r| r.get(0),
         ).unwrap();
         assert_eq!(overlap, 2);
-        let report = crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.incoming_alpha)).unwrap();
+        let report =
+            crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.incoming_alpha)).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 1);
         assert!(report.foreign_conflicts[0].owner_mod_id.is_none());
-        assert_eq!(report.foreign_conflicts[0].path.as_path(), f.incoming_alpha.as_path());
+        assert_eq!(
+            report.foreign_conflicts[0].path.as_path(),
+            f.incoming_alpha.as_path()
+        );
         let tree = profile_preflight_tree(f.temp.path());
         let db = profile_preflight_db(&f.conn);
         let events = owner_events(&f.conn);
         let changes = profile_preflight_changes(&f.conn);
         let forward = format!(
             "profile mods #{} and #{} have overlapping targets: {} and {}",
-            f.incoming_id, second, f.incoming_alpha.display(), f.incoming_alpha.display()
+            f.incoming_id,
+            second,
+            f.incoming_alpha.display(),
+            f.incoming_alpha.display()
         );
         let reverse = format!(
             "profile mods #{} and #{} have overlapping targets: {} and {}",
-            second, f.incoming_id, f.incoming_alpha.display(), f.incoming_alpha.display()
+            second,
+            f.incoming_id,
+            f.incoming_alpha.display(),
+            f.incoming_alpha.display()
         );
         match switch(&f.conn, f.incoming_profile, &f.staging) {
             Err(crate::error::CoreError::UnsupportedFormat { reason }) => {
-                assert!(reason == forward || reason == reverse, "unexpected overlap diagnostic");
+                assert!(
+                    reason == forward || reason == reverse,
+                    "unexpected overlap diagnostic"
+                );
             }
             _ => panic!("expected the disabled-incoming overlap refusal"),
         }
-        assert!(profile_preflight_tree(f.temp.path()) == tree, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db,
+            "synthetic database changed"
+        );
         assert_eq!(owner_events(&f.conn), events);
         assert_eq!(profile_preflight_changes(&f.conn), changes);
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.outgoing_profile));
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.outgoing_profile)
+        );
         assert_eq!(owner_status(&f.conn, f.outgoing_id), "active");
         assert_eq!(owner_status(&f.conn, f.incoming_id), "disabled");
         assert_eq!(owner_status(&f.conn, second), "disabled");
         assert_eq!(std::fs::read(&f.incoming_alpha).unwrap(), b"alpha original");
-        owner_require_stage(&f.conn, f.incoming_id, &f.staging,
-            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]]);
+        owner_require_stage(
+            &f.conn,
+            f.incoming_id,
+            &f.staging,
+            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]],
+        );
         owner_require_stage(&f.conn, second, &f.staging, &[&b"second payload"[..]]);
     }
 
     // OpenAI-Codex_fresh_test_review: Capture recorded rows for a synthetic owner.
     fn owner_self_rows(conn: &Connection, id: i64) -> Vec<(i64, String, Option<String>, String)> {
-        let mut stmt = conn.prepare(
-            "SELECT id,target_path,backup_path,file_hash FROM installed_mod_file \
-             WHERE installed_mod_id=?1 ORDER BY id"
-        ).unwrap();
-        let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id,target_path,backup_path,file_hash FROM installed_mod_file \
+             WHERE installed_mod_id=?1 ORDER BY id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
         rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
     }
 
@@ -1363,16 +1750,29 @@ mod tests {
         match switch(&f.conn, f.incoming_profile, &f.staging) {
             Err(crate::error::CoreError::UnsupportedFormat { reason }) => assert_eq!(
                 reason,
-                format!("profile mod #{} has overlapping recorded targets: {} and {}",
-                    id, target.display(), target.display())
+                format!(
+                    "profile mod #{} has overlapping recorded targets: {} and {}",
+                    id,
+                    target.display(),
+                    target.display()
+                )
             ),
             _ => panic!("expected the same-mod target overlap refusal"),
         }
-        assert!(profile_preflight_tree(f.temp.path()) == tree, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db,
+            "synthetic database changed"
+        );
         assert_eq!(owner_events(&f.conn), events);
         assert_eq!(profile_preflight_changes(&f.conn), changes);
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.outgoing_profile));
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.outgoing_profile)
+        );
         owner_require_fixture(f, &[]);
     }
 
@@ -1402,8 +1802,12 @@ mod tests {
             "UPDATE installed_mod_file SET target_path=?1 WHERE id=?2 AND installed_mod_id=?3",
             rusqlite::params![f.incoming_alpha.to_str().unwrap(), rows[1].0, f.incoming_id],
         ).unwrap(), 1);
-        owner_require_stage(&f.conn, f.incoming_id, &f.staging,
-            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]]);
+        owner_require_stage(
+            &f.conn,
+            f.incoming_id,
+            &f.staging,
+            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]],
+        );
         owner_self_duplicate_must_refuse(&f, f.incoming_id, &f.incoming_alpha);
     }
 
@@ -1422,9 +1826,14 @@ mod tests {
              FROM installed_mod_file WHERE installed_mod_id=?1",
             [retained],
         ).unwrap(), 1);
-        let memberships: i64 = f.conn.query_row(
-            "SELECT COUNT(*) FROM profile_mod WHERE installed_mod_id=?1", [retained], |r| r.get(0)
-        ).unwrap();
+        let memberships: i64 = f
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM profile_mod WHERE installed_mod_id=?1",
+                [retained],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(memberships, 0);
         assert_eq!(owner_status(&f.conn, retained), "active");
         owner_require_fixture(&f, &[retained]);
@@ -1438,34 +1847,59 @@ mod tests {
         let report = crate::conflict::analyze(&f.conn, &[target.clone()]).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 2);
-        assert!(report.foreign_conflicts.iter().all(|item| item.owner_mod_id == Some(retained)));
+        assert!(report
+            .foreign_conflicts
+            .iter()
+            .all(|item| item.owner_mod_id == Some(retained)));
         let events_before = owner_events(&f.conn);
         let outcome = switch(&f.conn, f.incoming_profile, &f.staging).unwrap();
         assert!(outcome.disabled.is_empty());
         assert_eq!(outcome.enabled, vec![f.incoming_id]);
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.incoming_profile));
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.incoming_profile)
+        );
         assert_eq!(owner_status(&f.conn, f.outgoing_id), "active");
         assert_eq!(owner_status(&f.conn, f.incoming_id), "active");
         let incoming_stage = f.staging.join(f.incoming_id.to_string());
         for index in ["0", "1"] {
-            assert!(matches!(std::fs::symlink_metadata(incoming_stage.join(index)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound));
+            assert!(
+                matches!(std::fs::symlink_metadata(incoming_stage.join(index)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            );
         }
         assert_eq!(owner_status(&f.conn, retained), "active");
         assert_eq!(owner_self_rows(&f.conn, retained), retained_before);
         assert_eq!(owner_self_rows(&f.conn, f.outgoing_id), outgoing_before);
         assert_eq!(owner_self_rows(&f.conn, f.incoming_id), incoming_before);
         assert_eq!(std::fs::read(&target).unwrap(), b"retained payload");
-        assert_eq!(std::fs::read(&f.outgoing_target).unwrap(), b"outgoing payload");
-        assert_eq!(std::fs::read(&f.outgoing_backup).unwrap(), b"outgoing original");
-        assert_eq!(std::fs::read(&f.incoming_alpha).unwrap(), b"alpha edited before disable");
+        assert_eq!(
+            std::fs::read(&f.outgoing_target).unwrap(),
+            b"outgoing payload"
+        );
+        assert_eq!(
+            std::fs::read(&f.outgoing_backup).unwrap(),
+            b"outgoing original"
+        );
+        assert_eq!(
+            std::fs::read(&f.incoming_alpha).unwrap(),
+            b"alpha edited before disable"
+        );
         assert_eq!(std::fs::read(&f.incoming_bravo).unwrap(), b"bravo payload");
-        assert_eq!(std::fs::read(&f.incoming_backup).unwrap(), b"alpha original");
-        assert!(matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing_id.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound));
+        assert_eq!(
+            std::fs::read(&f.incoming_backup).unwrap(),
+            b"alpha original"
+        );
+        assert!(
+            matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing_id.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        );
         let events_after = owner_events(&f.conn);
         assert_eq!(events_after.len(), events_before.len() + 1);
-        assert_eq!(&events_after[..events_before.len()], events_before.as_slice());
+        assert_eq!(
+            &events_after[..events_before.len()],
+            events_before.as_slice()
+        );
         let event = events_after.last().unwrap();
         assert_eq!(event.1, Some(f.incoming_id));
         assert_eq!(event.2.as_str(), "enable");
@@ -1480,15 +1914,24 @@ mod tests {
         let missing = f.temp.path().join("game").join("missing-outgoing.asi");
         assert!(matches!(std::fs::symlink_metadata(&missing),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound));
-        assert_eq!(f.conn.execute(
-            "UPDATE installed_mod_file SET target_path=?1 WHERE installed_mod_id=?2",
-            rusqlite::params![missing.to_str().unwrap(), f.outgoing_id],
-        ).unwrap(), 1);
+        assert_eq!(
+            f.conn
+                .execute(
+                    "UPDATE installed_mod_file SET target_path=?1 WHERE installed_mod_id=?2",
+                    rusqlite::params![missing.to_str().unwrap(), f.outgoing_id],
+                )
+                .unwrap(),
+            1
+        );
         owner_require_fixture(&f, &[]);
-        let (file_id, recorded): (i64, String) = f.conn.query_row(
-            "SELECT id,target_path FROM installed_mod_file WHERE installed_mod_id=?1",
-            [f.outgoing_id], |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
+        let (file_id, recorded): (i64, String) = f
+            .conn
+            .query_row(
+                "SELECT id,target_path FROM installed_mod_file WHERE installed_mod_id=?1",
+                [f.outgoing_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(Path::new(&recorded), missing.as_path());
         crate::protected_files::check_write(&missing).unwrap();
         let tree = profile_preflight_tree(f.temp.path());
@@ -1498,20 +1941,34 @@ mod tests {
         match switch(&f.conn, f.incoming_profile, &f.staging) {
             Err(crate::error::CoreError::UnsupportedFormat { reason }) => assert_eq!(
                 reason,
-                format!("missing target for profile outgoing mod #{} file #{}: {}",
-                    f.outgoing_id, file_id, recorded)
+                format!(
+                    "missing target for profile outgoing mod #{} file #{}: {}",
+                    f.outgoing_id, file_id, recorded
+                )
             ),
             _ => panic!("expected the missing outgoing target refusal"),
         }
-        assert!(profile_preflight_tree(f.temp.path()) == tree, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db,
+            "synthetic database changed"
+        );
         assert_eq!(owner_events(&f.conn), events);
         assert_eq!(profile_preflight_changes(&f.conn), changes);
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.outgoing_profile));
-        owner_require_stage(&f.conn, f.incoming_id, &f.staging,
-            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]]);
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.outgoing_profile)
+        );
+        owner_require_stage(
+            &f.conn,
+            f.incoming_id,
+            &f.staging,
+            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]],
+        );
     }
-
 
     // OpenAI-Codex: A nonexistent profile must not deactivate existing mods.
     #[test]
@@ -1574,9 +2031,11 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"current mod");
         assert!(!staging_root.exists());
         let status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(status, "active");
         assert_eq!(active_profile_id(&conn).unwrap(), Some(profile_id));
@@ -1661,30 +2120,44 @@ mod tests {
 
     // OpenAI-Codex_lml_guard_audit: Capture synthetic rows without updating the database.
     fn profile_preflight_db(conn: &Connection) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
-        let mut statement = conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' \
-             AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name"
-        ).unwrap();
-        let tables = statement.query_map([], |row| row.get::<_, String>(0)).unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' \
+             AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name",
+            )
+            .unwrap();
+        let tables = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
         drop(statement);
-        tables.into_iter().map(|table| {
-            let query = format!(
-                "SELECT rowid, * FROM \"{}\" ORDER BY rowid",
-                table.replace('"', "\"\"")
-            );
-            let mut statement = conn.prepare(&query).unwrap();
-            let columns = statement.column_count();
-            let rows = statement.query_map([], |row| {
-                (0..columns).map(|i| row.get::<_, rusqlite::types::Value>(i))
+        tables
+            .into_iter()
+            .map(|table| {
+                let query = format!(
+                    "SELECT rowid, * FROM \"{}\" ORDER BY rowid",
+                    table.replace('"', "\"\"")
+                );
+                let mut statement = conn.prepare(&query).unwrap();
+                let columns = statement.column_count();
+                let rows = statement
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .unwrap()
                     .collect::<rusqlite::Result<Vec<_>>>()
-            }).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
-            (table, rows)
-        }).collect()
+                    .unwrap();
+                (table, rows)
+            })
+            .collect()
     }
 
     fn profile_preflight_changes(conn: &Connection) -> i64 {
-        conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap()
+        conn.query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap()
     }
 
     fn assert_profile_staging_error(error: crate::error::CoreError, mod_id: i64, corrupt: bool) {
@@ -1734,17 +2207,31 @@ mod tests {
         let game_text = game.to_str().expect("synthetic game root must be Unicode");
         conn.execute(
             "INSERT INTO installed_mod (name,source_type,install_path,status,mode) \
-             VALUES ('Outgoing','asi',?1,'active','legacy-sp')", [game_text]
-        ).unwrap();
+             VALUES ('Outgoing','asi',?1,'active','legacy-sp')",
+            [game_text],
+        )
+        .unwrap();
         let outgoing_id = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO installed_mod (name,source_type,install_path,status,mode) \
-             VALUES ('Incoming','asi',?1,'disabled','legacy-sp')", [game_text]
-        ).unwrap();
+             VALUES ('Incoming','asi',?1,'disabled','legacy-sp')",
+            [game_text],
+        )
+        .unwrap();
         let incoming_id = conn.last_insert_rowid();
         for (id, target, backup, installed_payload) in [
-            (outgoing_id, &outgoing_target, Some(&outgoing_backup), &b"outgoing payload"[..]),
-            (incoming_id, &incoming_alpha, Some(&incoming_backup), &b"alpha installed"[..]),
+            (
+                outgoing_id,
+                &outgoing_target,
+                Some(&outgoing_backup),
+                &b"outgoing payload"[..],
+            ),
+            (
+                incoming_id,
+                &incoming_alpha,
+                Some(&incoming_backup),
+                &b"alpha installed"[..],
+            ),
             (incoming_id, &incoming_bravo, None, &b"bravo payload"[..]),
         ] {
             let backup_text = backup.map(|path| path.to_str().unwrap());
@@ -1755,34 +2242,63 @@ mod tests {
                 rusqlite::params![id, target.to_str().unwrap(), backup_text, digest]
             ).unwrap();
         }
-        owner_seed_stage(&conn, &staging, incoming_id,
-            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]]);
+        owner_seed_stage(
+            &conn,
+            &staging,
+            incoming_id,
+            &[&b"alpha edited before disable"[..], &b"bravo payload"[..]],
+        );
         owner_seed_event(&conn, incoming_id, "disable");
 
         let outgoing_profile = create(&conn, "Outgoing profile").unwrap();
         let incoming_profile = create(&conn, "Incoming profile").unwrap();
         add_mod(&conn, outgoing_profile, outgoing_id).unwrap();
         add_mod(&conn, incoming_profile, incoming_id).unwrap();
-        assert_eq!(conn.execute(
-            "UPDATE user_settings SET active_profile_id=?1 WHERE id=1", [outgoing_profile]
-        ).unwrap(), 1);
+        assert_eq!(
+            conn.execute(
+                "UPDATE user_settings SET active_profile_id=?1 WHERE id=1",
+                [outgoing_profile]
+            )
+            .unwrap(),
+            1
+        );
         for id in [outgoing_id, incoming_id] {
             crate::providers::ensure_installed_mod_available(&conn, id).unwrap();
         }
         let stage = staging.join(incoming_id.to_string());
         assert!(stage.join("manifest.json").is_file());
-        assert_eq!(crate::state::disabled_payloads(&conn, incoming_id, &staging).unwrap().len(), 2);
-        assert_eq!(std::fs::read(stage.join("0")).unwrap(), b"alpha edited before disable");
+        assert_eq!(
+            crate::state::disabled_payloads(&conn, incoming_id, &staging)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            std::fs::read(stage.join("0")).unwrap(),
+            b"alpha edited before disable"
+        );
         assert_eq!(std::fs::read(stage.join("1")).unwrap(), b"bravo payload");
-        assert_eq!(std::fs::read(&outgoing_target).unwrap(), b"outgoing payload");
+        assert_eq!(
+            std::fs::read(&outgoing_target).unwrap(),
+            b"outgoing payload"
+        );
         assert_eq!(std::fs::read(&incoming_alpha).unwrap(), b"alpha original");
         assert!(!incoming_bravo.exists());
         assert!(!staging.join(outgoing_id.to_string()).exists());
         assert_eq!(active_profile_id(&conn).unwrap(), Some(outgoing_profile));
         ProfilePreflightFixture {
-            temp, conn, staging, outgoing_id, incoming_id, outgoing_profile,
-            incoming_profile, outgoing_target, outgoing_backup, incoming_alpha,
-            incoming_bravo, incoming_backup,
+            temp,
+            conn,
+            staging,
+            outgoing_id,
+            incoming_id,
+            outgoing_profile,
+            incoming_profile,
+            outgoing_target,
+            outgoing_backup,
+            incoming_alpha,
+            incoming_bravo,
+            incoming_backup,
         }
     }
 
@@ -1802,7 +2318,10 @@ mod tests {
             assert!(!second.exists());
         }
         assert_eq!(std::fs::read(&saved).unwrap(), b"bravo payload");
-        assert_eq!(std::fs::read(stage.join("manifest.json")).unwrap(), manifest);
+        assert_eq!(
+            std::fs::read(stage.join("manifest.json")).unwrap(),
+            manifest
+        );
         for id in [f.outgoing_id, f.incoming_id] {
             crate::providers::ensure_installed_mod_available(&f.conn, id).unwrap();
         }
@@ -1821,14 +2340,32 @@ mod tests {
         };
 
         assert_profile_staging_error(error, f.incoming_id, corrupt);
-        assert!(profile_preflight_tree(f.temp.path()) == tree_before, "synthetic tree changed");
-        assert!(profile_preflight_db(&f.conn) == db_before, "synthetic database changed");
+        assert!(
+            profile_preflight_tree(f.temp.path()) == tree_before,
+            "synthetic tree changed"
+        );
+        assert!(
+            profile_preflight_db(&f.conn) == db_before,
+            "synthetic database changed"
+        );
         assert_eq!(profile_preflight_changes(&f.conn), changes_before);
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.outgoing_profile));
-        assert_eq!(std::fs::read(&f.outgoing_target).unwrap(), b"outgoing payload");
-        assert_eq!(std::fs::read(&f.outgoing_backup).unwrap(), b"outgoing original");
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.outgoing_profile)
+        );
+        assert_eq!(
+            std::fs::read(&f.outgoing_target).unwrap(),
+            b"outgoing payload"
+        );
+        assert_eq!(
+            std::fs::read(&f.outgoing_backup).unwrap(),
+            b"outgoing original"
+        );
         assert_eq!(std::fs::read(&f.incoming_alpha).unwrap(), b"alpha original");
-        assert_eq!(std::fs::read(&f.incoming_backup).unwrap(), b"alpha original");
+        assert_eq!(
+            std::fs::read(&f.incoming_backup).unwrap(),
+            b"alpha original"
+        );
         assert!(!f.incoming_bravo.exists());
         assert!(!f.staging.join(f.outgoing_id.to_string()).exists());
     }
@@ -1854,10 +2391,13 @@ mod tests {
         let incoming_rows = owner_self_rows(&f.conn, f.incoming_id);
         let events_before = owner_events(&f.conn);
         let event_count = |id| -> i64 {
-            f.conn.query_row(
-                "SELECT COUNT(*) FROM install_event WHERE installed_mod_id=?1", [id],
-                |row| row.get(0),
-            ).unwrap()
+            f.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM install_event WHERE installed_mod_id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap()
         };
         let outgoing_events = event_count(f.outgoing_id);
         let incoming_events = event_count(f.incoming_id);
@@ -1866,7 +2406,10 @@ mod tests {
 
         assert!(outcome.disabled.is_empty());
         assert_eq!(outcome.enabled, vec![f.incoming_id]);
-        assert_eq!(active_profile_id(&f.conn).unwrap(), Some(f.incoming_profile));
+        assert_eq!(
+            active_profile_id(&f.conn).unwrap(),
+            Some(f.incoming_profile)
+        );
         for id in [f.outgoing_id, f.incoming_id] {
             assert_eq!(owner_status(&f.conn, id), "active");
         }
@@ -1876,22 +2419,42 @@ mod tests {
         assert_eq!(event_count(f.incoming_id), incoming_events + 1);
         let events_after = owner_events(&f.conn);
         assert_eq!(events_after.len(), events_before.len() + 1);
-        assert_eq!(&events_after[..events_before.len()], events_before.as_slice());
+        assert_eq!(
+            &events_after[..events_before.len()],
+            events_before.as_slice()
+        );
         let event = events_after.last().unwrap();
         assert_eq!(event.1, Some(f.incoming_id));
         assert_eq!(event.2.as_str(), "enable");
         assert_eq!(event.4, 1);
         assert!(event.5.is_none());
-        assert_eq!(std::fs::read(&f.outgoing_target).unwrap(), b"outgoing payload");
-        assert_eq!(std::fs::read(&f.outgoing_backup).unwrap(), b"outgoing original");
-        assert!(matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing_id.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound));
-        assert_eq!(std::fs::read(&f.incoming_alpha).unwrap(), b"alpha edited before disable");
+        assert_eq!(
+            std::fs::read(&f.outgoing_target).unwrap(),
+            b"outgoing payload"
+        );
+        assert_eq!(
+            std::fs::read(&f.outgoing_backup).unwrap(),
+            b"outgoing original"
+        );
+        assert!(
+            matches!(std::fs::symlink_metadata(f.staging.join(f.outgoing_id.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert_eq!(
+            std::fs::read(&f.incoming_alpha).unwrap(),
+            b"alpha edited before disable"
+        );
         assert_eq!(std::fs::read(&f.incoming_bravo).unwrap(), b"bravo payload");
-        assert_eq!(std::fs::read(&f.incoming_backup).unwrap(), b"alpha original");
+        assert_eq!(
+            std::fs::read(&f.incoming_backup).unwrap(),
+            b"alpha original"
+        );
         assert!(!stage.join("0").exists());
         assert!(!stage.join("1").exists());
-        assert_eq!(std::fs::read(stage.join("manifest.json")).unwrap(), manifest);
+        assert_eq!(
+            std::fs::read(stage.join("manifest.json")).unwrap(),
+            manifest
+        );
     }
 
     #[test]
@@ -1942,7 +2505,9 @@ mod tests {
             conn.execute(
                 "UPDATE installed_mod SET install_path = ?1 WHERE id IN (?2, ?3)",
                 rusqlite::params![
-                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    game_root
+                        .to_str()
+                        .expect("synthetic game root must be Unicode"),
                     mod_a,
                     mod_b,
                 ],
@@ -1985,7 +2550,10 @@ mod tests {
         let changes_before = profile_preflight_changes(&conn);
         let active_before = active_profile_id(&conn).unwrap();
         let error = switch(&conn, profile_b, &staging_root).unwrap_err();
-        assert!(matches!(error, crate::error::CoreError::ModDisablingUnavailable));
+        assert!(matches!(
+            error,
+            crate::error::CoreError::ModDisablingUnavailable
+        ));
         assert_eq!(profile_preflight_tree(dir.path()), tree_before);
         assert_eq!(profile_preflight_db(&conn), db_before);
         assert_eq!(profile_preflight_changes(&conn), changes_before);

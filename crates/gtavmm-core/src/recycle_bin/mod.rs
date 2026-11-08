@@ -734,7 +734,9 @@ mod tests {
         let game_text = game.to_str().expect("synthetic game root must be Unicode");
         assert!(!game_text.is_empty());
         let conn = crate::db::open_in_memory().unwrap();
-        let query_only: i64 = conn.query_row("PRAGMA query_only", [], |r| r.get(0)).unwrap();
+        let query_only: i64 = conn
+            .query_row("PRAGMA query_only", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(query_only, 0);
 
         let mut cases = Vec::new();
@@ -744,9 +746,8 @@ mod tests {
             ("fresh-current.asi", 15, true),
             ("fresh-legacy.asi", 15, false),
         ] {
-            let (mod_id, entry_id) = setup_uninstalled_mod_with_recycle_entry(
-                &conn, &game, &recycle, target, days,
-            );
+            let (mod_id, entry_id) =
+                setup_uninstalled_mod_with_recycle_entry(&conn, &game, &recycle, target, days);
             let file_id: i64 = conn
                 .query_row(
                     "SELECT id FROM installed_mod_file WHERE installed_mod_id = ?1",
@@ -773,7 +774,14 @@ mod tests {
                     1
                 );
             }
-            cases.push(Case { target, expired: days < 0, modern, mod_id, entry_id, file_id });
+            cases.push(Case {
+                target,
+                expired: days < 0,
+                modern,
+                mod_id,
+                entry_id,
+                file_id,
+            });
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -809,7 +817,11 @@ mod tests {
             assert_eq!(snapshot, recycle.join(format!("{}-entry", case.mod_id)));
             crate::providers::ensure_installed_mod_available(&conn, case.mod_id).unwrap();
             validate_cleanup_scope(
-                &conn, Some(case.entry_id), &snapshot, &recycle, &[&backup, &staging],
+                &conn,
+                Some(case.entry_id),
+                &snapshot,
+                &recycle,
+                &[&backup, &staging],
             )
             .unwrap();
             let payload = snapshot.join(case.target);
@@ -817,14 +829,19 @@ mod tests {
             before.push((entry, owner, file, payload));
         }
         assert_eq!(counts(&conn), (4, 4, 4, 0));
-        let query_only: i64 = conn.query_row("PRAGMA query_only", [], |r| r.get(0)).unwrap();
+        let query_only: i64 = conn
+            .query_row("PRAGMA query_only", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(query_only, 0);
         let changes_before: i64 = conn
             .query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap();
         assert!(conn.is_autocommit());
 
-        assert_eq!(sweep_expired_with_root(&conn, &recycle, &backup, &staging).unwrap(), 0);
+        assert_eq!(
+            sweep_expired_with_root(&conn, &recycle, &backup, &staging).unwrap(),
+            0
+        );
         for (case, (entry, owner, file, payload)) in cases.iter().zip(before.iter()) {
             assert_eq!(&entry_row(&conn, case.entry_id), entry);
             assert_eq!(&owner_row(&conn, case.mod_id), owner);
@@ -833,10 +850,13 @@ mod tests {
         }
         assert_eq!(counts(&conn), (4, 4, 4, 0));
         assert_eq!(
-            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0)).unwrap(),
+            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
             changes_before
         );
-        let query_only: i64 = conn.query_row("PRAGMA query_only", [], |r| r.get(0)).unwrap();
+        let query_only: i64 = conn
+            .query_row("PRAGMA query_only", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(query_only, 0);
         assert!(conn.is_autocommit());
     }
@@ -1756,7 +1776,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('TestMod', 'asi', ?1, 'uninstalled')",
-            [game_root.to_str().expect("synthetic game root must be Unicode")],
+            [game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -1983,7 +2005,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('FiveM Test Mod', 'folder', ?1, 'uninstalled')",
-            [game_root.to_str().expect("synthetic game root must be Unicode")],
+            [game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -2065,7 +2089,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('FiveM Test Mod', 'folder', ?1, 'uninstalled')",
-            [game_root.to_str().expect("synthetic game root must be Unicode")],
+            [game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();

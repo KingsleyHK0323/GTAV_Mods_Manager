@@ -326,7 +326,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('TestMod', 'asi', ?1, 'active')",
-            rusqlite::params![game_root.to_str().expect("synthetic game root must be Unicode")],
+            rusqlite::params![game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -472,7 +474,10 @@ mod tests {
         let error = disable(&conn, mod_id, &staging_root).unwrap_err();
 
         assert!(matches!(error, CoreError::ModDisablingUnavailable));
-        assert_eq!(std::fs::read(game_root.join("mod.asi")).unwrap(), b"payload");
+        assert_eq!(
+            std::fs::read(game_root.join("mod.asi")).unwrap(),
+            b"payload"
+        );
         assert!(!staging_root.exists());
         let status: String = conn
             .query_row(
@@ -540,7 +545,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status) \
              VALUES ('X', 'asi', ?1, 'disabled')",
-            rusqlite::params![game_root.to_str().expect("synthetic game root must be Unicode")],
+            rusqlite::params![game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -692,7 +699,12 @@ mod tests {
         .unwrap();
         assert_eq!(mod_status(&conn, mod_id).unwrap(), "disabled");
         assert!(crate::providers::ensure_installed_mod_available(&conn, mod_id).is_ok());
-        assert_eq!(disabled_payloads(&conn, mod_id, &staging_root).unwrap().len(), 2);
+        assert_eq!(
+            disabled_payloads(&conn, mod_id, &staging_root)
+                .unwrap()
+                .len(),
+            2
+        );
 
         EnableSafetyFixture {
             conn,
@@ -719,9 +731,14 @@ mod tests {
             b"original alpha"
         );
         let stage = fixture.staging_root.join(fixture.mod_id.to_string());
-        assert_eq!(std::fs::read(stage.join("0")).unwrap().as_slice(), b"edited alpha");
         assert_eq!(
-            std::fs::read(stage.join("manifest.json")).unwrap().as_slice(),
+            std::fs::read(stage.join("0")).unwrap().as_slice(),
+            b"edited alpha"
+        );
+        assert_eq!(
+            std::fs::read(stage.join("manifest.json"))
+                .unwrap()
+                .as_slice(),
             manifest
         );
     }
@@ -761,15 +778,27 @@ mod tests {
 
         let other = setup_active_mod(&fixture.conn, &fixture.game_root, "bravo.asi", None);
         std::fs::write(&bravo, b"other active mod").unwrap();
-        fixture.conn.execute(
-            "UPDATE installed_mod SET mode='legacy-sp' WHERE id=?1", [other]
-        ).unwrap();
-        fixture.conn.execute(
-            "UPDATE installed_mod_file SET file_hash=?1 WHERE installed_mod_id=?2",
-            rusqlite::params![crate::util::hash_file(&bravo).unwrap(), other]
-        ).unwrap();
+        fixture
+            .conn
+            .execute(
+                "UPDATE installed_mod SET mode='legacy-sp' WHERE id=?1",
+                [other],
+            )
+            .unwrap();
+        fixture
+            .conn
+            .execute(
+                "UPDATE installed_mod_file SET file_hash=?1 WHERE installed_mod_id=?2",
+                rusqlite::params![crate::util::hash_file(&bravo).unwrap(), other],
+            )
+            .unwrap();
         crate::providers::ensure_installed_mod_available(&fixture.conn, fixture.mod_id).unwrap();
-        assert_eq!(disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap().len(), 2);
+        assert_eq!(
+            disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root)
+                .unwrap()
+                .len(),
+            2
+        );
         let targets = vec![alpha.clone(), bravo.clone()];
         let report = crate::conflict::analyze(&fixture.conn, &targets).unwrap();
         assert!(!report.has_protected_hits());
@@ -782,30 +811,41 @@ mod tests {
         let tree_before = snapshot_owner_fixture_tree(fixture.temp.path());
         let disabled_before = enable_safety_snapshot(&fixture.conn, fixture.mod_id);
         let other_before = enable_safety_snapshot(&fixture.conn, other);
-        let changes_before: i64 = fixture.conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        let changes_before: i64 = fixture
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
 
         match enable(&fixture.conn, fixture.mod_id, &fixture.staging_root) {
             Err(CoreError::ForeignConflict { path, owner_mod_id }) => {
                 assert_eq!(owner_mod_id, other);
-                assert!(path.as_path() == bravo.as_path(), "unexpected conflict path");
+                assert!(
+                    path.as_path() == bravo.as_path(),
+                    "unexpected conflict path"
+                );
             }
             _ => panic!("expected a recorded active-owner conflict"),
         }
 
-        assert!(snapshot_owner_fixture_tree(fixture.temp.path()) == tree_before,
-            "synthetic fixture tree changed");
+        assert!(
+            snapshot_owner_fixture_tree(fixture.temp.path()) == tree_before,
+            "synthetic fixture tree changed"
+        );
         assert_enable_first_file_preserved(&fixture, Some(b"original alpha"), &manifest);
         assert_eq!(std::fs::read(&bravo).unwrap(), b"other active mod");
         assert_eq!(std::fs::read(stage.join("1")).unwrap(), b"bravo");
-        assert!(enable_safety_snapshot(&fixture.conn, fixture.mod_id) == disabled_before,
-            "disabled mod records changed");
-        assert!(enable_safety_snapshot(&fixture.conn, other) == other_before,
-            "other mod records changed");
-        let changes_after: i64 = fixture.conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        assert!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id) == disabled_before,
+            "disabled mod records changed"
+        );
+        assert!(
+            enable_safety_snapshot(&fixture.conn, other) == other_before,
+            "other mod records changed"
+        );
+        let changes_after: i64 = fixture
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(changes_after, changes_before);
     }
 
@@ -840,7 +880,10 @@ mod tests {
         let stage = fixture.staging_root.join(fixture.mod_id.to_string());
         let manifest = std::fs::read(stage.join("manifest.json")).unwrap();
         assert_eq!(std::fs::read(&alpha).unwrap(), b"original alpha");
-        assert_eq!(std::fs::read(&fixture.backup_path).unwrap(), b"original alpha");
+        assert_eq!(
+            std::fs::read(&fixture.backup_path).unwrap(),
+            b"original alpha"
+        );
         assert!(!bravo.exists());
         assert!(!protected.exists());
 
@@ -848,9 +891,13 @@ mod tests {
             let mut statement = fixture.conn.prepare(
                 "SELECT id,target_path FROM installed_mod_file WHERE installed_mod_id=?1 ORDER BY id"
             ).unwrap();
-            let result = statement.query_map([fixture.mod_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            }).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            let result = statement
+                .query_map([fixture.mod_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
             result
         };
         assert_eq!(rows.len(), 2);
@@ -860,12 +907,18 @@ mod tests {
             "UPDATE installed_mod_file SET target_path=?1 WHERE id=?2 AND installed_mod_id=?3",
             rusqlite::params![protected.to_str().unwrap(), rows[1].0, fixture.mod_id]
         ).unwrap(), 1);
-        let active_count: i64 = fixture.conn.query_row(
-            "SELECT COUNT(*) FROM installed_mod WHERE status='active'", [], |row| row.get(0)
-        ).unwrap();
+        let active_count: i64 = fixture
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod WHERE status='active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(active_count, 0);
         crate::providers::ensure_installed_mod_available(&fixture.conn, fixture.mod_id).unwrap();
-        let payloads = disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap();
+        let payloads =
+            disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap();
         assert_eq!(payloads.len(), 2);
         assert_eq!((payloads[0].0, payloads[1].0), (rows[0].0, rows[1].0));
         assert!(payloads[0].1.as_path() == stage.join("0").as_path());
@@ -873,33 +926,46 @@ mod tests {
         assert!(protected_files::check_write(&alpha).is_ok());
         match protected_files::check_write(&protected) {
             Err(CoreError::ProtectedFileViolation { path }) => {
-                assert!(path.as_path() == protected.as_path(), "unexpected protected path");
+                assert!(
+                    path.as_path() == protected.as_path(),
+                    "unexpected protected path"
+                );
             }
             _ => panic!("expected a protected target"),
         }
         let tree_before = synthetic_tree(fixture.temp.path());
         let db_before = enable_safety_snapshot(&fixture.conn, fixture.mod_id);
-        let changes_before: i64 = fixture.conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        let changes_before: i64 = fixture
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
 
         match enable(&fixture.conn, fixture.mod_id, &fixture.staging_root) {
             Err(CoreError::ProtectedFileViolation { path }) => {
-                assert!(path.as_path() == protected.as_path(), "unexpected protected path");
+                assert!(
+                    path.as_path() == protected.as_path(),
+                    "unexpected protected path"
+                );
             }
             _ => panic!("expected a protected target refusal"),
         }
 
-        assert!(synthetic_tree(fixture.temp.path()) == tree_before, "synthetic tree changed");
+        assert!(
+            synthetic_tree(fixture.temp.path()) == tree_before,
+            "synthetic tree changed"
+        );
         assert_enable_first_file_preserved(&fixture, Some(b"original alpha"), &manifest);
         assert_eq!(std::fs::read(stage.join("1")).unwrap(), b"bravo");
         assert!(!bravo.exists());
         assert!(!protected.exists());
-        assert!(enable_safety_snapshot(&fixture.conn, fixture.mod_id) == db_before,
-            "disabled mod records changed");
-        let changes_after: i64 = fixture.conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        assert!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id) == db_before,
+            "disabled mod records changed"
+        );
+        let changes_after: i64 = fixture
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(changes_after, changes_before);
     }
 
@@ -912,64 +978,100 @@ mod tests {
         let stage = fixture.staging_root.join(fixture.mod_id.to_string());
         let manifest = std::fs::read(stage.join("manifest.json")).unwrap();
         assert_eq!(std::fs::read(&alpha).unwrap(), b"original alpha");
-        assert_eq!(std::fs::read(&fixture.backup_path).unwrap(), b"original alpha");
+        assert_eq!(
+            std::fs::read(&fixture.backup_path).unwrap(),
+            b"original alpha"
+        );
         assert!(matches!(std::fs::symlink_metadata(&bravo),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound));
 
         let other = setup_active_mod(&fixture.conn, &fixture.game_root, "bravo.asi", None);
-        fixture.conn.execute(
-            "UPDATE installed_mod SET mode='legacy-sp' WHERE id=?1", [other]
-        ).unwrap();
+        fixture
+            .conn
+            .execute(
+                "UPDATE installed_mod SET mode='legacy-sp' WHERE id=?1",
+                [other],
+            )
+            .unwrap();
         // This is a recorded hash only; the missing target's content cannot be verified.
         let recorded_hash = crate::util::hash_file(&stage.join("1")).unwrap();
-        fixture.conn.execute(
-            "UPDATE installed_mod_file SET file_hash=?1 WHERE installed_mod_id=?2",
-            rusqlite::params![recorded_hash, other]
-        ).unwrap();
+        fixture
+            .conn
+            .execute(
+                "UPDATE installed_mod_file SET file_hash=?1 WHERE installed_mod_id=?2",
+                rusqlite::params![recorded_hash, other],
+            )
+            .unwrap();
         for id in [fixture.mod_id, other] {
             crate::providers::ensure_installed_mod_available(&fixture.conn, id).unwrap();
         }
-        assert_eq!(mod_status(&fixture.conn, fixture.mod_id).unwrap(), "disabled");
+        assert_eq!(
+            mod_status(&fixture.conn, fixture.mod_id).unwrap(),
+            "disabled"
+        );
         assert_eq!(mod_status(&fixture.conn, other).unwrap(), "active");
-        assert_eq!(disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap().len(), 2);
+        assert_eq!(
+            disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root)
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(matches!(std::fs::symlink_metadata(&bravo),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound));
-        let report = crate::conflict::analyze(&fixture.conn, &[alpha.clone(), bravo.clone()]).unwrap();
+        let report =
+            crate::conflict::analyze(&fixture.conn, &[alpha.clone(), bravo.clone()]).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 2);
-        assert!(report.foreign_conflicts.iter().any(|conflict|
-            conflict.owner_mod_id.is_none() && conflict.path.as_path() == alpha.as_path()));
-        assert!(report.foreign_conflicts.iter().any(|conflict|
-            conflict.owner_mod_id == Some(other) && conflict.path.as_path() == bravo.as_path()));
+        assert!(report
+            .foreign_conflicts
+            .iter()
+            .any(|conflict| conflict.owner_mod_id.is_none()
+                && conflict.path.as_path() == alpha.as_path()));
+        assert!(report
+            .foreign_conflicts
+            .iter()
+            .any(|conflict| conflict.owner_mod_id == Some(other)
+                && conflict.path.as_path() == bravo.as_path()));
 
         let tree_before = snapshot_owner_fixture_tree(fixture.temp.path());
         let disabled_before = enable_safety_snapshot(&fixture.conn, fixture.mod_id);
         let other_before = enable_safety_snapshot(&fixture.conn, other);
-        let changes_before: i64 = fixture.conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        let changes_before: i64 = fixture
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
 
         match enable(&fixture.conn, fixture.mod_id, &fixture.staging_root) {
             Err(CoreError::ForeignConflict { path, owner_mod_id }) => {
                 assert_eq!(owner_mod_id, other);
-                assert!(path.as_path() == bravo.as_path(), "unexpected conflict path");
+                assert!(
+                    path.as_path() == bravo.as_path(),
+                    "unexpected conflict path"
+                );
             }
             _ => panic!("expected a recorded active-owner conflict"),
         }
 
-        assert!(snapshot_owner_fixture_tree(fixture.temp.path()) == tree_before,
-            "synthetic fixture tree changed");
+        assert!(
+            snapshot_owner_fixture_tree(fixture.temp.path()) == tree_before,
+            "synthetic fixture tree changed"
+        );
         assert_enable_first_file_preserved(&fixture, Some(b"original alpha"), &manifest);
         assert_eq!(std::fs::read(stage.join("1")).unwrap(), b"bravo");
         assert!(matches!(std::fs::symlink_metadata(&bravo),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound));
-        assert!(enable_safety_snapshot(&fixture.conn, fixture.mod_id) == disabled_before,
-            "disabled mod records changed");
-        assert!(enable_safety_snapshot(&fixture.conn, other) == other_before,
-            "other mod records changed");
-        let changes_after: i64 = fixture.conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        assert!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id) == disabled_before,
+            "disabled mod records changed"
+        );
+        assert!(
+            enable_safety_snapshot(&fixture.conn, other) == other_before,
+            "other mod records changed"
+        );
+        let changes_after: i64 = fixture
+            .conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(changes_after, changes_before);
     }
 
@@ -985,14 +1087,17 @@ mod tests {
         assert_eq!(std::fs::read(&alpha).unwrap(), original);
         assert!(!bravo.exists());
         crate::providers::ensure_installed_mod_available(&fixture.conn, fixture.mod_id).unwrap();
-        let payloads = disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root)
-            .unwrap();
+        let payloads =
+            disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap();
         assert_eq!(payloads.len(), 2);
-        assert_eq!(std::fs::read(stage.join("0")).unwrap().as_slice(), b"edited alpha");
+        assert_eq!(
+            std::fs::read(stage.join("0")).unwrap().as_slice(),
+            b"edited alpha"
+        );
         assert_eq!(std::fs::read(stage.join("1")).unwrap().as_slice(), b"bravo");
 
-        let report = crate::conflict::analyze(&fixture.conn, &[alpha.clone(), bravo.clone()])
-            .unwrap();
+        let report =
+            crate::conflict::analyze(&fixture.conn, &[alpha.clone(), bravo.clone()]).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 1);
         assert!(report.foreign_conflicts[0].owner_mod_id.is_none());
@@ -1001,7 +1106,10 @@ mod tests {
         assert_eq!(before.status, "disabled");
         assert_eq!(before.files.len(), 2);
         assert_eq!(Path::new(&before.files[0].1), alpha.as_path());
-        let backup = fixture.backup_path.to_str().expect("synthetic backup must be Unicode");
+        let backup = fixture
+            .backup_path
+            .to_str()
+            .expect("synthetic backup must be Unicode");
         assert_eq!(before.files[0].2.as_deref(), Some(backup));
 
         enable(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap();
@@ -1019,7 +1127,10 @@ mod tests {
         assert_eq!(after.status, "active");
         assert_eq!(after.files, before.files);
         assert_eq!(after.events.len(), before.events.len() + 1);
-        assert_eq!(&after.events[..before.events.len()], before.events.as_slice());
+        assert_eq!(
+            &after.events[..before.events.len()],
+            before.events.as_slice()
+        );
         let event = after.events.last().unwrap();
         assert_eq!(event.1.as_str(), "enable");
         assert_eq!(event.3, 1);
@@ -1033,11 +1144,9 @@ mod tests {
         let saved = fixture.temp.path().join("saved-bravo.bin");
         let manifest = std::fs::read(stage.join("manifest.json")).unwrap();
         std::fs::rename(stage.join("1"), &saved).unwrap();
-        assert!(crate::providers::ensure_installed_mod_available(
-            &fixture.conn,
-            fixture.mod_id
-        )
-        .is_ok());
+        assert!(
+            crate::providers::ensure_installed_mod_available(&fixture.conn, fixture.mod_id).is_ok()
+        );
         assert!(disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).is_err());
         let before = enable_safety_snapshot(&fixture.conn, fixture.mod_id);
 
@@ -1052,7 +1161,10 @@ mod tests {
         assert!(!fixture.game_root.join("bravo.asi").exists());
         assert!(!stage.join("1").exists());
         assert_eq!(std::fs::read(saved).unwrap().as_slice(), b"bravo");
-        assert_eq!(enable_safety_snapshot(&fixture.conn, fixture.mod_id), before);
+        assert_eq!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id),
+            before
+        );
     }
 
     #[test]
@@ -1061,11 +1173,9 @@ mod tests {
         let stage = fixture.staging_root.join(fixture.mod_id.to_string());
         let manifest = std::fs::read(stage.join("manifest.json")).unwrap();
         std::fs::write(stage.join("1"), b"tampered bravo").unwrap();
-        assert!(crate::providers::ensure_installed_mod_available(
-            &fixture.conn,
-            fixture.mod_id
-        )
-        .is_ok());
+        assert!(
+            crate::providers::ensure_installed_mod_available(&fixture.conn, fixture.mod_id).is_ok()
+        );
         assert!(disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).is_err());
         let before = enable_safety_snapshot(&fixture.conn, fixture.mod_id);
 
@@ -1083,7 +1193,10 @@ mod tests {
             std::fs::read(stage.join("1")).unwrap().as_slice(),
             b"tampered bravo"
         );
-        assert_eq!(enable_safety_snapshot(&fixture.conn, fixture.mod_id), before);
+        assert_eq!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id),
+            before
+        );
     }
 
     #[test]
@@ -1107,11 +1220,9 @@ mod tests {
                 rusqlite::params![crate::util::hash_file(&target).unwrap(), other],
             )
             .unwrap();
-        assert!(crate::providers::ensure_installed_mod_available(
-            &fixture.conn,
-            fixture.mod_id
-        )
-        .is_ok());
+        assert!(
+            crate::providers::ensure_installed_mod_available(&fixture.conn, fixture.mod_id).is_ok()
+        );
         assert_eq!(
             disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root)
                 .unwrap()
@@ -1133,7 +1244,10 @@ mod tests {
         assert_enable_first_file_preserved(&fixture, None, &manifest);
         assert_eq!(std::fs::read(&target).unwrap().as_slice(), b"other mod");
         assert_eq!(std::fs::read(stage.join("1")).unwrap().as_slice(), b"bravo");
-        assert_eq!(enable_safety_snapshot(&fixture.conn, fixture.mod_id), before);
+        assert_eq!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id),
+            before
+        );
         assert_eq!(enable_safety_snapshot(&fixture.conn, other), other_before);
     }
 
@@ -1192,7 +1306,10 @@ mod tests {
                 assert!(!stage.join("1").exists());
             }
             assert_eq!(std::fs::read(saved).unwrap().as_slice(), b"bravo");
-            assert_eq!(enable_safety_snapshot(&fixture.conn, fixture.mod_id), before);
+            assert_eq!(
+                enable_safety_snapshot(&fixture.conn, fixture.mod_id),
+                before
+            );
         }
     }
 
@@ -1269,7 +1386,9 @@ mod tests {
         conn.execute(
             "INSERT INTO installed_mod (name, source_type, install_path, status, mode) \
              VALUES ('Legacy fixture', 'asi', ?1, 'disabled', 'legacy-sp')",
-            [game_root.to_str().expect("synthetic game root must be Unicode")],
+            [game_root
+                .to_str()
+                .expect("synthetic game root must be Unicode")],
         )
         .unwrap();
         let mod_id = conn.last_insert_rowid();
@@ -1280,7 +1399,11 @@ mod tests {
         let staged_hash = crate::util::hash_file(&staged).unwrap();
         let prior_hash = crate::util::hash_file(&prior_payload).unwrap();
         assert_ne!(staged_hash, prior_hash);
-        let recorded_hash = if matching_hash { &staged_hash } else { &prior_hash };
+        let recorded_hash = if matching_hash {
+            &staged_hash
+        } else {
+            &prior_hash
+        };
         conn.execute(
             "INSERT INTO installed_mod_file \
              (installed_mod_id, target_path, backup_path, file_hash) VALUES (?1, ?2, ?3, ?4)",
@@ -1339,12 +1462,8 @@ mod tests {
             "disabled staging for mod {} is missing, unsafe, or does not match its file records; preserve it for recovery",
             fixture.mod_id
         );
-        let preflight_error = disabled_payloads(
-            &fixture.conn,
-            fixture.mod_id,
-            &fixture.staging_root,
-        )
-        .unwrap_err();
+        let preflight_error =
+            disabled_payloads(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap_err();
         assert!(matches!(
             preflight_error,
             CoreError::UnsupportedFormat { reason } if reason == expected_reason
@@ -1362,16 +1481,31 @@ mod tests {
             error,
             CoreError::UnsupportedFormat { reason } if reason == expected_reason
         ));
-        assert_eq!(std::fs::read(&fixture.target).unwrap(), b"restored original");
-        assert_eq!(std::fs::read(&fixture.backup).unwrap(), b"restored original");
-        assert_eq!(std::fs::read(&fixture.staged).unwrap(), b"user-edited staged payload");
-        assert_eq!(std::fs::read(&fixture.prior_payload).unwrap(), b"payload before user edit");
+        assert_eq!(
+            std::fs::read(&fixture.target).unwrap(),
+            b"restored original"
+        );
+        assert_eq!(
+            std::fs::read(&fixture.backup).unwrap(),
+            b"restored original"
+        );
+        assert_eq!(
+            std::fs::read(&fixture.staged).unwrap(),
+            b"user-edited staged payload"
+        );
+        assert_eq!(
+            std::fs::read(&fixture.prior_payload).unwrap(),
+            b"payload before user edit"
+        );
         assert_eq!(legacy_stage_entries(&fixture.stage_dir), entries_before);
         assert!(matches!(
             std::fs::symlink_metadata(fixture.stage_dir.join("manifest.json")),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound
         ));
-        assert_eq!(enable_safety_snapshot(&fixture.conn, fixture.mod_id), db_before);
+        assert_eq!(
+            enable_safety_snapshot(&fixture.conn, fixture.mod_id),
+            db_before
+        );
         let changes_after: i64 = fixture
             .conn
             .query_row("SELECT total_changes()", [], |row| row.get(0))
@@ -1391,15 +1525,27 @@ mod tests {
 
         enable(&fixture.conn, fixture.mod_id, &fixture.staging_root).unwrap();
 
-        assert_eq!(std::fs::read(&fixture.target).unwrap(), b"user-edited staged payload");
+        assert_eq!(
+            std::fs::read(&fixture.target).unwrap(),
+            b"user-edited staged payload"
+        );
         assert!(!fixture.staged.exists());
-        assert_eq!(std::fs::read(&fixture.backup).unwrap(), b"restored original");
-        assert_eq!(std::fs::read(&fixture.prior_payload).unwrap(), b"payload before user edit");
+        assert_eq!(
+            std::fs::read(&fixture.backup).unwrap(),
+            b"restored original"
+        );
+        assert_eq!(
+            std::fs::read(&fixture.prior_payload).unwrap(),
+            b"payload before user edit"
+        );
         let db_after = enable_safety_snapshot(&fixture.conn, fixture.mod_id);
         assert_eq!(db_after.status, "active");
         assert_eq!(db_after.files, db_before.files);
         assert_eq!(db_after.events.len(), db_before.events.len() + 1);
-        assert_eq!(&db_after.events[..db_before.events.len()], db_before.events.as_slice());
+        assert_eq!(
+            &db_after.events[..db_before.events.len()],
+            db_before.events.as_slice()
+        );
         assert_eq!(db_after.events.last().unwrap().1.as_str(), "enable");
         assert_eq!(db_after.events.last().unwrap().3, 1);
     }

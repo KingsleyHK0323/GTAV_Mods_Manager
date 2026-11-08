@@ -352,14 +352,19 @@ mod tests {
             "index": 0,
             "hash": staged_hash,
         }]);
-        std::fs::write(staged_dir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap())
-            .unwrap();
+        std::fs::write(
+            staged_dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         // OpenAI-Codex_lml_guard_review: Use the existing synthetic game root.
         assert_eq!(
             conn.execute(
                 "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
                 rusqlite::params![
-                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    game_root
+                        .to_str()
+                        .expect("synthetic game root must be Unicode"),
                     id,
                 ],
             )
@@ -385,14 +390,22 @@ mod tests {
         assert!(!target.exists());
         assert_eq!(std::fs::read(&staged).unwrap(), b"AI payload");
         let status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "uninstalled");
         let entry = crate::recycle_bin::list(&conn).unwrap().remove(0);
         crate::recycle_bin::restore(&mut conn, entry.id, &game_root, &backup_root).unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"AI payload");
         let status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "active");
     }
@@ -417,7 +430,9 @@ mod tests {
             conn.execute(
                 "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
                 rusqlite::params![
-                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    game_root
+                        .to_str()
+                        .expect("synthetic game root must be Unicode"),
                     mod_id,
                 ],
             )

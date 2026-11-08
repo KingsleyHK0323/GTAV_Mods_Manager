@@ -648,8 +648,8 @@ mod tests {
             Ok(_) => panic!("public open accepted unknown schema version {requested}"),
         };
         assert_guard_error(&error, requested);
-        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .unwrap();
+        let conn =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
@@ -702,9 +702,11 @@ mod tests {
             .unwrap();
         assert_eq!(version, 16);
         let existing: (i64, String) = conn
-            .query_row("SELECT id, name FROM installed_mod WHERE id = 42", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT id, name FROM installed_mod WHERE id = 42",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(existing, (42, "existing".to_string()));
         let tables: i64 = conn

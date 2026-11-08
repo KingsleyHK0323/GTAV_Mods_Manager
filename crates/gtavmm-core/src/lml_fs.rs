@@ -9,14 +9,14 @@ use crate::error::{CoreError, CoreResult};
 use crate::lml_package::{hash_package, revalidate_package, HashedPackageSnapshot};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
-use std::{
-    fs::{self, File, Metadata},
-    path::{Component, Path, PathBuf},
-};
 #[cfg(test)]
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
+};
+use std::{
+    fs::{self, File, Metadata},
+    path::{Component, Path, PathBuf},
 };
 
 pub(crate) fn invalid(reason: &str) -> CoreError {

@@ -575,7 +575,15 @@ pub fn install_mod_with_role_impl(
     role: Option<&str>,
 ) -> Result<gtavmm_core::install::InstallOutcome, String> {
     install_mod_with_role_and_backup_impl(
-        conn, game_path, mode, path, name, override_foreign_conflicts, backup_root, role, true,
+        conn,
+        game_path,
+        mode,
+        path,
+        name,
+        override_foreign_conflicts,
+        backup_root,
+        role,
+        true,
     )
 }
 
@@ -608,12 +616,10 @@ fn install_mod_with_role_and_backup_impl(
     {
         gtavmm_core::providers::ensure_game_root_available(&game_root)
             .map_err(|error| error.to_string())?;
-        return Err(
-            gtavmm_core::error::CoreError::UnsupportedFormat {
-                reason: "the install plan contains no files".to_string(),
-            }
-            .to_string(),
-        );
+        return Err(gtavmm_core::error::CoreError::UnsupportedFormat {
+            reason: "the install plan contains no files".to_string(),
+        }
+        .to_string());
     }
     let name = name.map(str::to_string).unwrap_or_else(|| {
         input_path
@@ -633,8 +639,7 @@ fn install_mod_with_role_and_backup_impl(
     // The category is only meaningful on the LSPDFR pages, so it is left
     // NULL elsewhere rather than filed under a taxonomy that does not apply.
     let category = match page {
-        crate::page_mode::PageMode::LegacyLspdfr
-        | crate::page_mode::PageMode::EnhancedLspdfr => {
+        crate::page_mode::PageMode::LegacyLspdfr | crate::page_mode::PageMode::EnhancedLspdfr => {
             Some(crate::lspdfr_category::infer(&plan))
         }
         _ => None,
@@ -642,7 +647,14 @@ fn install_mod_with_role_and_backup_impl(
     let metadata = gtavmm_core::install::PageInstallMetadata::new(page.as_str(), category)
         .ok_or_else(|| "Page metadata is not supported.".to_string())?;
     let result = gtavmm_core::install::install_with_page_metadata(
-        conn, &name, &plan, &game_root, backup_root, options, input_path, metadata,
+        conn,
+        &name,
+        &plan,
+        &game_root,
+        backup_root,
+        options,
+        input_path,
+        metadata,
     );
     // OpenAI-Codex_v1_removal_review: A managed-owner refusal is an expected conflict.
     // OpenAI-Codex_log_isolation_review: Avoid app log writes for identified database failures.
@@ -652,7 +664,9 @@ fn install_mod_with_role_and_backup_impl(
         | Ok(_) => {}
         Err(gtavmm_core::CoreError::InstallDatabaseRollbackFailed { database_error, .. })
             if matches!(
-                database_error.as_ref().downcast_ref::<gtavmm_core::CoreError>(),
+                database_error
+                    .as_ref()
+                    .downcast_ref::<gtavmm_core::CoreError>(),
                 Some(gtavmm_core::CoreError::Database(_))
             ) => {}
         Err(reason) => {
@@ -788,7 +802,10 @@ fn backup_warning_failure(language: &str, failure: BackupWarningFailure) -> Stri
 
 // OpenAI-Codex_backup_flow: Show filtered, bounded labels rather than complete paths.
 fn backup_warning_label(input: &str) -> String {
-    let leaf = input.rsplit(|c| c == '/' || c == '\\' || c == ':').next().unwrap_or("");
+    let leaf = input
+        .rsplit(|c| c == '/' || c == '\\' || c == ':')
+        .next()
+        .unwrap_or("");
     let mut label = String::new();
     let mut scanned = 0usize;
     let mut displayed = 0usize;
@@ -917,10 +934,14 @@ async fn request_backup_warning(
     };
     let message = format!("{body}{labels}\n\n{question}");
     let (sender, receiver) = std::sync::mpsc::channel();
-    let builder = app.dialog()
-        .message(message)
-        .title(title)
-        .buttons(MessageDialogButtons::OkCancelCustom(ok.into(), cancel.into()));
+    let builder =
+        app.dialog()
+            .message(message)
+            .title(title)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                ok.into(),
+                cancel.into(),
+            ));
     let task_guard = std::sync::Arc::clone(&guard);
     let show_task = tauri::async_runtime::spawn_blocking(move || {
         let _task_guard = task_guard;
@@ -930,18 +951,25 @@ async fn request_backup_warning(
         builder.show(backup_warning_callback(sender, guard));
     });
     let pending = PendingBackupWarning { receiver, deadline };
-    let wait_result = tauri::async_runtime::spawn_blocking(move || receive_backup_warning(pending)).await;
+    let wait_result =
+        tauri::async_runtime::spawn_blocking(move || receive_backup_warning(pending)).await;
     // Do not await a native show that may never return.
     drop(show_task);
-    let result = wait_result
-        .map_err(|_| backup_warning_failure(language, BackupWarningFailure::Worker))?;
+    let result =
+        wait_result.map_err(|_| backup_warning_failure(language, BackupWarningFailure::Worker))?;
     let confirmed = match result {
         Ok(confirmed) => confirmed,
         Err(BackupWarningWaitError::TimedOut) => {
-            return Err(backup_warning_failure(language, BackupWarningFailure::TimedOut));
+            return Err(backup_warning_failure(
+                language,
+                BackupWarningFailure::TimedOut,
+            ));
         }
         Err(BackupWarningWaitError::Disconnected) => {
-            return Err(backup_warning_failure(language, BackupWarningFailure::Disconnected));
+            return Err(backup_warning_failure(
+                language,
+                BackupWarningFailure::Disconnected,
+            ));
         }
     };
     ensure_backup_deadline(deadline, language)?;
@@ -950,7 +978,10 @@ async fn request_backup_warning(
 
 fn ensure_backup_deadline(deadline: std::time::Instant, language: &str) -> Result<(), String> {
     if std::time::Instant::now() >= deadline {
-        return Err(backup_warning_failure(language, BackupWarningFailure::TimedOut));
+        return Err(backup_warning_failure(
+            language,
+            BackupWarningFailure::TimedOut,
+        ));
     }
     Ok(())
 }
@@ -986,7 +1017,15 @@ fn reinstall_confirmation_target(
         .query_row(
             "SELECT name, source_type, install_path, status, mode FROM installed_mod WHERE id = ?1",
             [mod_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|error| error.to_string())?;
     let mut statement = conn
@@ -1003,7 +1042,13 @@ fn reinstall_confirmation_target(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok(ReinstallConfirmationTarget {
-        root, name, source_type, install_path, status, mode: saved_mode, files,
+        root,
+        name,
+        source_type,
+        install_path,
+        status,
+        mode: saved_mode,
+        files,
     })
 }
 
@@ -1023,15 +1068,20 @@ fn run_install_with_backup(
     check_install_preview_root(conn, game_path, mode, expected_game_root)?;
     if role.is_some_and(|value| !value.is_empty()) {
         let (_, provider) = resolve_page_target(conn, game_path, mode)?;
-        crate::install_role::classify(
-            std::path::Path::new(path), mode, provider.as_ref(), role,
-        )?;
+        crate::install_role::classify(std::path::Path::new(path), mode, provider.as_ref(), role)?;
     }
     let backup_root =
         default_backup_root()?.join(chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string());
     install_mod_with_role_and_backup_impl(
-        conn, game_path, mode, path, name, override_foreign_conflicts,
-        &backup_root, role.filter(|value| !value.is_empty()), auto_backup,
+        conn,
+        game_path,
+        mode,
+        path,
+        name,
+        override_foreign_conflicts,
+        &backup_root,
+        role.filter(|value| !value.is_empty()),
+        auto_backup,
     )
 }
 
@@ -1050,8 +1100,16 @@ fn run_reinstall_with_backup(
     let recycle_bin_root = default_recycle_bin_root()?;
     let staging_root = default_staging_root()?;
     reinstall_mod_with_optional_staging_impl(
-        conn, mod_id, new_source_path, version_label, mode, game_path,
-        &backup_root, &recycle_bin_root, Some(&staging_root), auto_backup,
+        conn,
+        mod_id,
+        new_source_path,
+        version_label,
+        mode,
+        game_path,
+        &backup_root,
+        &recycle_bin_root,
+        Some(&staging_root),
+        auto_backup,
     )
 }
 
@@ -1074,23 +1132,40 @@ pub async fn install_mod(
         let settings = load_user_settings_impl(&conn)?;
         if settings.default_auto_backup {
             return run_install_with_backup(
-                &mut conn, game_path.as_deref(), &mode, &path, name.as_deref(),
-                override_foreign_conflicts, expected_game_root.as_deref(), role.as_deref(), true,
-            ).map_err(BackupCommandError::from);
+                &mut conn,
+                game_path.as_deref(),
+                &mode,
+                &path,
+                name.as_deref(),
+                override_foreign_conflicts,
+                expected_game_root.as_deref(),
+                role.as_deref(),
+                true,
+            )
+            .map_err(BackupCommandError::from);
         }
         let snapshot = backup_confirm_snapshot(&conn)?;
         if snapshot.settings != settings {
             return Err("Settings changed. Review and retry.".to_string().into());
         }
         check_install_preview_root(
-            &conn, game_path.as_deref(), &mode, expected_game_root.as_deref(),
+            &conn,
+            game_path.as_deref(),
+            &mode,
+            expected_game_root.as_deref(),
         )?;
         let root = backup_resolved_game_root(&conn, game_path.as_deref(), &mode)?;
         (snapshot, root)
     };
     let (confirmed, deadline) = request_backup_warning(
-        &app, &snapshot.settings.language, BackupWarning::Install { path: &path, mode: &mode },
-    ).await?;
+        &app,
+        &snapshot.settings.language,
+        BackupWarning::Install {
+            path: &path,
+            mode: &mode,
+        },
+    )
+    .await?;
     if !confirmed {
         return Err(backup_cancelled());
     }
@@ -1098,13 +1173,23 @@ pub async fn install_mod(
     ensure_backup_deadline(deadline, &snapshot.settings.language)?;
     let auto_backup = checked_backup_choice(&conn, &snapshot, confirmed)?;
     if backup_resolved_game_root(&conn, game_path.as_deref(), &mode)? != root_before {
-        return Err("The game installation changed. Review and retry.".to_string().into());
+        return Err("The game installation changed. Review and retry."
+            .to_string()
+            .into());
     }
     ensure_backup_deadline(deadline, &snapshot.settings.language)?;
     run_install_with_backup(
-        &mut conn, game_path.as_deref(), &mode, &path, name.as_deref(),
-        override_foreign_conflicts, expected_game_root.as_deref(), role.as_deref(), auto_backup,
-    ).map_err(BackupCommandError::from)
+        &mut conn,
+        game_path.as_deref(),
+        &mode,
+        &path,
+        name.as_deref(),
+        override_foreign_conflicts,
+        expected_game_root.as_deref(),
+        role.as_deref(),
+        auto_backup,
+    )
+    .map_err(BackupCommandError::from)
 }
 
 pub fn profile_list_impl(conn: &Connection) -> Result<Vec<gtavmm_core::profile::Profile>, String> {
@@ -1193,7 +1278,10 @@ pub fn profile_switch_impl(
 ) -> Result<gtavmm_core::profile::SwitchOutcome, String> {
     // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
     let result = gtavmm_core::profile::switch(conn, profile_id, staging_root);
-    if matches!(&result, Err(gtavmm_core::CoreError::ModDisablingUnavailable)) {
+    if matches!(
+        &result,
+        Err(gtavmm_core::CoreError::ModDisablingUnavailable)
+    ) {
         return Err("GTAVMM_PROFILE_MOD_DISABLING_UNAVAILABLE".to_string());
     }
     let result = result.map_err(|e| e.to_string());
@@ -2847,9 +2935,15 @@ pub async fn reinstall_mod(
         let settings = load_user_settings_impl(&conn)?;
         if settings.default_auto_backup {
             return run_reinstall_with_backup(
-                &mut conn, mod_id, &new_source_path, &version_label, &mode,
-                game_path.as_deref(), true,
-            ).map_err(BackupCommandError::from);
+                &mut conn,
+                mod_id,
+                &new_source_path,
+                &version_label,
+                &mode,
+                game_path.as_deref(),
+                true,
+            )
+            .map_err(BackupCommandError::from);
         }
         let snapshot = backup_confirm_snapshot(&conn)?;
         if snapshot.settings != settings {
@@ -2859,9 +2953,14 @@ pub async fn reinstall_mod(
         (snapshot, target)
     };
     let (confirmed, deadline) = request_backup_warning(
-        &app, &snapshot.settings.language,
-        BackupWarning::Reinstall { id: mod_id, name: &target_before.name },
-    ).await?;
+        &app,
+        &snapshot.settings.language,
+        BackupWarning::Reinstall {
+            id: mod_id,
+            name: &target_before.name,
+        },
+    )
+    .await?;
     if !confirmed {
         return Err(backup_cancelled());
     }
@@ -2869,13 +2968,21 @@ pub async fn reinstall_mod(
     ensure_backup_deadline(deadline, &snapshot.settings.language)?;
     let auto_backup = checked_backup_choice(&conn, &snapshot, confirmed)?;
     if reinstall_confirmation_target(&conn, game_path.as_deref(), &mode, mod_id)? != target_before {
-        return Err("The reinstall target changed. Review and retry.".to_string().into());
+        return Err("The reinstall target changed. Review and retry."
+            .to_string()
+            .into());
     }
     ensure_backup_deadline(deadline, &snapshot.settings.language)?;
     run_reinstall_with_backup(
-        &mut conn, mod_id, &new_source_path, &version_label, &mode,
-        game_path.as_deref(), auto_backup,
-    ).map_err(BackupCommandError::from)
+        &mut conn,
+        mod_id,
+        &new_source_path,
+        &version_label,
+        &mode,
+        game_path.as_deref(),
+        auto_backup,
+    )
+    .map_err(BackupCommandError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -3087,10 +3194,12 @@ pub async fn update_user_settings(
         let conn = state.conn.lock().map_err(|error| error.to_string())?;
         if default_auto_backup != Some(false) {
             return update_user_settings_impl(
-                &conn, default_auto_backup,
+                &conn,
+                default_auto_backup,
                 game_install_path_override.unwrap_or_default(),
                 backup_root_override.unwrap_or_default(),
-            ).map_err(BackupCommandError::from);
+            )
+            .map_err(BackupCommandError::from);
         }
         backup_confirm_snapshot(&conn)?
     };
@@ -3228,8 +3337,14 @@ mod tests {
         let guard = acquire_backup_warning(&ACTIVE).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let callback = backup_warning_callback(sender, guard);
-        let pending = PendingBackupWarning { receiver, deadline: std::time::Instant::now() };
-        assert_eq!(receive_backup_warning(pending), Err(BackupWarningWaitError::TimedOut));
+        let pending = PendingBackupWarning {
+            receiver,
+            deadline: std::time::Instant::now(),
+        };
+        assert_eq!(
+            receive_backup_warning(pending),
+            Err(BackupWarningWaitError::TimedOut)
+        );
         assert!(acquire_backup_warning(&ACTIVE).is_none());
         callback(true);
         assert!(acquire_backup_warning(&ACTIVE).is_some());
@@ -3246,7 +3361,10 @@ mod tests {
             receiver,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
         };
-        assert_eq!(receive_backup_warning(pending), Err(BackupWarningWaitError::Disconnected));
+        assert_eq!(
+            receive_backup_warning(pending),
+            Err(BackupWarningWaitError::Disconnected)
+        );
         assert!(acquire_backup_warning(&ACTIVE).is_some());
     }
 
@@ -3254,8 +3372,14 @@ mod tests {
     fn queued_confirmation_after_deadline_is_rejected() {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(true).unwrap();
-        let pending = PendingBackupWarning { receiver, deadline: std::time::Instant::now() };
-        assert_eq!(receive_backup_warning(pending), Err(BackupWarningWaitError::TimedOut));
+        let pending = PendingBackupWarning {
+            receiver,
+            deadline: std::time::Instant::now(),
+        };
+        assert_eq!(
+            receive_backup_warning(pending),
+            Err(BackupWarningWaitError::TimedOut)
+        );
     }
 
     #[test]
@@ -3283,8 +3407,6 @@ mod tests {
         assert!(short.ends_with('…'));
         assert!(!short.contains("private"));
     }
-
-
 
     // OpenAI-Codex: Draft preparation never reads credentials or makes a request.
     #[test]
@@ -4411,7 +4533,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error, "unsupported mod format: the install plan contains no files");
+        assert_eq!(
+            error,
+            "unsupported mod format: the install plan contains no files"
+        );
         assert!(list_mods_impl(&conn, None).unwrap().is_empty());
         let changes_after: i64 = conn
             .query_row("SELECT total_changes()", [], |row| row.get(0))
@@ -4660,7 +4785,9 @@ mod tests {
             conn.execute(
                 "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
                 rusqlite::params![
-                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    game_root
+                        .to_str()
+                        .expect("synthetic game root must be Unicode"),
                     mod_id,
                 ],
             )
@@ -4710,7 +4837,11 @@ mod tests {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound
         ));
         let status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(status, "active");
         assert!(profile_list_impl(&conn).unwrap()[0].is_active);
@@ -4721,7 +4852,11 @@ mod tests {
         profile_delete_impl(&conn, profile_id).unwrap();
         assert!(profile_list_impl(&conn).unwrap().is_empty());
         let active_profile: Option<i64> = conn
-            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT active_profile_id FROM user_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(active_profile, None);
         assert_eq!(std::fs::read(&target).unwrap(), b"synthetic mod payload");
@@ -4741,7 +4876,9 @@ mod tests {
             conn.execute(
                 "UPDATE installed_mod SET install_path = ?1 WHERE id = ?2",
                 rusqlite::params![
-                    game_root.to_str().expect("synthetic game root must be Unicode"),
+                    game_root
+                        .to_str()
+                        .expect("synthetic game root must be Unicode"),
                     mod_id,
                 ],
             )
@@ -4755,7 +4892,10 @@ mod tests {
 
         let profile_id = profile_create_impl(&conn, "Empty files").unwrap();
         profile_add_mod_impl(&conn, profile_id, mod_id).unwrap();
-        assert_eq!(profile_mod_ids_impl(&conn, profile_id).unwrap(), vec![mod_id]);
+        assert_eq!(
+            profile_mod_ids_impl(&conn, profile_id).unwrap(),
+            vec![mod_id]
+        );
         gtavmm_core::providers::ensure_installed_mod_available(&conn, mod_id).unwrap();
 
         let file_count = || {
@@ -4768,7 +4908,11 @@ mod tests {
         };
         assert_eq!(file_count(), 0);
         let active_before: Option<i64> = conn
-            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT active_profile_id FROM user_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(active_before, None);
         let events_before: i64 = conn
@@ -4788,18 +4932,29 @@ mod tests {
 
         assert_eq!(file_count(), 0);
         let status: String = conn
-            .query_row("SELECT status FROM installed_mod WHERE id = ?1", [mod_id], |row| row.get(0))
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [mod_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(status, "disabled");
         let active_after: Option<i64> = conn
-            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT active_profile_id FROM user_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(active_after, active_before);
         let events_after: i64 = conn
             .query_row("SELECT COUNT(*) FROM install_event", [], |row| row.get(0))
             .unwrap();
         assert_eq!(events_after, events_before);
-        assert_eq!(profile_mod_ids_impl(&conn, profile_id).unwrap(), vec![mod_id]);
+        assert_eq!(
+            profile_mod_ids_impl(&conn, profile_id).unwrap(),
+            vec![mod_id]
+        );
         assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
     }
 
@@ -5017,22 +5172,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "fixture requires exactly one tracked file");
-        let (file_id, target_path, backup_path, recorded_hash): (i64, String, Option<String>, String) =
-            conn.query_row(
+        let (file_id, target_path, backup_path, recorded_hash): (
+            i64,
+            String,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
                 "SELECT id, target_path, backup_path, file_hash FROM installed_mod_file \
                  WHERE installed_mod_id = ?1 ORDER BY id",
                 [mod_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert!(backup_path.is_none(), "fixture requires no overwritten original");
-        let target = std::path::PathBuf::from(target_path);
-        assert!(std::fs::symlink_metadata(&target).unwrap().file_type().is_file());
         assert!(
-            std::fs::canonicalize(&target)
-                .unwrap()
-                .starts_with(std::fs::canonicalize(game_dir.path()).unwrap())
+            backup_path.is_none(),
+            "fixture requires no overwritten original"
         );
+        let target = std::path::PathBuf::from(target_path);
+        assert!(std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert!(std::fs::canonicalize(&target)
+            .unwrap()
+            .starts_with(std::fs::canonicalize(game_dir.path()).unwrap()));
         let mod_staging = staging.path().join(mod_id.to_string());
         std::fs::create_dir(&mod_staging).unwrap();
         let staged = mod_staging.join("0");
@@ -5101,9 +5265,11 @@ mod tests {
         assert_eq!(status_of(&conn, id), "active");
         assert_eq!(std::fs::read(&target).unwrap(), before);
         let active: Option<i64> = conn
-            .query_row("SELECT active_profile_id FROM user_settings WHERE id = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT active_profile_id FROM user_settings WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(active, Some(old));
     }
@@ -5137,7 +5303,10 @@ mod tests {
         let target = game_dir.path().join("LifecycleMod.asi");
         let active_bytes = std::fs::read(&target).unwrap();
         let err = disable_mod_impl(&conn, id, staging.path()).unwrap_err();
-        assert!(err.contains("Mod disabling is unavailable."), "unexpected message: {err}");
+        assert!(
+            err.contains("Mod disabling is unavailable."),
+            "unexpected message: {err}"
+        );
         assert_eq!(status_of(&conn, id), "active");
         assert_eq!(std::fs::read(&target).unwrap(), active_bytes);
         assert!(!staging.path().join(id.to_string()).exists());
@@ -5146,7 +5315,10 @@ mod tests {
         let staged = staging.path().join(id.to_string()).join("0");
         let staged_bytes = std::fs::read(&staged).unwrap();
         let err = disable_mod_impl(&conn, id, staging.path()).unwrap_err();
-        assert!(err.contains("Mod disabling is unavailable."), "unexpected message: {err}");
+        assert!(
+            err.contains("Mod disabling is unavailable."),
+            "unexpected message: {err}"
+        );
         assert_eq!(status_of(&conn, id), "disabled");
         assert_eq!(std::fs::read(&staged).unwrap(), staged_bytes);
         assert!(!target.exists());

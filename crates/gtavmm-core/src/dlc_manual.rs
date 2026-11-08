@@ -533,16 +533,22 @@ mod tests {
     }
 
     fn manual_fixture_events(conn: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
-        let mut stmt = conn.prepare(
-            "SELECT id, operation_id, root_key, root_display, archive_scope, pack_key, \
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, operation_id, root_key, root_display, archive_scope, pack_key, \
              pack_display, operation, phase, installed_mod_id, created_at \
-             FROM manual_dlc_event ORDER BY id"
-        ).unwrap();
-        let rows = stmt.query_map([], |row| {
-            (0usize..11)
-                .map(|index| row.get::<_, rusqlite::types::Value>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()
-        }).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+             FROM manual_dlc_event ORDER BY id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                (0usize..11)
+                    .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
         rows
     }
 
@@ -570,7 +576,8 @@ mod tests {
             &["Car".to_string()],
             ManualDlcOperation::Uninstall,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let tx = conn.transaction().unwrap();
         settle_tasks(&tx, &token).unwrap();
         tx.commit().unwrap();
@@ -586,14 +593,16 @@ mod tests {
             "INSERT INTO installed_mod(name,source_type,install_path,status,mode) \
              VALUES('incomplete','folder',?1,?2,'legacy-sp')",
             params![owner_root, status],
-        ).unwrap();
+        )
+        .unwrap();
         let owner_id = conn.last_insert_rowid();
         if let Some(target) = target {
             conn.execute(
                 "INSERT INTO installed_mod_file(installed_mod_id,target_path,file_hash) \
                  VALUES(?1,?2,'hash')",
                 params![owner_id, target],
-            ).unwrap();
+            )
+            .unwrap();
         }
     }
 
@@ -606,9 +615,9 @@ mod tests {
         let tree_before = manual_fixture_tree(fixture_root);
         let events_before = manual_fixture_events(conn);
         assert_eq!(events_before.len(), 2);
-        let changes_before: i64 = conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        let changes_before: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         let tasks = list_tasks(conn, Some(game_root)).unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].pack_name, "Car");
@@ -618,9 +627,9 @@ mod tests {
         assert_eq!(tasks[0].recommendation, expected);
         assert_eq!(manual_fixture_events(conn), events_before);
         assert_eq!(manual_fixture_tree(fixture_root), tree_before);
-        let changes_after: i64 = conn.query_row(
-            "SELECT total_changes()", [], |row| row.get(0)
-        ).unwrap();
+        let changes_after: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(changes_after, changes_before);
     }
 
@@ -643,7 +652,10 @@ mod tests {
             let (dir, a, _b) = manual_fixture_roots();
             let mut conn = crate::db::open_in_memory().unwrap();
             manual_fixture_incomplete_owner(
-                &conn, a.to_str().unwrap(), status, Some("scripts/unknown.asi"),
+                &conn,
+                a.to_str().unwrap(),
+                status,
+                Some("scripts/unknown.asi"),
             );
             manual_fixture_uninstall_settled(&mut conn, &a);
             assert_manual_removal_hint(&conn, dir.path(), &a, "review");
@@ -670,12 +682,7 @@ mod tests {
             for target in [Some("scripts/unknown.asi"), None] {
                 let (dir, a, b) = manual_fixture_roots();
                 let mut conn = crate::db::open_in_memory().unwrap();
-                manual_fixture_incomplete_owner(
-                    &conn,
-                    b.to_str().unwrap(),
-                    status,
-                    target,
-                );
+                manual_fixture_incomplete_owner(&conn, b.to_str().unwrap(), status, target);
                 manual_fixture_uninstall_settled(&mut conn, &a);
                 assert_manual_removal_hint(&conn, dir.path(), &a, "review");
             }
