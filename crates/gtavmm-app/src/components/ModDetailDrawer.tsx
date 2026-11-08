@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { pickFile } from "../lib/pickers";
@@ -7,6 +7,7 @@ import type { InstalledMod, ModSourceCheckResult, PageMode } from "../types";
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
 // OpenAI-Codex_manual_dlc_ui
+// OpenAI-Codex_ui_report_review
 
 /** Every page a mod can be moved to, in sidebar order. */
 const PAGE_MODES: PageMode[] = [
@@ -43,11 +44,8 @@ type Busy = "enable" | "uninstall" | "reinstall" | "save" | "page" | null;
  * Details for one installed mod, and the only place its lifecycle can be driven.
  * OpenAI-Codex: Require an explicit FiveM Client path for path-dependent actions.
  *
- * Until now the interface could install a mod and then had no way to turn it off
- * or remove it: the engine has done disable, enable, uninstall and reinstall
- * since early on, but none was exposed. The notes and source-link editing that
- * used to expand inline inside the table lives here too, so a row has one place
- * to open rather than two competing affordances.
+ * The drawer provides enable for previously disabled mods, uninstall and reinstall.
+ * Notes and source-link editing also live here, so each row has one place to open.
  *
  * OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code
  * Uninstall asks first and may delete real game files. The program attempts
@@ -62,7 +60,6 @@ export function ModDetailDrawer({
   onChanged,
 }: ModDetailDrawerProps) {
   const { t } = useTranslation();
-  const disableNoteId = useId();
   const [notes, setNotes] = useState("");
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
@@ -407,29 +404,9 @@ export function ModDetailDrawer({
           )}
         </div>
 
-        {isActive && (
-          <p
-            id={disableNoteId}
-            className="page-sub"
-            role="note"
-            style={{ margin: "var(--space-2) var(--card-pad)" }}
-          >
-            {t("legacySp.disable_pending")}
-          </p>
-        )}
 
         {!isGone && (
           <div className="drawer-actions">
-            {isActive && (
-              <button
-                className="btn-ghost"
-                type="button"
-                disabled
-                aria-describedby={disableNoteId}
-              >
-                {t("drawer.disable")}
-              </button>
-            )}
             {isDisabled && (
               <button
                 className="btn-ghost"

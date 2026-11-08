@@ -1,10 +1,11 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { ModDetailDrawer } from "./ModDetailDrawer";
 import type { InstalledMod, PageMode } from "../types";
 
 // OpenAI-Codex
+// OpenAI-Codex_ui_report_review
 
 interface ModTableProps {
   mods: InstalledMod[];
@@ -26,7 +27,7 @@ interface ModTableProps {
  *
  * A row opens the detail drawer rather than expanding an editor inline. The
  * inline row could only edit notes and the source link; the drawer is also
- * where disable, enable, reinstall and uninstall live, so there is one place to
+ * where enable, reinstall and uninstall live, so there is one place to
  * act on a mod instead of an editor here and actions elsewhere.
  */
 export function ModTable({
@@ -38,7 +39,6 @@ export function ModTable({
   bulkStateActions = false,
 }: ModTableProps) {
   const { t } = useTranslation();
-  const disableNoteId = useId();
   const [openId, setOpenId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState<"enable" | null>(null);
@@ -66,7 +66,6 @@ export function ModTable({
   const selectableMods = mods.filter((mod) => mod.status !== "Uninstalled");
   const selectedMods = selectableMods.filter((mod) => selectedIds.has(mod.id));
   const enableCandidates = selectedMods.filter((mod) => mod.status === "Disabled");
-  const disableCandidates = selectedMods.filter((mod) => mod.status === "Active");
   const allSelectableSelected =
     selectableMods.length > 0 && selectableMods.every((mod) => selectedIds.has(mod.id));
 
@@ -150,21 +149,8 @@ export function ModTable({
                   ? t("legacySp.bulk_enabling")
                   : t("legacySp.bulk_enable_selected", { count: enableCandidates.length })}
               </button>
-              <button
-                className="btn-ghost"
-                type="button"
-                disabled
-                aria-describedby={disableNoteId}
-              >
-                {t("legacySp.bulk_disable_selected", { count: disableCandidates.length })}
-              </button>
             </div>
           </div>
-        )}
-        {bulkStateActions && (
-          <p id={disableNoteId} className="page-sub" role="note">
-            {t("legacySp.disable_pending")}
-          </p>
         )}
         {bulkError && <p className="error" role="alert">{bulkError}</p>}
         {bulkStatus && <p style={{ color: "var(--success)" }}>{bulkStatus}</p>}
