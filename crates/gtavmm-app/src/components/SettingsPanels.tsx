@@ -5,6 +5,9 @@ import { SettingsModal } from "./SettingsModal";
 import { applyTheme, type Theme } from "../lib/theme";
 import { pickFolder } from "../lib/pickers";
 
+// OpenAI-Codex_ui_report_review: Permit only confirmed opt-out while backups are paused.
+function isBackupSettingsPending(): boolean { return true; }
+
 /** The whole `user_settings` row, as `load_user_settings` returns it. */
 interface UserSettings {
   language: string;
@@ -253,6 +256,10 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   async function update(patch: Record<string, unknown>) {
+    if (isBackupSettingsPending() && (patch.defaultAutoBackup !== false || Object.keys(patch).length !== 1)) {
+      setError(t("settingsCards.backup_paused"));
+      return;
+    }
     if (updateInFlight.current) return;
     updateInFlight.current = true;
     const epoch = lifecycle.current;
@@ -277,6 +284,7 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function chooseLocation() {
+    if (isBackupSettingsPending()) return;
     const picked = await pickFolder(t("settingsCards.backup_pick_title"));
     if (!picked) return;
     await update({ backupRootOverride: { action: "set", path: picked } });
@@ -284,6 +292,7 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <SettingsModal title={t("settingsCards.backup_title")} wide onClose={onClose}>
+      {isBackupSettingsPending() && <p role="status">{t("settingsCards.backup_paused")}</p>}
       {loadError !== null && <p className="error" role="alert">{loadError.trim().length > 0 ? loadError : t("settingsCards.backup_error_fallback")}</p>}
       {error !== null && <p className="error" role="alert">{error.trim().length > 0 ? error : t("settingsCards.backup_error_fallback")}</p>}
       {notice !== null && <p role="status">{notice}</p>}
@@ -294,6 +303,7 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
         style={{ borderColor: "var(--border)", background: "var(--surface-2)", marginBottom: "var(--gap)" }}
       >
         {settings && (
+          <fieldset disabled={isBackupSettingsPending() && !settings.default_auto_backup} style={{ border: 0, margin: 0, padding: 0 }}>
           <input
             type="checkbox"
             id="autoBackup"
@@ -303,6 +313,7 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
             aria-labelledby="backupAutoLabel"
             aria-describedby="backupAutoHelp"
           />
+          </fieldset>
         )}
         <span id="backupAutoLabel">{t("settingsCards.backup_auto_label")}</span>
         <span role="status">
@@ -353,7 +364,9 @@ export function BackupPanel({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
+      <div hidden={isBackupSettingsPending()}>
       <p className="page-sub">{t("settingsCards.backup_help")}</p>
+      </div>
     </SettingsModal>
   );
 }

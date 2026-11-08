@@ -361,6 +361,8 @@ export function SettingsPage() {
             </span>
             <span className="sc-title">{t(`settingsCards.${c.id}_title`)}</span>
             <span className="sc-desc">{t(`settingsCards.${c.id}_desc`)}</span>
+            {/* OpenAI-Codex_ui_report_review: Show the paused backup setting on its card. */}
+            {c.id === "backup" && <span className="sc-desc">{t("settingsCards.backup_paused_label")}</span>}
             <span className="sc-value">{c.value()}</span>
           </button>
         ))}

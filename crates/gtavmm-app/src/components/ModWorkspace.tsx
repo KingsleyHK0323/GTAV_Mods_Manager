@@ -12,6 +12,9 @@ import type { InstallEvent, InstalledMod, PageMode } from "../types";
 // OpenAI-Codex
 // OpenAI-Codex_manual_dlc_ui
 
+// OpenAI-Codex_ui_report_review: Pause category filtering while retaining page routing.
+function isModCategoryPending(): boolean { return true; }
+
 /** What a stat card can count. */
 export interface StatContext {
   mods: InstalledMod[];
@@ -79,6 +82,9 @@ export function ModWorkspace({
   const [wizardOpen, setWizardOpen] = useState(false);
   const [tab, setTab] = useState<"mods" | "history">("mods");
   const [category, setCategory] = useState<string>("all");
+  useEffect(() => {
+    if (isModCategoryPending()) setCategory("all");
+  }, []);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [manualDlcRevision, setManualDlcRevision] = useState(0);
@@ -122,7 +128,7 @@ export function ModWorkspace({
 
   // Chips filter what the table shows but not what the stat cards count: the
   // counts describe the page, and a chip is a view of it, not a change to it.
-  const visible = (mods ?? []).filter((m) => category === "all" || m.category === category);
+  const visible = isModCategoryPending() ? (mods ?? []) : (mods ?? []).filter((m) => category === "all" || m.category === category);
 
   async function exportToXlsx() {
     const picked = await pickSaveFile("gtavmm-mods.xlsx", ["xlsx"], t("legacySp.export_pick_title"));
@@ -230,6 +236,8 @@ export function ModWorkspace({
             </div>
           )}
 
+          {categories && isModCategoryPending() && <p role="status">{t("modWorkspace.classification_paused")}</p>}
+          <fieldset hidden={isModCategoryPending()} disabled={isModCategoryPending()}>
           {categories && mods && (
             <div className="cat-tabs" role="group" aria-label={t("modWorkspace.filter_by_category")}>
               {["all", ...categories].map((c) => (
@@ -248,6 +256,7 @@ export function ModWorkspace({
               ))}
             </div>
           )}
+          </fieldset>
 
           {stats.length > 0 && (
             <div className="stat-row">

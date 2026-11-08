@@ -32,6 +32,11 @@ const MODS_SUBFOLDER: &str = "mods";
 const LEGACY_BACKUP_MARKER: &[u8] = b"GTAVMM_FULL_BACKUP_V1:legacy";
 const ENHANCED_BACKUP_MARKER: &[u8] = b"GTAVMM_FULL_BACKUP_V1:enhanced";
 
+// OpenAI-Codex_v1_readiness: Pause backup entry points without changing stored data.
+pub fn ensure_backup_available() -> CoreResult<()> {
+    Err(CoreError::BackupUnavailable)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameEdition {
     Legacy,
@@ -83,6 +88,7 @@ fn create_with_edition(
     backup_root: &Path,
     edition: Option<GameEdition>,
 ) -> CoreResult<PathBuf> {
+    ensure_backup_available()?;
     // OpenAI-Codex: Validate the target and requested edition before creating files.
     crate::providers::ensure_game_root_available(game_root)?;
     if edition == Some(GameEdition::Enhanced) {
@@ -163,6 +169,7 @@ fn backup_open_error(error: std::io::Error) -> CoreError {
 
 /// Lists all existing full backups (newest first), including unmarked archives.
 pub fn list(backup_root: &Path) -> CoreResult<Vec<PathBuf>> {
+    ensure_backup_available()?;
     let full_backup_dir = backup_root.join("full");
     if !full_backup_dir.is_dir() {
         return Ok(Vec::new());
@@ -196,6 +203,7 @@ pub fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<
 /// deletes files that aren't present in the archive. This is the unscoped CLI helper;
 /// the App should call [`restore_for_edition`].
 pub fn restore(zip_path: &Path, game_root: &Path) -> CoreResult<()> {
+    ensure_backup_available()?;
     crate::providers::ensure_game_root_available(game_root)?;
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(zip_err("reading backup zip"))?;
@@ -211,6 +219,7 @@ pub fn restore_for_edition(
     game_root: &Path,
     expected_edition: GameEdition,
 ) -> CoreResult<()> {
+    ensure_backup_available()?;
     crate::providers::ensure_game_root_available(game_root)?;
     if expected_edition == GameEdition::Enhanced {
         crate::providers::ensure_mode_available("enhanced")?;

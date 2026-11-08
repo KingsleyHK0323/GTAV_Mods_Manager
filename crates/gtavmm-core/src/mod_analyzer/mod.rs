@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_index_review
 // OpenAI-Codex_lml_classifier_guard
 
 //! Classifies a mod package (file/folder/archive) into a plan of `(source, target)`
@@ -1274,7 +1275,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         std::fs::create_dir_all(&game_root).unwrap();
-        let cases: &[(&str, &[(&str, &[u8])], &[&str])] = &[
+        type ArchiveEntry<'a> = (&'a str, &'a [u8]);
+        type ArchiveCase<'a> = (&'a str, &'a [ArchiveEntry<'a>], &'a [&'a str]);
+        let cases: &[ArchiveCase<'_>] = &[
             (
                 "mixed",
                 &[("example.asi", b"asi"), ("example.ini", b"ini")],

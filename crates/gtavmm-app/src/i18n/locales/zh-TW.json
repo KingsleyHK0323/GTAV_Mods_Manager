@@ -282,6 +282,8 @@
     "open_button": "提示詞範本庫"
   },
   "modPageTools": {
+    "backup_paused": "完整備份的建立、列表與還原功能待開發，既有備份檔案會保留。",
+    "auto_backup_paused_impact": "自動備份功能待開發，需要自動備份且開啟時無法安裝或重新安裝；可在備份設定閱讀警告後將其關閉。",
     "components_title": "元件",
     "recheck_button": "重新檢查",
     "component_installed": "已安裝",
@@ -438,6 +440,8 @@
     "manifest_generated": "已產生（glob 模式，符合社群標準 Add-on Car 範本）"
   },
   "drawer": {
+    "classification_not_recorded": "未記錄",
+    "classification_pending": "模組分類待開發，現有頁面及分類資料會保留。",
     "details": "詳情",
     "close": "關閉詳情",
     "status": "狀態",
@@ -533,6 +537,8 @@
     "edition_enhanced": "Enhanced 版 GTA V"
   },
   "settingsCards": {
+    "backup_paused_label": "待開發",
+    "backup_paused": "自動備份功能待開發。確認警告後可關閉已儲存的偏好，但暫時無法在此重新開啟。既有備份與儲存的位置會保留。開啟自動備份且操作需要備份時，安裝及重新安裝暫不可用。",
     "theme_title": "外觀",
     "theme_desc": "淺色、深色，或跟隨系統。",
     "theme_system": "跟隨系統",
@@ -585,6 +591,7 @@
     "prompts_value": "開啟"
   },
   "modWorkspace": {
+    "classification_paused": "模組分類篩選待開發，目前不會依分類篩選。既有分類可能不準確。",
     "tab_mods": "模組",
     "tab_history": "記錄",
     "empty_body": "這一頁還沒有安裝任何模組。用「安裝模組」加入——在這裡安裝的模組只會留在這一頁。",

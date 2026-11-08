@@ -239,6 +239,8 @@ export function InstallWizard({
         </div>
 
         <div className="modal-body">
+          {/* OpenAI-Codex_ui_report_review: Explain the paused automatic-backup setting. */}
+          <p role="status">{t("modPageTools.auto_backup_paused_impact")}</p>
           {step === "pick" && (
             <>
               <p>{t(`installWizard.pick_body_${providerOf(mode)}`)}</p>

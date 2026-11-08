@@ -5,6 +5,9 @@ import { pickFile } from "../lib/pickers";
 import { RecycleBinModal } from "./RecycleBinModal";
 import type { ComponentStatus, PageMode, RecycleBinEntry } from "../types";
 
+// OpenAI-Codex_ui_report_review: Pause full-backup actions without changing saved files.
+function isFullBackupPending(): boolean { return true; }
+
 // OpenAI-Codex: Notify mounted panels without passing recycle data.
 const RECYCLE_CHANGED_EVENT = "gtavmm:recycle-changed";
 export function notifyRecycleChanged() {
@@ -69,6 +72,7 @@ export function ModPageTools({
   }, [mode, variant]);
 
   const loadBackups = useCallback(() => {
+    if (isFullBackupPending()) return;
     setBackups(null);
     setBackupError(null);
     invoke<FullBackupListResult>("list_full_backups", { mode })
@@ -130,6 +134,7 @@ export function ModPageTools({
   }, [loadBackups, loadComponents, loadRecycleBin]);
 
   async function createBackup() {
+    if (isFullBackupPending()) return;
     setBackupBusy(true);
     setBackupError(null);
     setBackupStatus(null);
@@ -145,6 +150,7 @@ export function ModPageTools({
   }
 
   async function restoreLatestBackup() {
+    if (isFullBackupPending()) return;
     if (!backups || backups.length === 0) return;
     setBackupBusy(true);
     setBackupError(null);
@@ -160,6 +166,7 @@ export function ModPageTools({
   }
 
   async function restoreFromDisk() {
+    if (isFullBackupPending()) return;
     const picked = await pickFile(["zip"], t("modPageTools.backup_pick_title"));
     if (!picked) return;
     setBackupBusy(true);
@@ -219,11 +226,15 @@ export function ModPageTools({
 
       <div className="mini-panel">
         <h3>{t("modPageTools.backup_title")}</h3>
+        {isFullBackupPending() && <p role="status">{t("modPageTools.backup_paused")}</p>}
+        <div hidden={isFullBackupPending()}>
         <div className="backup-meta">
           {backups && backups.length > 0
             ? t("modPageTools.backup_last", { path: backups[0] })
             : t("modPageTools.backup_none_yet")}
         </div>
+        </div>
+        <fieldset disabled={isFullBackupPending()} style={{ border: 0, margin: 0, padding: 0 }}>
         <button className="btn-ghost" type="button" onClick={createBackup} disabled={backupBusy}>
           {backupBusy ? t("modPageTools.backup_working") : t("modPageTools.backup_create_button")}
         </button>
@@ -235,6 +246,7 @@ export function ModPageTools({
         <button className="link-btn" type="button" onClick={restoreFromDisk} style={{ display: "block", marginTop: 8 }}>
           {t("modPageTools.backup_restore_from_disk_button")}
         </button>
+        </fieldset>
         {backupStatus && <p style={{ marginTop: 8, color: "var(--success)", fontSize: 11.5 }}>{backupStatus}</p>}
         {backupError && <p className="error" style={{ marginTop: 8, fontSize: 11.5 }}>{backupError}</p>}
       </div>

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_index_review
 // OpenAI-Codex_lspdfr_role_core
 
 //! The install pipeline state machine: Analyzing (done by the caller via
@@ -152,6 +153,13 @@ impl Default for InstallOptions {
 }
 
 /// OpenAI-Codex_ui_report_review: Valid page metadata for a new installation.
+/// OpenAI-Codex_v1_readiness: Reports whether category selection is available.
+// OpenAI-Codex_v1_readiness: Preserve page routing while category selection is paused.
+pub fn classification_enabled() -> bool {
+    false
+}
+
+/// OpenAI-Codex_v1_readiness: Page metadata for a new installation.
 #[derive(Debug, Clone, Copy)]
 pub struct PageInstallMetadata {
     mode: &'static str,
@@ -160,8 +168,13 @@ pub struct PageInstallMetadata {
 
 impl PageInstallMetadata {
     pub fn new(mode: &str, category: Option<&str>) -> Option<Self> {
+        if category.is_some() && !classification_enabled() {
+            return None;
+        }
         let (mode, category) = match (mode, category) {
             ("legacy-sp", None) => ("legacy-sp", None),
+            // OpenAI-Codex_v1_readiness: Keep page routing while classification is paused.
+            ("legacy-lspdfr", None) => ("legacy-lspdfr", None),
             ("legacy-lspdfr", Some("framework")) => ("legacy-lspdfr", Some("framework")),
             ("legacy-lspdfr", Some("eup-peds")) => ("legacy-lspdfr", Some("eup-peds")),
             ("legacy-lspdfr", Some("vehicles")) => ("legacy-lspdfr", Some("vehicles")),
@@ -651,6 +664,51 @@ fn refuse_overlapping_planned_targets(plan: &ModPlan) -> CoreResult<()> {
     Ok(())
 }
 
+// OpenAI-Codex_v1_readiness: Check planned targets before any install writes.
+fn plan_requires_backup(plan: &ModPlan) -> CoreResult<bool> {
+    for file in &plan.files {
+        if file.target.try_exists()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+// OpenAI-Codex_v1_readiness: Consider files that uninstall will remove or restore.
+fn reinstall_requires_backup(
+    conn: &Connection,
+    mod_id: i64,
+    status: &str,
+    plan: &ModPlan,
+) -> CoreResult<bool> {
+    let mut statement = conn.prepare(
+        "SELECT target_path, backup_path FROM installed_mod_file WHERE installed_mod_id = ?1",
+    )?;
+    let recorded: Vec<(String, Option<String>)> = statement
+        .query_map([mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(statement);
+    for file in &plan.files {
+        if status != "disabled" && status != "uninstalled" {
+            let mut old = recorded
+                .iter()
+                .filter(|(target, _)| Path::new(target) == file.target.as_path());
+            if let Some((_, backup)) = old.next() {
+                if old.next().is_none() {
+                    if backup.is_some() {
+                        return Ok(true);
+                    }
+                    continue;
+                }
+            }
+        }
+        if file.target.try_exists()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Runs the full install pipeline for `plan` (already produced by
 /// `mod_analyzer::classify`). `backup_root` is where overwritten originals are copied
 /// before being replaced — callers should point this at a per-install-attempt
@@ -765,6 +823,10 @@ fn install_with_expected_restores(
         return Ok(InstallOutcome::RequiresOverride(report));
     }
 
+    // OpenAI-Codex_v1_readiness: Refuse only when the current plan needs backup.
+    if options.auto_backup && plan_requires_backup(plan)? {
+        crate::full_backup::ensure_backup_available()?;
+    }
     // OpenAI-Codex: Persist manual registration intent before the first file write.
     let owned_operation;
     let manual_operation = match manual_operation {
@@ -1372,6 +1434,10 @@ fn reinstall_impl(
         }
     }
 
+    // OpenAI-Codex_v1_readiness: Refuse required backup before uninstall intent.
+    if options.auto_backup && reinstall_requires_backup(conn, mod_id, &status, &plan)? {
+        crate::full_backup::ensure_backup_available()?;
+    }
     // OpenAI-Codex: One compound intent spans both versions, including partial failure.
     let mut packs = dlc_manual::pack_names_for_paths(game_root, &targets)?;
     packs.extend(dlc_manual::pack_names_for_mod(conn, mod_id, game_root)?);
@@ -1433,6 +1499,8 @@ fn perform_writes(
 
         if planned.target.exists() {
             if auto_backup {
+                // OpenAI-Codex_v1_readiness: Stop if a target appeared after preflight.
+                crate::full_backup::ensure_backup_available()?;
                 std::fs::create_dir_all(backup_root)?;
                 let backup_path = backup_root.join(format!("{index}.bak"));
                 std::fs::copy(&planned.target, &backup_path)?;
@@ -3315,14 +3383,17 @@ mod tests {
                     assert_eq!(plan.files.len(), 1);
                     assert_eq!(plan.files[0].target, new_target);
                     assert_eq!(
-                        dlc_manual::pack_names_for_paths(&root, &[old_target.clone()]).unwrap(),
+                        dlc_manual::pack_names_for_paths(&root, std::slice::from_ref(&old_target))
+                            .unwrap(),
                         vec!["Shared".to_string()]
                     );
                     assert_eq!(
-                        dlc_manual::pack_names_for_paths(&root, &[new_target.clone()]).unwrap(),
+                        dlc_manual::pack_names_for_paths(&root, std::slice::from_ref(&new_target))
+                            .unwrap(),
                         vec![new_pack.to_string()]
                     );
-                    let old_report = conflict::analyze(&conn, &[old_target.clone()]).unwrap();
+                    let old_report =
+                        conflict::analyze(&conn, std::slice::from_ref(&old_target)).unwrap();
                     assert!(old_report
                         .foreign_conflicts
                         .iter()
@@ -3354,13 +3425,13 @@ mod tests {
                         &conn,
                         old_id,
                         "active",
-                        &[new_source.clone()]
+                        std::slice::from_ref(&new_source)
                     )
                     .is_ok());
                     assert!(crate::lml_store::ensure_generic_targets_allowed(
                         &conn,
                         &root,
-                        &[backup.clone()]
+                        std::slice::from_ref(&backup)
                     )
                     .is_ok());
                     assert!(source_type_str(&plan.format).is_ok());

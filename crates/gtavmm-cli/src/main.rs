@@ -117,6 +117,7 @@ enum Command {
     Inspect { path: String },
     /// Whole-`mods\`-folder backup/restore (a coarser, manual safety net distinct
     /// from install's per-mod backups).
+    /// Full backups are under development and currently unavailable.
     FullBackup {
         #[command(subcommand)]
         action: FullBackupAction,
@@ -419,6 +420,11 @@ fn plan_reports_disable_unavailable(results: &[PlanItemResult]) -> bool {
 
 fn main() {
     let cli = Cli::parse();
+    // OpenAI-Codex_cli_backup_guard: Reject full backups before opening the database.
+    if matches!(&cli.command, Command::FullBackup { .. }) {
+        eprintln!("Full backup is unavailable. This feature is under development.");
+        std::process::exit(1);
+    }
     if let Err(err) = run(cli) {
         eprintln!("Error: {err:#}");
         if is_mod_disabling_unavailable(&err) {

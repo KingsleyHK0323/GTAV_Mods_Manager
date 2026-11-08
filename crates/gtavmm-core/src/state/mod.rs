@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_index_review
 
 //! Enable/disable: moves a mod's currently-deployed files to/from a per-mod staging
 //! directory (distinct from the recycle bin — this is instant and reversible, no
@@ -1229,7 +1230,8 @@ mod tests {
                 .len(),
             2
         );
-        let report = crate::conflict::analyze(&fixture.conn, &[target.clone()]).unwrap();
+        let report =
+            crate::conflict::analyze(&fixture.conn, std::slice::from_ref(&target)).unwrap();
         assert!(report
             .foreign_conflicts
             .iter()

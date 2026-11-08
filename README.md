@@ -1,5 +1,9 @@
 # GTAV Mods Manager
 
+> **Development status:** Mod classification and backup are paused and pending further development. Their existing code paths have not been disabled by this documentation update, so do not rely on these features. This update does not change or remove existing classifications, backups, or files. <!-- OpenAI-Codex_index_review -->
+
+> **Current source status:** This note supersedes the preceding status note. The App's manual classification editing and category filtering controls are unavailable and under development. App and CLI full-backup creation, listing, and restoration are unavailable. With automatic backup enabled, installation or reinstallation is refused when a backup is detected as necessary; a clean installation with no backup needed may proceed, subject to other checks. An existing check-then-write race can still overwrite a file that appears after the check. These changes do not remove existing classification records or backup files and have not been tested. <!-- OpenAI-Codex_index_review -->
+
 <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code; OpenAI-Codex_ui_report_review; OpenAI-Codex_log_isolation_review; OpenAI-Codex_Source_Code -->
 ### App install page metadata (source-only)
 The Legacy App install source keeps the original parent INSERT with a NULL mode. It updates and checks page metadata in the same transaction after the existing file-row and success-event INSERT operations and the manual DLC settlement call, before commit. If a database operation and statement finalization fail together, the secondary finalization error may be lost.

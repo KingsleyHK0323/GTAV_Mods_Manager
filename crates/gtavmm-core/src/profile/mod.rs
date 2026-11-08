@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_index_review
 
 //! Multi-profile support: a Profile is a named set of mods that should be active
 //! together (e.g. a "Roleplay" profile vs. a "Graphics Showcase" profile on the same
@@ -1409,7 +1410,8 @@ mod tests {
         owner_require_stage(&f.conn, f.incoming, &f.staging, &[&b"incoming payload"[..]]);
         assert!(matches!(std::fs::symlink_metadata(&f.incoming_target),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound));
-        let report = crate::conflict::analyze(&f.conn, &[f.incoming_target.clone()]).unwrap();
+        let report =
+            crate::conflict::analyze(&f.conn, std::slice::from_ref(&f.incoming_target)).unwrap();
         assert!(!report.has_protected_hits());
         assert!(report.foreign_conflicts.is_empty());
         if let Some(target) = &f.outgoing_target {
@@ -1844,7 +1846,7 @@ mod tests {
         assert_ne!(retained_before[0].0, retained_before[1].0);
         assert_eq!(Path::new(&retained_before[0].1), target.as_path());
         assert_eq!(Path::new(&retained_before[1].1), target.as_path());
-        let report = crate::conflict::analyze(&f.conn, &[target.clone()]).unwrap();
+        let report = crate::conflict::analyze(&f.conn, std::slice::from_ref(&target)).unwrap();
         assert!(!report.has_protected_hits());
         assert_eq!(report.foreign_conflicts.len(), 2);
         assert!(report

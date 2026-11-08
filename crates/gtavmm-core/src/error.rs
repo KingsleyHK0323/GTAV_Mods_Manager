@@ -22,6 +22,10 @@ pub enum CoreError {
     #[error("Mod disabling is unavailable. This feature is under development.")]
     ModDisablingUnavailable,
 
+    // OpenAI-Codex_v1_readiness: Distinguish a paused backup from format failures.
+    #[error("Backup is unavailable. This feature is under development.")]
+    BackupUnavailable,
+
     #[error("conflict with a different mod's file: {path} (owned by mod #{owner_mod_id})")]
     ForeignConflict { path: PathBuf, owner_mod_id: i64 },
 

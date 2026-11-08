@@ -9,6 +9,9 @@ import type { InstalledMod, ModSourceCheckResult, PageMode } from "../types";
 // OpenAI-Codex_manual_dlc_ui
 // OpenAI-Codex_ui_report_review
 
+// OpenAI-Codex_ui_report_review: Pause manual classification without changing saved values.
+function isModClassificationPending(): boolean { return true; }
+
 /** Every page a mod can be moved to, in sidebar order. */
 const PAGE_MODES: PageMode[] = [
   "legacy-sp",
@@ -122,10 +125,12 @@ export function ModDetailDrawer({
 
   const modId = mod.id;
   async function changePage(next: PageMode) {
+    if (isModClassificationPending()) { setError(t("drawer.classification_pending")); return; }
     await run("page", () => invoke("set_mod_mode", { modId, mode: next }));
   }
 
   async function changeCategory(next: string) {
+    if (isModClassificationPending()) { setError(t("drawer.classification_pending")); return; }
     await run("page", () => invoke("set_mod_category", { modId, category: next }));
   }
 
@@ -221,6 +226,7 @@ export function ModDetailDrawer({
                   interface presents as a fact is one nobody thinks to check. */}
               {mod.mode_inferred && <span className="pill pill--off">{t("drawer.page_guessed")}</span>}
             </div>
+            <fieldset hidden={isModClassificationPending()} disabled={isModClassificationPending()}>
             <select
               value={mod.mode ?? "legacy-sp"}
               disabled={busy !== null}
@@ -235,13 +241,20 @@ export function ModDetailDrawer({
             <p className="page-sub" style={{ margin: "6px 0 0" }}>
               {t("drawer.page_help")}
             </p>
+            </fieldset>
+            {isModClassificationPending() && (
+              <code className="mono">{mod.mode === null ? t("drawer.classification_not_recorded") : JSON.stringify(mod.mode)}</code>
+            )}
+            {isModClassificationPending() && <p role="status">{t("drawer.classification_pending")}</p>}
           </div>
 
+          <div hidden={isModClassificationPending()}>
           {/* Only the LSPDFR pages have a category, so this is hidden where it
               would be a field with no meaning rather than shown as empty. */}
           {mod.mode?.endsWith("lspdfr") && (
             <div className="drawer-section">
               <div className="eyebrow">{t("modWorkspace.col_category")}</div>
+              <fieldset hidden={isModClassificationPending()} disabled={isModClassificationPending()}>
               <select
                 value={mod.category ?? "other"}
                 disabled={busy !== null}
@@ -256,6 +269,16 @@ export function ModDetailDrawer({
               <p className="page-sub" style={{ margin: "6px 0 0" }}>
                 {t("drawer.category_help")}
               </p>
+              </fieldset>
+              {isModClassificationPending() && <p role="status">{t("drawer.classification_pending")}</p>}
+            </div>
+          )}
+          </div>
+          {isModClassificationPending() && (
+            <div className="drawer-section">
+              <div className="eyebrow">{t("modWorkspace.col_category")}</div>
+              <code className="mono">{mod.category === null ? t("drawer.classification_not_recorded") : JSON.stringify(mod.category)}</code>
+              <p role="status">{t("drawer.classification_pending")}</p>
             </div>
           )}
 
@@ -376,6 +399,7 @@ export function ModDetailDrawer({
               <p className="page-sub" style={{ marginTop: "var(--space-2)" }}>
                 {t("drawer.reinstall_help")}
               </p>
+              <p role="status">{t("modPageTools.auto_backup_paused_impact")}</p>
               <button
                 className="btn-ghost"
                 type="button"

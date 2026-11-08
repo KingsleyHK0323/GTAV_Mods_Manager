@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // OpenAI-Codex
 // OpenAI-Codex_Responsible: Source_Code
+// OpenAI-Codex_index_review
 // OpenAI-Codex_lspdfr_role_app
 
 //! Command implementations, factored as plain functions so they're unit-testable
@@ -12,6 +13,19 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 use gtavmm_core::db::models::{InstalledMod, ModStatus};
+
+// OpenAI-Codex_v1_readiness: Refuse paused operations before their side effects.
+fn ensure_classification_available() -> Result<(), String> {
+    if gtavmm_core::install::classification_enabled() {
+        Ok(())
+    } else {
+        Err("Mod classification is under development.".to_string())
+    }
+}
+
+fn ensure_backup_available() -> Result<(), String> {
+    gtavmm_core::full_backup::ensure_backup_available().map_err(|error| error.to_string())
+}
 
 /// Reads `installed_mod` rows (any status), ordered by id (install order).
 ///
@@ -69,6 +83,7 @@ pub fn list_mods(
 /// marker must come off — otherwise the interface would keep asking the user to
 /// check something they have already checked.
 pub fn set_mod_mode_impl(conn: &Connection, mod_id: i64, mode: &str) -> Result<(), String> {
+    ensure_classification_available()?;
     let page = crate::page_mode::PageMode::parse(mode)?;
     page.ensure_available()?;
     gtavmm_core::providers::ensure_installed_mod_available(conn, mod_id)
@@ -91,6 +106,7 @@ pub fn set_mod_mode(
     mod_id: i64,
     mode: String,
 ) -> Result<(), String> {
+    ensure_classification_available()?;
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     set_mod_mode_impl(&conn, mod_id, &mode)
 }
@@ -538,9 +554,8 @@ fn check_install_preview_root(
 
 /// Installs `path` for real. Mirrors the CLI's `install` command: classify, then run
 /// the full install pipeline (conflict check, backup, write, record). `backup_root` is
-/// a parameter (not computed internally) so this stays unit-testable against a temp
-/// directory — the `#[tauri::command]` wrapper below points it at the real app-data
-/// directory.
+/// a parameter so this test-only compatibility wrapper can use an isolated directory.
+#[cfg(test)]
 pub fn install_mod_impl(
     conn: &mut Connection,
     game_path: Option<&str>,
@@ -562,7 +577,8 @@ pub fn install_mod_impl(
     )
 }
 
-// OpenAI-Codex_lspdfr_role_app: Legacy callers retain the provider default by omitting a role.
+// OpenAI-Codex_lspdfr_role_app; OpenAI-Codex_index_review: The test helper accepts an optional provider role.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn install_mod_with_role_impl(
     conn: &mut Connection,
@@ -640,7 +656,11 @@ fn install_mod_with_role_and_backup_impl(
     // NULL elsewhere rather than filed under a taxonomy that does not apply.
     let category = match page {
         crate::page_mode::PageMode::LegacyLspdfr | crate::page_mode::PageMode::EnhancedLspdfr => {
-            Some(crate::lspdfr_category::infer(&plan))
+            if gtavmm_core::install::classification_enabled() {
+                Some(crate::lspdfr_category::infer(&plan))
+            } else {
+                None
+            }
         }
         _ => None,
     };
@@ -661,6 +681,7 @@ fn install_mod_with_role_and_backup_impl(
     match &result {
         Err(gtavmm_core::CoreError::ForeignConflict { .. })
         | Err(gtavmm_core::CoreError::Database(_))
+        | Err(gtavmm_core::CoreError::BackupUnavailable)
         | Ok(_) => {}
         Err(gtavmm_core::CoreError::InstallDatabaseRollbackFailed { database_error, .. })
             if matches!(
@@ -803,19 +824,17 @@ fn backup_warning_failure(language: &str, failure: BackupWarningFailure) -> Stri
 // OpenAI-Codex_backup_flow: Show filtered, bounded labels rather than complete paths.
 fn backup_warning_label(input: &str) -> String {
     let leaf = input
-        .rsplit(|c| c == '/' || c == '\\' || c == ':')
+        .rsplit(['/', '\\', ':'])
         .next()
         .unwrap_or("");
     let mut label = String::new();
-    let mut scanned = 0usize;
     let mut displayed = 0usize;
     let mut truncated = false;
-    for ch in leaf.chars() {
+    for (scanned, ch) in leaf.chars().enumerate() {
         if scanned == 512 {
             truncated = true;
             break;
         }
-        scanned += 1;
         if ch.is_control()
             || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{206f}' | '\u{feff}')
         {
@@ -1877,6 +1896,7 @@ pub fn check_framework(
 
 /// Records an LSPDFR category chosen by hand, correcting whatever was guessed.
 pub fn set_mod_category_impl(conn: &Connection, mod_id: i64, category: &str) -> Result<(), String> {
+    ensure_classification_available()?;
     const KNOWN: [&str; 5] = ["callouts", "eup-peds", "vehicles", "other", "framework"];
     if !KNOWN.contains(&category) {
         return Err(format!("unknown category: {category}"));
@@ -1899,6 +1919,7 @@ pub fn set_mod_category(
     mod_id: i64,
     category: String,
 ) -> Result<(), String> {
+    ensure_classification_available()?;
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     set_mod_category_impl(&conn, mod_id, &category)
 }
@@ -1937,6 +1958,7 @@ pub fn create_full_backup_impl(
     game_root: &std::path::Path,
     edition: gtavmm_core::full_backup::GameEdition,
 ) -> Result<String, String> {
+    ensure_backup_available()?;
     let backup_root = default_backup_root()?;
     let result = gtavmm_core::full_backup::create_for_edition(game_root, &backup_root, edition)
         .map(|p| p.display().to_string())
@@ -1953,6 +1975,7 @@ pub fn create_full_backup(
     game_path: Option<String>,
     mode: String,
 ) -> Result<String, String> {
+    ensure_backup_available()?;
     let edition = full_backup_edition_for_mode(&mode)?;
     let game_root = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
@@ -1962,6 +1985,7 @@ pub fn create_full_backup(
 }
 
 pub fn list_full_backups_impl(mode: &str) -> Result<FullBackupListResult, String> {
+    ensure_backup_available()?;
     let edition = full_backup_edition_for_mode(mode)?;
     let backup_root = default_backup_root()?;
     gtavmm_core::full_backup::list_for_edition(&backup_root, edition)
@@ -1987,6 +2011,7 @@ pub fn restore_full_backup_impl(
     game_root: &std::path::Path,
     edition: gtavmm_core::full_backup::GameEdition,
 ) -> Result<(), String> {
+    ensure_backup_available()?;
     let result = gtavmm_core::full_backup::restore_for_edition(
         std::path::Path::new(zip_path),
         game_root,
@@ -2008,6 +2033,7 @@ pub fn restore_full_backup(
     game_path: Option<String>,
     mode: String,
 ) -> Result<(), String> {
+    ensure_backup_available()?;
     let edition = full_backup_edition_for_mode(&mode)?;
     let game_root = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
@@ -2827,6 +2853,7 @@ pub fn reinstall_mod_impl(
 }
 
 /// OpenAI-Codex: The caller supplies the same staging root used for disable.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn reinstall_mod_with_staging_impl(
     conn: &mut Connection,
@@ -2911,8 +2938,12 @@ fn reinstall_mod_with_optional_staging_impl(
             options,
         )
     }
-    .and_then(gtavmm_core::install::InstallOutcome::require_success)
-    .map_err(|e| e.to_string());
+    .and_then(gtavmm_core::install::InstallOutcome::require_success);
+    // OpenAI-Codex_v1_readiness: A paused backup must not trigger log cleanup.
+    if matches!(&result, Err(gtavmm_core::CoreError::BackupUnavailable)) {
+        return Err(gtavmm_core::CoreError::BackupUnavailable.to_string());
+    }
+    let result = result.map_err(|e| e.to_string());
     if let Err(reason) = &result {
         let _ =
             gtavmm_core::app_log::error(&format!("reinstall_mod failed for id {mod_id}: {reason}"));
@@ -3173,6 +3204,9 @@ pub fn update_user_settings_impl(
     backup_root_override: PathChange,
 ) -> Result<gtavmm_core::db::models::UserSettings, String> {
     let mut settings = gtavmm_core::settings::load(conn).map_err(|e| e.to_string())?;
+    if default_auto_backup == Some(true) && !settings.default_auto_backup {
+        ensure_backup_available()?;
+    }
     if let Some(v) = default_auto_backup {
         settings.default_auto_backup = v;
     }
@@ -3406,6 +3440,20 @@ mod tests {
         assert_eq!(short.chars().count(), 81);
         assert!(short.ends_with('…'));
         assert!(!short.contains("private"));
+    }
+
+    // OpenAI-Codex_index_review: Preserve scan and visible-character boundaries.
+    #[test]
+    fn warning_label_keeps_scan_and_visible_boundaries() {
+        let bidi = "\u{202e}";
+        let scan_511 = format!("{}A", bidi.repeat(511));
+        let scan_512 = format!("{}A", bidi.repeat(512));
+        assert_eq!(backup_warning_label(&scan_511), "A");
+        assert_eq!(backup_warning_label(&scan_512), "—…");
+
+        let visible = "a".repeat(80);
+        assert_eq!(backup_warning_label(&format!("{visible}{bidi}")), visible);
+        assert_eq!(backup_warning_label(&format!("{visible}{bidi}b")), format!("{visible}…"));
     }
 
     // OpenAI-Codex: Draft preparation never reads credentials or makes a request.

@@ -282,6 +282,8 @@
     "open_button": "Prompt Library"
   },
   "modPageTools": {
+    "backup_paused": "Full backup creation, listing, and restoration are under development. Existing backup files are kept.",
+    "auto_backup_paused_impact": "Automatic backup is under development. Installation and reinstallation are unavailable if a backup would be needed while it is on. You can turn it off in Backup settings after reviewing the warning.",
     "components_title": "Components",
     "recheck_button": "Re-check",
     "component_installed": "Installed",
@@ -438,6 +440,8 @@
     "manifest_generated": "Generated (glob-based, matches the community-standard Add-on Car template)"
   },
   "drawer": {
+    "classification_not_recorded": "Not recorded",
+    "classification_pending": "Mod classification is under development. Existing page and category records are retained.",
     "details": "Details",
     "close": "Close details",
     "status": "Status",
@@ -533,6 +537,8 @@
     "edition_enhanced": "Enhanced GTA V"
   },
   "settingsCards": {
+    "backup_paused_label": "Under development",
+    "backup_paused": "Automatic backup is under development. You can turn off the saved preference after confirmation, but cannot turn it on again here. Existing backups and the saved location are retained. Installation and reinstallation are unavailable if a backup would be needed while automatic backup is on.",
     "theme_title": "Appearance",
     "theme_desc": "Light, dark, or follow the system.",
     "theme_system": "System",
@@ -585,6 +591,7 @@
     "prompts_value": "Open"
   },
   "modWorkspace": {
+    "classification_paused": "Mod category filtering is under development and is currently inactive. Previously recorded categories may be inaccurate.",
     "tab_mods": "Mods",
     "tab_history": "History",
     "empty_body": "Nothing installed on this page yet. Use Install Mod to add one — mods installed here stay on this page.",
