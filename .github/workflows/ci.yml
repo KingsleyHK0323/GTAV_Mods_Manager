@@ -42,6 +42,10 @@ jobs:
       - name: Test release draft asset checks
         run: node --test .github/scripts/prepare-release.test.mjs
 
+      # OpenAI-Codex: Verify beta release checks in shared CI and the release gate.
+      - name: Test public beta release checks
+        run: node --test .github/scripts/prepare-beta-release.test.mjs
+
       - name: Install frontend dependencies
         working-directory: crates/gtavmm-app
         run: npm ci

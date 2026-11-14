@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+- Limit a Clippy needless-bool exception to the non-Windows managed-DLL path check while preserving Windows reparse-point detection. <!-- OpenAI-Codex -->
+
+- Run mocked public beta release checks in shared CI on both platforms, including the release test gate; these checks do not make live GitHub requests. This CI change has not yet run. <!-- OpenAI-Codex -->
+
 - Add source tests for unavailable classification and full-backup entry points, checking selected stored values and existing backup/game files while retaining mode, edition and backup safety assertions through private helpers. These tests have not been executed. <!-- OpenAI-Codex -->
 
 - Add a separate `v1.0.0-beta` workflow configured to publish without GitHub draft or pre-release flags after shared CI and Windows/Linux builds, then verify uploaded assets and SHA-256 files. The application and installer numeric version remains `1.0.0`; a later same-version final release may not be reported as an update, and Windows same-version installation or upgrade is unverified. The public release may be incomplete while uploads are in progress or if they fail. The new workflow had not run when this change was prepared. <!-- OpenAI-Codex -->

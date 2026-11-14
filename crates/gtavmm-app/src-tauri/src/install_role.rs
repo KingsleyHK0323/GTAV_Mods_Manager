@@ -76,6 +76,8 @@ fn is_dll(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
 }
 
+// OpenAI-Codex: Preserve Windows reparse checks; limit the lint exception to non-Windows.
+#[cfg_attr(not(windows), allow(clippy::needless_bool))]
 fn unsafe_link(metadata: &std::fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
