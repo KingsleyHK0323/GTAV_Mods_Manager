@@ -32,6 +32,42 @@ use crate::mod_analyzer::{ModFormat, ModPlan};
 use crate::protected_files;
 use crate::util::hash_file;
 
+// OpenAI-Codex_test_review: Production always retains the paused-backup guard.
+fn ensure_install_backup_available() -> CoreResult<()> {
+    #[cfg(test)]
+    if TEST_BACKUP_SCOPE_COUNT.with(std::cell::Cell::get) > 0 {
+        return Ok(());
+    }
+    crate::full_backup::ensure_backup_available()
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_BACKUP_SCOPE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+struct TestBackupGuard {
+    not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+fn allow_backup_for_test() -> TestBackupGuard {
+    TEST_BACKUP_SCOPE_COUNT.with(|count| {
+        count.set(count.get().checked_add(1).expect("backup test scope overflow"));
+    });
+    TestBackupGuard {
+        not_send: std::marker::PhantomData,
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBackupGuard {
+    fn drop(&mut self) {
+        TEST_BACKUP_SCOPE_COUNT.with(|count| count.set(count.get() - 1));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum InstallAction {
     /// A file existed before and was backed up prior to being overwritten.
@@ -825,7 +861,7 @@ fn install_with_expected_restores(
 
     // OpenAI-Codex_v1_readiness: Refuse only when the current plan needs backup.
     if options.auto_backup && plan_requires_backup(plan)? {
-        crate::full_backup::ensure_backup_available()?;
+        ensure_install_backup_available()?;
     }
     // OpenAI-Codex: Persist manual registration intent before the first file write.
     let owned_operation;
@@ -1436,7 +1472,7 @@ fn reinstall_impl(
 
     // OpenAI-Codex_v1_readiness: Refuse required backup before uninstall intent.
     if options.auto_backup && reinstall_requires_backup(conn, mod_id, &status, &plan)? {
-        crate::full_backup::ensure_backup_available()?;
+        ensure_install_backup_available()?;
     }
     // OpenAI-Codex: One compound intent spans both versions, including partial failure.
     let mut packs = dlc_manual::pack_names_for_paths(game_root, &targets)?;
@@ -1500,10 +1536,19 @@ fn perform_writes(
         if planned.target.exists() {
             if auto_backup {
                 // OpenAI-Codex_v1_readiness: Stop if a target appeared after preflight.
-                crate::full_backup::ensure_backup_available()?;
+                ensure_install_backup_available()?;
                 std::fs::create_dir_all(backup_root)?;
                 let backup_path = backup_root.join(format!("{index}.bak"));
-                std::fs::copy(&planned.target, &backup_path)?;
+                // OpenAI-Codex_test_review: Reserve the slot without replacing an older backup.
+                let mut source = std::fs::File::open(&planned.target)?;
+                let permissions = source.metadata()?.permissions();
+                let mut backup = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&backup_path)?;
+                // A copy or permissions error can leave this new slot incomplete.
+                std::io::copy(&mut source, &mut backup)?;
+                backup.set_permissions(permissions)?;
                 tx_log.record(InstallAction::FileOverwritten {
                     target: planned.target.clone(),
                     backup: backup_path,
@@ -1559,6 +1604,144 @@ fn record_failed_event(
 mod tests {
     use super::*;
     use crate::providers::ModeProvider;
+
+    // OpenAI-Codex_test_review: Test-only permission is scoped to its owning thread.
+    #[test]
+    fn test_backup_guard_is_nested_and_thread_local() {
+        assert!(matches!(
+            ensure_install_backup_available(),
+            Err(CoreError::BackupUnavailable)
+        ));
+        let result = std::panic::catch_unwind(|| {
+            let _guard = allow_backup_for_test();
+            panic!("exercise scope cleanup");
+        });
+        assert!(result.is_err());
+        assert!(matches!(
+            ensure_install_backup_available(),
+            Err(CoreError::BackupUnavailable)
+        ));
+        {
+            let outer = allow_backup_for_test();
+            assert!(ensure_install_backup_available().is_ok());
+            {
+                let _inner = allow_backup_for_test();
+                assert!(ensure_install_backup_available().is_ok());
+                drop(outer);
+                assert!(ensure_install_backup_available().is_ok());
+            }
+            assert!(matches!(
+                ensure_install_backup_available(),
+                Err(CoreError::BackupUnavailable)
+            ));
+            let _outer = allow_backup_for_test();
+            assert!(std::thread::spawn(|| matches!(
+                ensure_install_backup_available(),
+                Err(CoreError::BackupUnavailable)
+            ))
+            .join()
+            .unwrap());
+        }
+        assert!(matches!(
+            ensure_install_backup_available(),
+            Err(CoreError::BackupUnavailable)
+        ));
+    }
+
+    // OpenAI-Codex_test_review: The public guard leaves existing data untouched.
+    #[test]
+    fn paused_backup_blocks_install_before_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        let target = write_source(&game, "mod.asi", b"original");
+        let source = write_source(dir.path(), "mod.asi", b"new mod");
+        let provider = crate::providers::LegacySpProvider::new(game.clone());
+        let plan = crate::mod_analyzer::classify(&source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let backups = dir.path().join("backups");
+        let before: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        let result = install(
+            &mut conn,
+            "New",
+            &plan,
+            &game,
+            &backups,
+            InstallOptions {
+                override_foreign_conflicts: true,
+                ..Default::default()
+            },
+            &source,
+        );
+        assert!(matches!(result, Err(CoreError::BackupUnavailable)));
+        assert_eq!(std::fs::read(target).unwrap(), b"original");
+        let after: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        assert_eq!(after, before);
+        assert!(!backups.exists());
+    }
+
+    // OpenAI-Codex_test_review: A previously backed-up mod cannot be reinstalled while paused.
+    #[test]
+    fn paused_backup_blocks_reinstall_before_uninstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        let target = write_source(&game, "mod.asi", b"original");
+        let old_source = write_source(dir.path(), "mod.asi", b"old mod");
+        let provider = crate::providers::LegacySpProvider::new(game.clone());
+        let plan = crate::mod_analyzer::classify(&old_source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let old_backups = dir.path().join("old-backups");
+        let outcome = {
+            let _fixture_backup = allow_backup_for_test();
+            install(
+                &mut conn,
+                "Old",
+                &plan,
+                &game,
+                &old_backups,
+                InstallOptions {
+                    override_foreign_conflicts: true,
+                    ..Default::default()
+                },
+                &old_source,
+            )
+            .unwrap()
+        };
+        let InstallOutcome::Success {
+            installed_mod_id, ..
+        } = outcome
+        else {
+            panic!("fixture install failed");
+        };
+        let update = dir.path().join("update");
+        std::fs::create_dir(&update).unwrap();
+        let new_source = write_source(&update, "mod.asi", b"new mod");
+        let backups = dir.path().join("new-backups");
+        let recycle = dir.path().join("recycle");
+        let before: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        let result = reinstall(
+            &mut conn,
+            installed_mod_id,
+            &new_source,
+            "v2",
+            &provider,
+            &game,
+            &backups,
+            &recycle,
+            InstallOptions::default(),
+        );
+        assert!(matches!(result, Err(CoreError::BackupUnavailable)));
+        assert_eq!(std::fs::read(target).unwrap(), b"old mod");
+        assert_eq!(
+            std::fs::read(old_backups.join("0.bak")).unwrap(),
+            b"original"
+        );
+        let after: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        assert_eq!(after, before);
+        assert!(!backups.exists());
+        assert!(!recycle.exists());
+    }
 
     // OpenAI-Codex_lml_generic_guards; OpenAI-Codex: Additional source-only coverage.
     #[test]
@@ -1796,6 +1979,7 @@ mod tests {
     // OpenAI-Codex: Disabled reinstall preserves recoverable staging on refusal.
     #[test]
     fn disabled_reinstall_requires_context_and_preserves_staging_on_conflict() {
+        let _backup_enabled = allow_backup_for_test();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("game");
         std::fs::create_dir(&root).unwrap();
@@ -2014,6 +2198,7 @@ mod tests {
 
     #[test]
     fn reinstall_recognizes_only_its_own_restored_original() {
+        let _backup_enabled = allow_backup_for_test();
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         std::fs::create_dir(&game_root).unwrap();
@@ -2400,6 +2585,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn rollback_regression_preserves_original_write_error() {
+        let _backup_enabled = allow_backup_for_test();
         use std::os::windows::fs::OpenOptionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2505,6 +2691,7 @@ mod tests {
 
     #[test]
     fn database_write_failure_rolls_back_new_and_overwritten_files() {
+        let _backup_enabled = allow_backup_for_test();
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         std::fs::create_dir_all(&game_root).unwrap();
@@ -2580,6 +2767,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn database_failure_reports_a_failed_filesystem_rollback() {
+        let _backup_enabled = allow_backup_for_test();
         use std::os::windows::fs::OpenOptionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -3695,6 +3883,7 @@ mod tests {
 
     #[test]
     fn reinstall_checks_existing_conflicts_before_removing_the_old_version() {
+        let _backup_enabled = allow_backup_for_test();
         for (tracked, allow_override) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
@@ -3988,6 +4177,7 @@ mod tests {
 
     #[test]
     fn untracked_conflict_with_override_proceeds_and_backs_up() {
+        let _backup_enabled = allow_backup_for_test();
         let dir = tempfile::tempdir().unwrap();
         let game_root = dir.path().join("game");
         std::fs::create_dir_all(&game_root).unwrap();
@@ -4374,6 +4564,7 @@ mod tests {
     // OpenAI-Codex: The writer must not replace an occupied backup after preflight.
     #[test]
     fn backup_writer_refuses_an_occupied_slot_without_changing_files() {
+        let _backup_enabled = allow_backup_for_test();
         let temp = tempfile::tempdir().unwrap();
         let game_root = temp.path().join("game");
         let backup_root = temp.path().join("backups");
@@ -4403,6 +4594,7 @@ mod tests {
         assert_eq!(snapshot_backup_tree(temp.path()), tree_before);
 
         let safe_backup = temp.path().join("safe_backups");
+        let original_readonly = std::fs::metadata(&target).unwrap().permissions().readonly();
         let mut safe_actions = InstallTransaction::default();
         let hashes = perform_writes(&plan, &safe_backup, true, &mut safe_actions).unwrap();
         assert_eq!(hashes.get(&target), Some(&hash_file(&target).unwrap()));
@@ -4410,6 +4602,13 @@ mod tests {
         assert_eq!(
             std::fs::read(safe_backup.join("0.bak")).unwrap(),
             b"original target"
+        );
+        assert_eq!(
+            std::fs::metadata(safe_backup.join("0.bak"))
+                .unwrap()
+                .permissions()
+                .readonly(),
+            original_readonly
         );
         assert!(matches!(
             safe_actions.actions.as_slice(),
@@ -4420,6 +4619,7 @@ mod tests {
     // OpenAI-Codex: A later occupied backup slot must block the whole install.
     #[test]
     fn install_preserves_existing_backup_before_any_target_write() {
+        let _backup_enabled = allow_backup_for_test();
         let temp = tempfile::tempdir().unwrap();
         let game_root = temp.path().join("game");
         let backup_root = temp.path().join("backups");
@@ -4535,6 +4735,7 @@ mod tests {
     // OpenAI-Codex: Earlier targets cannot become later backup destinations.
     #[test]
     fn install_refuses_a_planned_target_that_is_another_backup_slot() {
+        let _backup_enabled = allow_backup_for_test();
         let temp = tempfile::tempdir().unwrap();
         let game_root = temp.path().join("game");
         let backup_root = game_root.join("backups");
@@ -4627,6 +4828,7 @@ mod tests {
     // OpenAI-Codex: A missing target can still belong to another mod.
     #[test]
     fn install_preserves_missing_targets_recorded_by_other_mods() {
+        let _backup_enabled = allow_backup_for_test();
         use sha2::{Digest, Sha256};
 
         for owner_disabled in [false, true] {
@@ -4780,6 +4982,7 @@ mod tests {
     // OpenAI-Codex: Installed backup files are not ordinary override targets.
     #[test]
     fn install_refuses_targets_owned_as_other_mods_backups() {
+        let _backup_enabled = allow_backup_for_test();
         for auto_backup in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let game_root = temp.path().join("game");
@@ -6055,6 +6258,7 @@ mod tests {
     // OpenAI-Codex: A missing later source cannot be produced by a backup slot.
     #[test]
     fn install_refuses_a_source_that_is_a_later_backup_slot() {
+        let _backup_enabled = allow_backup_for_test();
         let temp = tempfile::tempdir().unwrap();
         let game_root = temp.path().join("game");
         let backup_root = temp.path().join("backups");
@@ -6141,6 +6345,7 @@ mod tests {
     // OpenAI-Codex: One planned target must not mutate a later planned source.
     #[test]
     fn install_refuses_a_planned_source_that_is_another_target() {
+        let _backup_enabled = allow_backup_for_test();
         for auto_backup in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let game_root = temp.path().join("game");
@@ -6404,6 +6609,7 @@ mod tests {
     // OpenAI-Codex: Missing backups may still be referenced by another mod.
     #[test]
     fn install_preserves_missing_backup_paths_referenced_by_other_mods() {
+        let _backup_enabled = allow_backup_for_test();
         for owner_disabled in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let game_root = temp.path().join("game");
@@ -6556,6 +6762,7 @@ mod tests {
     // OpenAI-Codex_requirements_inventory: protect another game's reserved staging.
     #[test]
     fn install_refuses_backup_inside_another_game_lml_stage_before_writes() {
+        let _backup_enabled = allow_backup_for_test();
         use crate::lml_store::{
             begin_operation, load_operation, record_phase, NewOperation, OperationFile, Phase,
         };

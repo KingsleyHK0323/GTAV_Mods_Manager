@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Reserve numbered install backup slots with exclusive creation and copy through the same handle before recording an overwrite. Copy or permission errors may leave an unrecorded new slot without identifying its path; path races and full Windows security metadata remain unresolved. Production backup remains paused. Scoped test-only overrides exercise legacy cases and do not establish production availability; remote validation is pending. <!-- OpenAI-Codex -->
+
 - State Windows as the only supported operating system. Restrict shared CI to Windows and configure stable and beta releases to build Windows installers and verify SHA256SUMS-windows.txt; remote validation is pending. <!-- OpenAI-Codex -->
 
 - Clarify the public beta release notice: with automatic backup enabled, an install or reinstall detected to require backup of an existing target is refused; a check-then-write race remains. <!-- OpenAI-Codex -->
