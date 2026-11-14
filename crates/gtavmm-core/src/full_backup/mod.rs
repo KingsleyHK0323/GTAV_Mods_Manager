@@ -204,7 +204,10 @@ pub fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<
     list_for_edition_inner(backup_root, edition)
 }
 
-fn list_for_edition_inner(backup_root: &Path, edition: GameEdition) -> CoreResult<EditionBackupList> {
+fn list_for_edition_inner(
+    backup_root: &Path,
+    edition: GameEdition,
+) -> CoreResult<EditionBackupList> {
     let mut result = EditionBackupList::default();
     for path in list_inner(backup_root)? {
         match read_backup_edition(&path) {

@@ -4525,16 +4525,20 @@ mod tests {
         let err = set_mod_mode_impl(&conn, id, "legacy-lspdfr").unwrap_err();
         assert_eq!(err, "Mod classification is under development.");
         let category_before: Option<String> = conn
-            .query_row("SELECT category FROM installed_mod WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT category FROM installed_mod WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
             .unwrap();
         let category_err = set_mod_category_impl(&conn, id, "callouts").unwrap_err();
         assert_eq!(category_err, "Mod classification is under development.");
         let category_after: Option<String> = conn
-            .query_row("SELECT category FROM installed_mod WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT category FROM installed_mod WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(category_after, category_before);
         let unchanged = list_mods_impl(&conn, Some("legacy-sp")).unwrap();
@@ -4589,9 +4593,11 @@ mod tests {
             "{missing}"
         );
         let mode: String = conn
-            .query_row("SELECT mode FROM installed_mod WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT mode FROM installed_mod WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(mode, "legacy-sp");
     }
