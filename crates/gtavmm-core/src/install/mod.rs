@@ -54,7 +54,12 @@ struct TestBackupGuard {
 #[cfg(test)]
 fn allow_backup_for_test() -> TestBackupGuard {
     TEST_BACKUP_SCOPE_COUNT.with(|count| {
-        count.set(count.get().checked_add(1).expect("backup test scope overflow"));
+        count.set(
+            count
+                .get()
+                .checked_add(1)
+                .expect("backup test scope overflow"),
+        );
     });
     TestBackupGuard {
         not_send: std::marker::PhantomData,
@@ -1660,7 +1665,9 @@ mod tests {
         let plan = crate::mod_analyzer::classify(&source, &provider).unwrap();
         let mut conn = crate::db::open_in_memory().unwrap();
         let backups = dir.path().join("backups");
-        let before: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         let result = install(
             &mut conn,
             "New",
@@ -1675,7 +1682,9 @@ mod tests {
         );
         assert!(matches!(result, Err(CoreError::BackupUnavailable)));
         assert_eq!(std::fs::read(target).unwrap(), b"original");
-        let after: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(after, before);
         assert!(!backups.exists());
     }
@@ -1719,7 +1728,9 @@ mod tests {
         let new_source = write_source(&update, "mod.asi", b"new mod");
         let backups = dir.path().join("new-backups");
         let recycle = dir.path().join("recycle");
-        let before: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         let result = reinstall(
             &mut conn,
             installed_mod_id,
@@ -1737,7 +1748,9 @@ mod tests {
             std::fs::read(old_backups.join("0.bak")).unwrap(),
             b"original"
         );
-        let after: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0)).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(after, before);
         assert!(!backups.exists());
         assert!(!recycle.exists());
