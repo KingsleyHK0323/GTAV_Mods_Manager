@@ -1,0 +1,86 @@
+# OpenAI-Codex_release_impl: Recover only the independently reviewed beta build.
+name: Publish beta recovery
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  publish:
+    if: github.repository == 'KingsleyHK0323/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout reviewed recovery commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Test recovery checks
+        run: node --test .github/scripts/publish-beta-recovery.test.mjs
+      - name: Verify original build and release state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: node .github/scripts/publish-beta-recovery.mjs preflight
+      - name: Download and verify original Windows artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/beta-recovery-14115924634.zip"
+          test ! -e "$archive"
+          gh api "repos/$GH_REPOSITORY/actions/artifacts/14115924634/zip" > "$archive"
+          printf '%s  %s\n' 'c4048f45c1494ac268c1a3e751698facf721f406896a4fe87d6a9e9359e61073' "$archive" | sha256sum --check --status
+          python3 - "$archive" "$RUNNER_TEMP/release-assets/installers-windows" <<'PY'
+          import os, pathlib, stat, sys, zipfile
+          archive, destination = sys.argv[1:]
+          root = pathlib.Path(destination)
+          root.mkdir(parents=True, exist_ok=False)
+          seen = set()
+          total = 0
+          with zipfile.ZipFile(archive) as package:
+              for entry in package.infolist():
+                  name = entry.filename
+                  if entry.is_dir():
+                      continue
+                  if pathlib.PurePosixPath(name).suffix.lower() not in ('.msi', '.exe'):
+                      raise RuntimeError('Unexpected non-installer artifact entry')
+                  pieces = name.split('/')
+                  if not name or '\\' in name or any(part in ('', '.', '..') for part in pieces) or name.startswith('/'):
+                      raise RuntimeError('Unsafe artifact path')
+                  key = name.casefold()
+                  if key in seen or entry.flag_bits & 1 or stat.S_ISLNK(entry.external_attr >> 16):
+                      raise RuntimeError('Ambiguous or unsafe artifact entry')
+                  seen.add(key)
+                  total += entry.file_size
+                  if total > 512 * 1024 * 1024:
+                      raise RuntimeError('Artifact exceeds size limit')
+                  target = root.joinpath(*pieces)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with package.open(entry) as source, open(target, 'xb') as output:
+                      remaining = entry.file_size
+                      while remaining:
+                          chunk = source.read(min(1024 * 1024, remaining))
+                          if not chunk:
+                              raise RuntimeError('Incomplete artifact entry')
+                          output.write(chunk)
+                          remaining -= len(chunk)
+                      if source.read(1):
+                          raise RuntimeError('Artifact entry exceeds declared size')
+          if not seen:
+              raise RuntimeError('Artifact is empty')
+          PY
+      - name: Publish and verify beta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: node .github/scripts/publish-beta-recovery.mjs publish
