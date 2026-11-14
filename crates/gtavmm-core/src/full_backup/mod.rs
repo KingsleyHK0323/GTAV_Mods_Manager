@@ -89,6 +89,15 @@ fn create_with_edition(
     edition: Option<GameEdition>,
 ) -> CoreResult<PathBuf> {
     ensure_backup_available()?;
+    create_with_edition_inner(game_root, backup_root, edition)
+}
+
+// OpenAI-Codex_test_review: Keep the paused entry point separate from its coverage.
+fn create_with_edition_inner(
+    game_root: &Path,
+    backup_root: &Path,
+    edition: Option<GameEdition>,
+) -> CoreResult<PathBuf> {
     // OpenAI-Codex: Validate the target and requested edition before creating files.
     crate::providers::ensure_game_root_available(game_root)?;
     if edition == Some(GameEdition::Enhanced) {
@@ -170,6 +179,10 @@ fn backup_open_error(error: std::io::Error) -> CoreError {
 /// Lists all existing full backups (newest first), including unmarked archives.
 pub fn list(backup_root: &Path) -> CoreResult<Vec<PathBuf>> {
     ensure_backup_available()?;
+    list_inner(backup_root)
+}
+
+fn list_inner(backup_root: &Path) -> CoreResult<Vec<PathBuf>> {
     let full_backup_dir = backup_root.join("full");
     if !full_backup_dir.is_dir() {
         return Ok(Vec::new());
@@ -187,8 +200,13 @@ pub fn list(backup_root: &Path) -> CoreResult<Vec<PathBuf>> {
 /// Lists only backups marked for the requested edition. Unmarked archives are
 /// excluded because their source edition cannot be verified by the App.
 pub fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<EditionBackupList> {
+    ensure_backup_available()?;
+    list_for_edition_inner(backup_root, edition)
+}
+
+fn list_for_edition_inner(backup_root: &Path, edition: GameEdition) -> CoreResult<EditionBackupList> {
     let mut result = EditionBackupList::default();
-    for path in list(backup_root)? {
+    for path in list_inner(backup_root)? {
         match read_backup_edition(&path) {
             Ok(Some(found)) if found == edition => result.paths.push(path),
             Ok(Some(_)) => {}
@@ -204,6 +222,10 @@ pub fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<
 /// the App should call [`restore_for_edition`].
 pub fn restore(zip_path: &Path, game_root: &Path) -> CoreResult<()> {
     ensure_backup_available()?;
+    restore_inner(zip_path, game_root)
+}
+
+fn restore_inner(zip_path: &Path, game_root: &Path) -> CoreResult<()> {
     crate::providers::ensure_game_root_available(game_root)?;
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(zip_err("reading backup zip"))?;
@@ -220,6 +242,14 @@ pub fn restore_for_edition(
     expected_edition: GameEdition,
 ) -> CoreResult<()> {
     ensure_backup_available()?;
+    restore_for_edition_inner(zip_path, game_root, expected_edition)
+}
+
+fn restore_for_edition_inner(
+    zip_path: &Path,
+    game_root: &Path,
+    expected_edition: GameEdition,
+) -> CoreResult<()> {
     crate::providers::ensure_game_root_available(game_root)?;
     if expected_edition == GameEdition::Enhanced {
         crate::providers::ensure_mode_available("enhanced")?;
@@ -288,20 +318,117 @@ fn zip_err(context: &'static str) -> impl Fn(zip::result::ZipError) -> CoreError
 mod tests {
     use super::*;
 
+    // OpenAI-Codex_test_review: Exercise the retained implementation independently of the pause.
+    fn create(game_root: &Path, backup_root: &Path) -> CoreResult<PathBuf> {
+        create_with_edition_inner(game_root, backup_root, None)
+    }
+
+    fn create_for_edition(
+        game_root: &Path,
+        backup_root: &Path,
+        edition: GameEdition,
+    ) -> CoreResult<PathBuf> {
+        create_with_edition_inner(game_root, backup_root, Some(edition))
+    }
+
+    fn list(backup_root: &Path) -> CoreResult<Vec<PathBuf>> {
+        list_inner(backup_root)
+    }
+
+    fn list_for_edition(backup_root: &Path, edition: GameEdition) -> CoreResult<EditionBackupList> {
+        list_for_edition_inner(backup_root, edition)
+    }
+
+    fn restore(zip_path: &Path, game_root: &Path) -> CoreResult<()> {
+        restore_inner(zip_path, game_root)
+    }
+
+    fn restore_for_edition(
+        zip_path: &Path,
+        game_root: &Path,
+        edition: GameEdition,
+    ) -> CoreResult<()> {
+        restore_for_edition_inner(zip_path, game_root, edition)
+    }
+
     #[test]
     fn pending_backup_operations_do_not_create_target_directories() {
         let dir = tempfile::tempdir().unwrap();
         let game = dir.path().join("game");
         let backups = dir.path().join("backups");
-        assert!(create_for_edition(&game, &backups, GameEdition::Enhanced).is_err());
+        assert!(matches!(
+            super::create_for_edition(&game, &backups, GameEdition::Enhanced),
+            Err(CoreError::BackupUnavailable)
+        ));
         assert!(!backups.exists());
-        assert!(restore_for_edition(
-            &dir.path().join("missing.zip"),
-            &game,
-            GameEdition::Enhanced
-        )
-        .is_err());
+        assert!(matches!(
+            super::restore_for_edition(
+                &dir.path().join("missing.zip"),
+                &game,
+                GameEdition::Enhanced
+            ),
+            Err(CoreError::BackupUnavailable)
+        ));
         assert!(!game.exists());
+        assert!(matches!(
+            super::create(&game, &backups),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::list(&backups),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::list_for_edition(&backups, GameEdition::Legacy),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::restore(&dir.path().join("missing.zip"), &game),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(!backups.exists());
+        assert!(!game.exists());
+    }
+
+    // OpenAI-Codex_test_review: Paused operations preserve existing archive and game bytes.
+    #[test]
+    fn pending_backup_operations_preserve_existing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let backups = dir.path().join("backups");
+        let sentinel = game.join("mods/sentinel.asi");
+        let archive = backups.join("full/existing.zip");
+        std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&sentinel, b"game sentinel").unwrap();
+        std::fs::write(&archive, b"archive sentinel").unwrap();
+
+        assert!(matches!(
+            super::create(&game, &backups),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::create_for_edition(&game, &backups, GameEdition::Legacy),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::list(&backups),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::list_for_edition(&backups, GameEdition::Legacy),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::restore(&archive, &game),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert!(matches!(
+            super::restore_for_edition(&archive, &game, GameEdition::Legacy),
+            Err(CoreError::BackupUnavailable)
+        ));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"game sentinel");
+        assert_eq!(std::fs::read(&archive).unwrap(), b"archive sentinel");
     }
 
     #[test]

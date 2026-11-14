@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Add source tests for unavailable classification and full-backup entry points, checking selected stored values and existing backup/game files while retaining mode, edition and backup safety assertions through private helpers. These tests have not been executed. <!-- OpenAI-Codex -->
+
 - Add a separate `v1.0.0-beta` workflow configured to publish without GitHub draft or pre-release flags after shared CI and Windows/Linux builds, then verify uploaded assets and SHA-256 files. The application and installer numeric version remains `1.0.0`; a later same-version final release may not be reported as an update, and Windows same-version installation or upgrade is unverified. The public release may be incomplete while uploads are in progress or if they fail. The new workflow had not run when this change was prepared. <!-- OpenAI-Codex -->
 
 - Mark mod classification and backup as paused and pending further development. Their existing code paths were not disabled by this documentation update, which does not change or remove existing classifications, backups, or files. <!-- OpenAI-Codex_index_review -->

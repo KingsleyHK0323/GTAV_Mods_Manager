@@ -84,6 +84,11 @@ pub fn list_mods(
 /// check something they have already checked.
 pub fn set_mod_mode_impl(conn: &Connection, mod_id: i64, mode: &str) -> Result<(), String> {
     ensure_classification_available()?;
+    set_mod_mode_inner(conn, mod_id, mode)
+}
+
+// OpenAI-Codex_test_review: Preserve coverage while the public command is paused.
+fn set_mod_mode_inner(conn: &Connection, mod_id: i64, mode: &str) -> Result<(), String> {
     let page = crate::page_mode::PageMode::parse(mode)?;
     page.ensure_available()?;
     gtavmm_core::providers::ensure_installed_mod_available(conn, mod_id)
@@ -823,10 +828,7 @@ fn backup_warning_failure(language: &str, failure: BackupWarningFailure) -> Stri
 
 // OpenAI-Codex_backup_flow: Show filtered, bounded labels rather than complete paths.
 fn backup_warning_label(input: &str) -> String {
-    let leaf = input
-        .rsplit(['/', '\\', ':'])
-        .next()
-        .unwrap_or("");
+    let leaf = input.rsplit(['/', '\\', ':']).next().unwrap_or("");
     let mut label = String::new();
     let mut displayed = 0usize;
     let mut truncated = false;
@@ -3453,7 +3455,10 @@ mod tests {
 
         let visible = "a".repeat(80);
         assert_eq!(backup_warning_label(&format!("{visible}{bidi}")), visible);
-        assert_eq!(backup_warning_label(&format!("{visible}{bidi}b")), format!("{visible}…"));
+        assert_eq!(
+            backup_warning_label(&format!("{visible}{bidi}b")),
+            format!("{visible}…")
+        );
     }
 
     // OpenAI-Codex: Draft preparation never reads credentials or makes a request.
@@ -4517,7 +4522,25 @@ mod tests {
         .unwrap();
         let id = conn.last_insert_rowid();
 
-        set_mod_mode_impl(&conn, id, "legacy-lspdfr").unwrap();
+        let err = set_mod_mode_impl(&conn, id, "legacy-lspdfr").unwrap_err();
+        assert_eq!(err, "Mod classification is under development.");
+        let category_before: Option<String> = conn
+            .query_row("SELECT category FROM installed_mod WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let category_err = set_mod_category_impl(&conn, id, "callouts").unwrap_err();
+        assert_eq!(category_err, "Mod classification is under development.");
+        let category_after: Option<String> = conn
+            .query_row("SELECT category FROM installed_mod WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(category_after, category_before);
+        let unchanged = list_mods_impl(&conn, Some("legacy-sp")).unwrap();
+        assert_eq!(unchanged.len(), 1);
+        assert!(unchanged[0].mode_inferred);
+        set_mod_mode_inner(&conn, id, "legacy-lspdfr").unwrap();
 
         let moved = list_mods_impl(&conn, Some("legacy-lspdfr")).unwrap();
         assert_eq!(moved.len(), 1);
@@ -4533,7 +4556,11 @@ mod tests {
             [],
         ).unwrap();
         let id = conn.last_insert_rowid();
-        assert!(set_mod_mode_impl(&conn, id, "legacy-sp").is_err());
+        let error = set_mod_mode_inner(&conn, id, "legacy-sp").unwrap_err();
+        assert!(
+            error.contains("FiveM support is under development"),
+            "{error}"
+        );
         let mode: String = conn
             .query_row(
                 "SELECT mode FROM installed_mod WHERE id = ?1",
@@ -4554,8 +4581,19 @@ mod tests {
         )
         .unwrap();
         let id = conn.last_insert_rowid();
-        assert!(set_mod_mode_impl(&conn, id, "not-a-page").is_err());
-        assert!(set_mod_mode_impl(&conn, 9999, "legacy-sp").is_err());
+        let invalid = set_mod_mode_inner(&conn, id, "not-a-page").unwrap_err();
+        assert_eq!(invalid, "unknown page mode: not-a-page");
+        let missing = set_mod_mode_inner(&conn, 9999, "legacy-sp").unwrap_err();
+        assert!(
+            missing.contains("no installed mod with id 9999"),
+            "{missing}"
+        );
+        let mode: String = conn
+            .query_row("SELECT mode FROM installed_mod WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(mode, "legacy-sp");
     }
 
     // OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code.
