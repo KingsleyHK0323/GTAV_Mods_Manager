@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.approved_sha }}
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
 
       - name: Set up Node.js
@@ -59,10 +59,11 @@ jobs:
           import tomllib
 
           base = '678137806e4b88dc9850c6acb61475ace23bac73'
+          expected_parent = 'bc4726d86e8ada9a7c1195b2b8ebe1333b5d5778'
           revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
-          if revision != os.environ['APPROVED_SHA'] or parent != base:
-              raise RuntimeError('The reviewed resolver commit or its product parent changed.')
+          if revision != os.environ['APPROVED_SHA'] or parent != expected_parent:
+              raise RuntimeError('The reviewed resolver commit or its workflow parent changed.')
           changed = set(subprocess.check_output(
               ['git', 'diff', '--name-only', base + '..HEAD'], text=True).splitlines())
           if changed != {'.github/workflows/tauri-npm-lock-resolve.yml', 'Change Log.md'}:
@@ -97,7 +98,8 @@ jobs:
           root.mkdir(exist_ok=False)
           (root / 'before-package.json').write_bytes(package_bytes)
           (root / 'before-package-lock.json').write_bytes(lock_bytes)
-          snapshot = {'source_sha': revision, 'product_parent_sha': parent,
+          snapshot = {'source_sha': revision, 'product_baseline_sha': base,
+                      'workflow_parent_sha': parent,
                       'cargo_lock_sha256': hashlib.sha256(cargo_bytes).hexdigest()}
           (root / 'baseline.json').write_text(json.dumps(snapshot, indent=2) + '\n', encoding='utf-8')
 
@@ -148,6 +150,40 @@ jobs:
           plugins = {'@tauri-apps/plugin-opener': '^2.12.0',
                      '@tauri-apps/plugin-dialog': '^2.11.0'}
 
+          # OpenAI-Codex: Preserve JSON types and report bounded paths without values.
+          def same_json(left, right):
+              return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+          def differing_paths(expected, actual, root, limit):
+              result = []
+              truncated = False
+
+              def record(path):
+                  nonlocal truncated
+                  if len(result) < limit:
+                      result.append(path)
+                  else:
+                      truncated = True
+
+              def visit(left, right, path):
+                  if truncated:
+                      return
+                  if isinstance(left, dict) and isinstance(right, dict):
+                      for key in sorted(set(left) | set(right)):
+                          escaped = key.replace('~', '~0').replace('/', '~1')
+                          child = path + '/' + escaped
+                          if key not in left or key not in right:
+                              record(child)
+                          else:
+                              visit(left[key], right[key], child)
+                          if truncated:
+                              return
+                  elif not same_json(left, right):
+                      record(path)
+
+              visit(expected, actual, root)
+              return {'paths': result, 'truncated': truncated}
+
           expected_package = copy.deepcopy(before_package)
           expected_lock = copy.deepcopy(before_lock)
           for name, api_constraint in plugins.items():
@@ -171,7 +207,11 @@ jobs:
               if len(digest) != 64:
                   raise RuntimeError('A resolved npm integrity value has an unexpected length.')
               expected_lock['packages'][key] = item
-          if package != expected_package or lock != expected_lock:
+          if not same_json(package, expected_package) or not same_json(lock, expected_lock):
+              package_diff = differing_paths(expected_package, package, 'package', 64)
+              lock_diff = differing_paths(expected_lock, lock, 'lock', 64 - len(package_diff['paths']))
+              print('package_diff_paths=' + json.dumps(package_diff, ensure_ascii=True))
+              print('lock_diff_paths=' + json.dumps(lock_diff, ensure_ascii=True))
               raise RuntimeError('The candidate includes unrelated package or lock changes.')
           if lock['packages']['node_modules/@tauri-apps/api']['version'] != '2.12.4':
               raise RuntimeError('The Tauri npm API version changed.')
@@ -189,7 +229,8 @@ jobs:
           (output / 'package-lock.json').write_bytes(lock_bytes)
           summary = {
               'source_sha': baseline['source_sha'],
-              'product_parent_sha': baseline['product_parent_sha'],
+              'product_baseline_sha': baseline['product_baseline_sha'],
+              'workflow_parent_sha': baseline['workflow_parent_sha'],
               'node_version': os.environ['RESOLVER_NODE_VERSION'],
               'npm_version': os.environ['RESOLVER_NPM_VERSION'],
               'plugin_versions': {name: '2.7.2' for name in plugins},

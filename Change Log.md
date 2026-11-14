@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Report bounded JSON paths without values when the npm resolver rejects unrelated candidate changes; the resolver still rejects the candidate and uploads nothing on that failure. <!-- OpenAI-Codex -->
+
 - Add a manually dispatched GitHub-hosted Windows npm resolver with repository read-only permissions to generate review-only Tauri plugin package and lock candidates; no candidate has been adopted. <!-- OpenAI-Codex -->
 
 - Reserve numbered install backup slots with exclusive creation and copy through the same handle before recording an overwrite. Copy or permission errors may leave an unrecorded new slot without identifying its path; path races and full Windows security metadata remain unresolved. Production backup remains paused. Scoped test-only overrides exercise legacy cases and do not establish production availability; remote validation is pending. <!-- OpenAI-Codex -->
