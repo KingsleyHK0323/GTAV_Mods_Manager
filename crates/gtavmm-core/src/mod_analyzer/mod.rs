@@ -987,22 +987,46 @@ mod tests {
 
         let legacy = ArchiveFamily::Rar15To40;
         assert!(rar_entry_is_link(
-            false, legacy, AttrSource::Unix, 0o120777, false
+            false,
+            legacy,
+            AttrSource::Unix,
+            0o120777,
+            false
         ));
         assert!(rar_entry_is_link(
-            false, legacy, AttrSource::Unix, 0o120000, false
+            false,
+            legacy,
+            AttrSource::Unix,
+            0o120000,
+            false
         ));
         assert!(!rar_entry_is_link(
-            false, legacy, AttrSource::Unix, 0o100777, false
+            false,
+            legacy,
+            AttrSource::Unix,
+            0o100777,
+            false
         ));
         assert!(!rar_entry_is_link(
-            false, legacy, AttrSource::Dos, 0o120777, false
+            false,
+            legacy,
+            AttrSource::Dos,
+            0o120777,
+            false
         ));
         assert!(!rar_entry_is_link(
-            false, legacy, AttrSource::Unknown, 0o120777, false
+            false,
+            legacy,
+            AttrSource::Unknown,
+            0o120777,
+            false
         ));
         assert!(!rar_entry_is_link(
-            false, legacy, AttrSource::Unix, 0o120777, true
+            false,
+            legacy,
+            AttrSource::Unix,
+            0o120777,
+            true
         ));
         assert!(!rar_entry_is_link(
             false,
@@ -1012,7 +1036,11 @@ mod tests {
             false
         ));
         assert!(!rar_entry_is_link(
-            false, legacy, AttrSource::Unix, 0o1120777, false
+            false,
+            legacy,
+            AttrSource::Unix,
+            0o1120777,
+            false
         ));
         assert!(rar_entry_is_link(
             true,
