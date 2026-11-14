@@ -318,3 +318,20 @@ test('draft creation verifies the existing tag and never requests publication', 
   assert.equal(payload.prerelease, false);
   assert.equal(calls.some(({ options }) => options.method === 'PATCH' || options.method === 'PUT'), false);
 });
+
+// OpenAI-Codex_release_impl: Preserve the Windows installer and checksum release gate.
+test('Windows-only release requires an installer and its checksum', async () => {
+  const { collectExpectedAssets } = await import('./prepare-release.mjs');
+  const installer = { name: 'setup.exe', size: 3, sha256: 'a'.repeat(64) };
+  const calls = [];
+  const assets = await collectExpectedAssets('fixture-root', async (directory, extensions) => {
+    calls.push({ directory, extensions });
+    return [installer];
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].directory, /installers-windows$/);
+  assert.deepEqual(calls[0].extensions, ['.msi', '.exe']);
+  assert.deepEqual(assets.map((asset) => asset.name), ['setup.exe', 'SHA256SUMS-windows.txt']);
+  assert.match(assets[1].data.toString('utf8'), /^a{64}  setup\.exe\n$/);
+  await assert.rejects(collectExpectedAssets('fixture-root', async () => []), /Windows installer artifact is missing/);
+});

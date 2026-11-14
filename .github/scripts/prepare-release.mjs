@@ -202,11 +202,11 @@ function checksumAsset(name, installers) {
   return { name, size: data.length, sha256: createHash('sha256').update(data).digest('hex'), data };
 }
 
-async function collectExpectedAssets(root) {
-  const windows = await collectInstallerFiles(path.join(root, 'installers-windows'), ['.msi', '.exe']);
-  const linux = await collectInstallerFiles(path.join(root, 'installers-linux'), ['.deb', '.rpm']);
-  const assets = [...windows, ...linux, checksumAsset('SHA256SUMS-windows.txt', windows),
-    checksumAsset('SHA256SUMS-linux.txt', linux)];
+// OpenAI-Codex_release_impl: Collect and verify Windows-only release assets.
+export async function collectExpectedAssets(root, collect = collectInstallerFiles) {
+  const windows = await collect(path.join(root, 'installers-windows'), ['.msi', '.exe']);
+  if (!Array.isArray(windows) || windows.length === 0) throw new Error('A Windows installer artifact is missing.');
+  const assets = [...windows, checksumAsset('SHA256SUMS-windows.txt', windows)];
   planAssetChanges(assets, []);
   return assets;
 }

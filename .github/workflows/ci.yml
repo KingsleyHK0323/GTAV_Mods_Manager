@@ -14,8 +14,9 @@ jobs:
   build-and-test:
     strategy:
       fail-fast: false
+      # OpenAI-Codex_release_impl: Validate the Windows-only product.
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
 
     steps:

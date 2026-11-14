@@ -99,6 +99,8 @@ Code: PolyForm Noncommercial License · Website content: CC BY-NC-SA
 
 GTAV Mods Manager is a source-available, non-commercial desktop app for installing, translating and managing GTA V mods. It is not affiliated with Rockstar Games or Take-Two Interactive.
 
+Windows is the only supported operating system. <!-- OpenAI-Codex -->
+
 Current development focuses on GTA V Legacy single-player and Legacy LSPDFR. GTA V Enhanced and FiveM (client, server tools, and conversion) are under development and blocked by the backend. Existing settings, mod records, and pending-mode recycle-bin snapshots are retained. The UI will be updated separately. OIV packages remain unsupported; use OpenIV to install them.
 
 <!-- OpenAI-Codex_v1_removal_review -->
@@ -170,7 +172,7 @@ The preceding checksum-file guidance applies only where such a file exists.
 
 Some previously published releases do not include a separate checksum file. The updated release workflow prepares a draft, verifies its installer assets and checksums, and leaves publication to a human reviewer. Before publishing, compare the draft assets with the workflow run's recorded names, sizes and SHA-256 digests; another writer can change the draft after verification. The release workflow itself, actual asset upload and manual publication have not been executed; the mocked release-asset tests ran in the CI described below.
 
-The `v1.0.0-beta` tag is configured for a separate GitHub-hosted workflow that creates a public Release with the GitHub draft and pre-release flags disabled after shared CI and the Windows and Linux installer builds. The source configures the application and installer numeric version as `1.0.0`; the existing update comparison will not identify a later final `v1.0.0` as newer, and Windows installation or upgrade over the same numeric version has not been verified. GitHub may mark the public beta as Latest. The release becomes visible before assets finish uploading, so an interruption can leave it incomplete; verify the installers against the attached SHA-256 files. At the time of this source change, this workflow had not been exercised end-to-end. <!-- OpenAI-Codex -->
+The `v1.0.0-beta` tag is configured for a separate GitHub-hosted workflow that creates a public Release with the GitHub draft and pre-release flags disabled after shared CI and the Windows installer build. The source configures the application and installer numeric version as `1.0.0`; the existing update comparison will not identify a later final `v1.0.0` as newer, and Windows installation or upgrade over the same numeric version has not been verified. GitHub may mark the public beta as Latest. The release becomes visible before assets finish uploading, so an interruption can leave it incomplete; verify the installers against the attached SHA-256 file. At the time of this source change, this workflow had not been exercised end-to-end. <!-- OpenAI-Codex -->
 
 For source revision `2cfe3fac5fe36f9747fe26ce0e5a56a8e3f7b155`, [GitHub-hosted CI run 41637074847](https://github.com/KingsleyHK0323/GTAV_Mods_Manager/actions/runs/41637074847) passed on Windows and Ubuntu, including 18 mocked release-asset tests and the historical migration fixture on each platform. The four Windows native probes remained ignored. The release workflow itself and actual asset upload or manual publication were not executed. <!-- OpenAI-Codex -->
 
