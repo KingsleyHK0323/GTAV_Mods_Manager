@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Add a separate `v1.0.0-beta` workflow configured to publish without GitHub draft or pre-release flags after shared CI and Windows/Linux builds, then verify uploaded assets and SHA-256 files. The application and installer numeric version remains `1.0.0`; a later same-version final release may not be reported as an update, and Windows same-version installation or upgrade is unverified. The public release may be incomplete while uploads are in progress or if they fail. The new workflow had not run when this change was prepared. <!-- OpenAI-Codex -->
+
 - Mark mod classification and backup as paused and pending further development. Their existing code paths were not disabled by this documentation update, which does not change or remove existing classifications, backups, or files. <!-- OpenAI-Codex_index_review -->
 
 - Update the paused status: App manual classification editing and category filtering, and App and CLI full-backup creation, listing, and restoration are unavailable while under development. With automatic backup enabled, an install or reinstall detected to require a backup is refused; a clean install with no backup needed may proceed subject to other checks. An existing check-then-write race can still overwrite a file that appears after the check. Existing classification records and backup files are retained. These source changes have not been tested. <!-- OpenAI-Codex_index_review -->

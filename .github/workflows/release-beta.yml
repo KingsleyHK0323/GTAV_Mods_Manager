@@ -1,0 +1,301 @@
+# OpenAI-Codex_release_impl: Publish the requested beta tag without a draft or prerelease flag.
+name: Beta Release
+
+# OpenAI-Codex_Responsible: Source_Code
+# OpenAI-Codex: Validate beta tags, reuse CI, build installers with read-only permissions,
+# and prepare a public beta release after both platform artifacts and checksums are ready.
+# Builds Tauri installers (Windows .msi/.exe, Linux .deb/.rpm) for gtavmm-app.
+# Installers are unsigned; Windows may show a SmartScreen warning on first run.
+
+on:
+  push:
+    tags:
+      - "v1.0.0-beta"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    name: Validate beta release tag and versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # OpenAI-Codex_release_impl: Pin the same Node.js version used by release jobs.
+      - name: Set up Node.js for beta validation
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      # OpenAI-Codex_release_impl: Verify beta publication flags before building.
+      - name: Test beta release logic
+        run: node --test .github/scripts/prepare-beta-release.test.mjs
+
+      - name: Validate tag and application versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const tag = process.env.RELEASE_TAG || "";
+          const match = /^v1\.0\.0-beta$/.exec(tag);
+          if (!match) {
+            throw new Error(`Release tag must be a v1.0.0-beta version: ${tag}`);
+          }
+
+          const packageVersion = JSON.parse(
+            fs.readFileSync("crates/gtavmm-app/package.json", "utf8"),
+          ).version;
+          const tauriVersion = JSON.parse(
+            fs.readFileSync("crates/gtavmm-app/src-tauri/tauri.conf.json", "utf8"),
+          ).version;
+
+          const cargoLines = fs.readFileSync("Cargo.toml", "utf8").split(/\r?\n/);
+          let inWorkspacePackage = false;
+          let cargoVersion;
+          for (const line of cargoLines) {
+            const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+            if (section) {
+              inWorkspacePackage = section[1] === "workspace.package";
+            }
+            if (inWorkspacePackage) {
+              const version = /^\s*version\s*=\s*"([^"]+)"/.exec(line);
+              if (version) {
+                cargoVersion = version[1];
+                break;
+              }
+            }
+          }
+
+          const expectedVersion = "1.0.0";
+          const versions = {
+            "Cargo workspace": cargoVersion,
+            "npm package": packageVersion,
+            "Tauri configuration": tauriVersion,
+          };
+
+          for (const [source, version] of Object.entries(versions)) {
+            if (version !== expectedVersion) {
+              throw new Error(
+                `${source} version ${version ?? "missing"} does not match release tag ${tag}`,
+              );
+            }
+          }
+
+          console.log(`Validated beta release ${tag} against all application versions.`);
+          NODE
+
+  test-gate:
+    needs: validate-release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build-windows:
+    needs: test-gate
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: crates/gtavmm-app/src-tauri
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/gtavmm-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/gtavmm-app
+        run: npm ci
+
+      - name: Build Windows Tauri installers
+        id: tauri_build
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        with:
+          projectPath: crates/gtavmm-app
+
+      - name: Collect Windows installer files
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri_build.outputs.artifactPaths }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
+          const installers = artifactPaths
+            .filter((file) => [".msi", ".exe"].includes(path.extname(file).toLowerCase()))
+            .sort();
+
+          if (installers.length === 0) {
+            throw new Error("Tauri did not report any Windows installer artifacts.");
+          }
+
+          const names = new Set();
+          const outputDirectory = path.join(process.env.RUNNER_TEMP, "release-assets");
+          fs.mkdirSync(outputDirectory, { recursive: true });
+
+          for (const file of installers) {
+            const name = path.basename(file);
+            const key = name.toLowerCase();
+            if (names.has(key)) {
+              throw new Error(`Duplicate Windows installer filename: ${name}`);
+            }
+            names.add(key);
+            fs.copyFileSync(file, path.join(outputDirectory, name));
+          }
+          NODE
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installers-windows
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  build-linux:
+    needs: test-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: crates/gtavmm-app/src-tauri
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/gtavmm-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/gtavmm-app
+        run: npm ci
+
+      - name: Build Linux Tauri installers
+        id: tauri_build
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        with:
+          projectPath: crates/gtavmm-app
+          # Exclude AppImage because the release policy is installer-only.
+          args: --bundles deb,rpm
+
+      - name: Collect Linux installer files
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri_build.outputs.artifactPaths }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
+          const installers = artifactPaths
+            .filter((file) => [".deb", ".rpm"].includes(path.extname(file).toLowerCase()))
+            .sort();
+
+          if (installers.length === 0) {
+            throw new Error("Tauri did not report any Linux installer artifacts.");
+          }
+
+          const names = new Set();
+          const outputDirectory = path.join(process.env.RUNNER_TEMP, "release-assets");
+          fs.mkdirSync(outputDirectory, { recursive: true });
+
+          for (const file of installers) {
+            const name = path.basename(file);
+            if (names.has(name)) {
+              throw new Error(`Duplicate Linux installer filename: ${name}`);
+            }
+            names.add(name);
+            fs.copyFileSync(file, path.join(outputDirectory, name));
+          }
+          NODE
+
+      - name: Upload Linux installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installers-linux
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish-release:
+    name: Prepare verified public beta release
+    needs:
+      - build-windows
+      - build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # OpenAI-Codex: Load the reviewed script from the exact release commit.
+      - name: Checkout release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Attach and verify installers in a public beta release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          assets_directory="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets_directory/installers-windows" "$assets_directory/installers-linux"
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GH_REPOSITORY" \
+            --name installers-windows \
+            --dir "$assets_directory/installers-windows"
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GH_REPOSITORY" \
+            --name installers-linux \
+            --dir "$assets_directory/installers-linux"
+
+          node .github/scripts/prepare-beta-release.mjs
