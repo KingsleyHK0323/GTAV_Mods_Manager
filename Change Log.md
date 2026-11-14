@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+- Add a manually dispatched GitHub-hosted Windows installer preflight bound to the exact reviewed dispatch commit; it does not publish or upload installers and has not yet run. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+
+- Replace the writer-only rars legacy-link API call with equivalent rars 0.12.3 metadata conditions while retaining redirection rejection, and add focused metadata boundary assertions. This change has not been built or tested. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+
 - Prepare a manually dispatched, read-only GitHub-hosted Windows installer preflight for the reviewed product revision; it does not publish or upload installers and does not test installation. <!-- OpenAI-Codex -->
 
 - Pin the Tauri opener and dialog npm packages to 2.7.2 to match the Rust plugin versions. Candidate registry metadata was resolved on GitHub-hosted Windows; npm ci, installer build, and runtime behavior remain unverified. <!-- OpenAI-Codex -->

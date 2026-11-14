@@ -689,6 +689,22 @@ fn is_reserved_windows_component(component: &str) -> bool {
         })
 }
 
+// OpenAI-Codex_test_review: Match rars 0.12.3's legacy link check without its write feature.
+// Source: https://github.com/bitplane/rars/blob/v0.12.3/crates/rars/src/rewrite.rs
+fn rar_entry_is_link(
+    is_redirection: bool,
+    family: rars::ArchiveFamily,
+    attr_source: rars::AttrSource,
+    file_attr: u64,
+    is_directory: bool,
+) -> bool {
+    is_redirection
+        || (family == rars::ArchiveFamily::Rar15To40
+            && attr_source == rars::AttrSource::Unix
+            && file_attr & !0o7777 == 0o120000
+            && !is_directory)
+}
+
 fn extract_rar(input: &Path) -> CoreResult<(tempfile::TempDir, Option<String>)> {
     let mut source = std::fs::File::open(input)?;
     let source_len = source.metadata()?.len();
@@ -725,7 +741,13 @@ fn extract_rar(input: &Path) -> CoreResult<(tempfile::TempDir, Option<String>)> 
                 "split or multi-volume entries are not supported",
             ));
         }
-        if member.meta.is_redirection || member.is_legacy_unix_symlink() {
+        if rar_entry_is_link(
+            member.meta.is_redirection,
+            member.meta.family,
+            member.meta.attr_source(),
+            member.meta.file_attr,
+            member.meta.is_directory,
+        ) {
             return Err(unsupported_rar(
                 "symbolic links and redirected entries are not supported",
             ));
@@ -957,6 +979,49 @@ fn classify_oiv(_input: &Path) -> CoreResult<ModPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAI-Codex_test_review: Preserve legacy link rejection without optional write APIs.
+    #[test]
+    fn rar_link_detection_matches_legacy_metadata_and_redirections() {
+        use rars::{ArchiveFamily, AttrSource};
+
+        let legacy = ArchiveFamily::Rar15To40;
+        assert!(rar_entry_is_link(
+            false, legacy, AttrSource::Unix, 0o120777, false
+        ));
+        assert!(rar_entry_is_link(
+            false, legacy, AttrSource::Unix, 0o120000, false
+        ));
+        assert!(!rar_entry_is_link(
+            false, legacy, AttrSource::Unix, 0o100777, false
+        ));
+        assert!(!rar_entry_is_link(
+            false, legacy, AttrSource::Dos, 0o120777, false
+        ));
+        assert!(!rar_entry_is_link(
+            false, legacy, AttrSource::Unknown, 0o120777, false
+        ));
+        assert!(!rar_entry_is_link(
+            false, legacy, AttrSource::Unix, 0o120777, true
+        ));
+        assert!(!rar_entry_is_link(
+            false,
+            ArchiveFamily::Rar50Plus,
+            AttrSource::Unix,
+            0o120777,
+            false
+        ));
+        assert!(!rar_entry_is_link(
+            false, legacy, AttrSource::Unix, 0o1120777, false
+        ));
+        assert!(rar_entry_is_link(
+            true,
+            ArchiveFamily::Rar50Plus,
+            AttrSource::Dos,
+            0,
+            false
+        ));
+    }
     use crate::providers::{
         EnhancedLspdfrProvider, LegacyLspdfrProvider, LegacySpProvider, ModeProvider,
     };
