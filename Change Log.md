@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Clarify the public beta release notice: with automatic backup enabled, an install or reinstall detected to require backup of an existing target is refused; a check-then-write race remains. <!-- OpenAI-Codex -->
+
 - Limit a Clippy needless-bool exception to the non-Windows managed-DLL path check while preserving Windows reparse-point detection. <!-- OpenAI-Codex -->
 
 - Run mocked public beta release checks in shared CI on both platforms, including the release test gate; these checks do not make live GitHub requests. This CI change has not yet run. <!-- OpenAI-Codex -->

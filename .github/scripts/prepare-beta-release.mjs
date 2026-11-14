@@ -325,7 +325,8 @@ function createGithubApi({ repository, token, tag, commit }) {
       // OpenAI-Codex_release_impl: Prevent a missing tag from resolving to the default branch.
       target_commitish: commit,
       generate_release_notes: true,
-      body: 'Windows installers are unsigned and may show a SmartScreen warning on first run.' + '\n\nBeta build: application and installer version is 1.0.0. Categorization and backup are under development and unavailable.' + '\n\nManual category editing and category filtering are disabled. Full backup creation, listing and restore are disabled. A clean installation may still be available.' + '\n\nThe app reports version 1.0.0. Version-number comparison alone will not indicate a future stable release with the same version number. Windows installation or upgrade over another 1.0.0 build has not been verified.',
+      // OpenAI-Codex: Disclose the backup restriction and remaining write race.
+      body: 'Windows installers are unsigned and may show a SmartScreen warning on first run.' + '\n\nBeta build: application and installer version is 1.0.0. Categorization and backup are under development and unavailable.' + '\n\nManual category editing and category filtering are disabled. Full backup creation, listing and restore are disabled. A clean installation may still be available.' + '\n\nThe app reports version 1.0.0. Version-number comparison alone will not indicate a future stable release with the same version number. Windows installation or upgrade over another 1.0.0 build has not been verified.' + '\n\nWith automatic backup enabled, installation or reinstallation is refused when an existing target is detected to require a backup. An existing check-then-write race can still overwrite a file that appears after the check.',
     } });
     validateRelease(release, release.id, tag);
     return release;

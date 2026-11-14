@@ -37,6 +37,9 @@ test('creation verifies the tag and directly requests a public non-prerelease', 
   assert.equal(payload.target_commitish, commit);
   assert.equal(payload.draft, false);
   assert.equal(payload.prerelease, false);
+  // OpenAI-Codex: Verify the published backup limitation in the actual POST body.
+  assert.ok(payload.body.includes('With automatic backup enabled, installation or reinstallation is refused when an existing target is detected to require a backup.'));
+  assert.ok(payload.body.includes('An existing check-then-write race can still overwrite a file that appears after the check.'));
   assert.equal(calls.some(({ options }) => options.method === 'PATCH' || options.method === 'PUT'), false);
 });
 
