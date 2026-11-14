@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Preserve five existing platform libc metadata fields only if npm omits all five and no unrelated changes occur; assemble candidates from baseline bytes and npm-generated plugin records for review. <!-- OpenAI-Codex -->
+
 - Report bounded JSON paths without values when the npm resolver rejects unrelated candidate changes; the resolver still rejects the candidate and uploads nothing on that failure. <!-- OpenAI-Codex -->
 
 - Add a manually dispatched GitHub-hosted Windows npm resolver with repository read-only permissions to generate review-only Tauri plugin package and lock candidates; no candidate has been adopted. <!-- OpenAI-Codex -->

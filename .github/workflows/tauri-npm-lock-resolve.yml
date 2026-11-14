@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.approved_sha }}
-          fetch-depth: 3
+          fetch-depth: 4
           persist-credentials: false
 
       - name: Set up Node.js
@@ -59,7 +59,7 @@ jobs:
           import tomllib
 
           base = '678137806e4b88dc9850c6acb61475ace23bac73'
-          expected_parent = 'bc4726d86e8ada9a7c1195b2b8ebe1333b5d5778'
+          expected_parent = '4f5be706d86d7622ee492483324b7ce06a304b42'
           revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
           if revision != os.environ['APPROVED_SHA'] or parent != expected_parent:
@@ -140,13 +140,15 @@ jobs:
           baseline = json.loads((root / 'baseline.json').read_text(encoding='utf-8'))
           if baseline['source_sha'] != os.environ['APPROVED_SHA']:
               raise RuntimeError('The baseline revision changed.')
-          before_package = json.loads((root / 'before-package.json').read_bytes())
-          before_lock = json.loads((root / 'before-package-lock.json').read_bytes())
+          before_package_bytes = (root / 'before-package.json').read_bytes()
+          before_lock_bytes = (root / 'before-package-lock.json').read_bytes()
+          before_package = json.loads(before_package_bytes)
+          before_lock = json.loads(before_lock_bytes)
           app = Path('crates/gtavmm-app')
-          package_bytes = (app / 'package.json').read_bytes()
-          lock_bytes = (app / 'package-lock.json').read_bytes()
-          package = json.loads(package_bytes)
-          lock = json.loads(lock_bytes)
+          generated_package_bytes = (app / 'package.json').read_bytes()
+          generated_lock_bytes = (app / 'package-lock.json').read_bytes()
+          package = json.loads(generated_package_bytes)
+          lock = json.loads(generated_lock_bytes)
           plugins = {'@tauri-apps/plugin-opener': '^2.12.0',
                      '@tauri-apps/plugin-dialog': '^2.11.0'}
 
@@ -197,6 +199,8 @@ jobs:
                   raise RuntimeError('A resolved npm plugin version or registry URL is unexpected.')
               if item.get('dependencies') != {'@tauri-apps/api': api_constraint}:
                   raise RuntimeError('A resolved npm plugin dependency changed unexpectedly.')
+              if item.get('hasInstallScript'):
+                  raise RuntimeError('A resolved npm plugin declares an install script.')
               integrity = item.get('integrity', '')
               if not integrity.startswith('sha512-'):
                   raise RuntimeError('A resolved npm plugin is missing SHA-512 integrity.')
@@ -207,12 +211,84 @@ jobs:
               if len(digest) != 64:
                   raise RuntimeError('A resolved npm integrity value has an unexpected length.')
               expected_lock['packages'][key] = item
-          if not same_json(package, expected_package) or not same_json(lock, expected_lock):
-              package_diff = differing_paths(expected_package, package, 'package', 64)
-              lock_diff = differing_paths(expected_lock, lock, 'lock', 64 - len(package_diff['paths']))
+          package_diff = differing_paths(expected_package, package, 'package', 64)
+          lock_diff = differing_paths(expected_lock, lock, 'lock', 64 - len(package_diff['paths']))
+          # OpenAI-Codex: Preserve only the five baseline libc fields npm omitted.
+          libc_packages = {
+              'node_modules/@tauri-apps/cli-linux-arm64-gnu': ['glibc'],
+              'node_modules/@tauri-apps/cli-linux-arm64-musl': ['musl'],
+              'node_modules/@tauri-apps/cli-linux-riscv64-gnu': ['glibc'],
+              'node_modules/@tauri-apps/cli-linux-x64-gnu': ['glibc'],
+              'node_modules/@tauri-apps/cli-linux-x64-musl': ['musl'],
+          }
+          expected_paths = {
+              'lock/packages/' + name.replace('~', '~0').replace('/', '~1') + '/libc'
+              for name in libc_packages
+          }
+          if (package_diff['paths'] or package_diff['truncated'] or lock_diff['truncated']
+                  or set(lock_diff['paths']) != expected_paths):
               print('package_diff_paths=' + json.dumps(package_diff, ensure_ascii=True))
               print('lock_diff_paths=' + json.dumps(lock_diff, ensure_ascii=True))
               raise RuntimeError('The candidate includes unrelated package or lock changes.')
+          restored = copy.deepcopy(lock)
+          for name, libc in libc_packages.items():
+              if (before_lock['packages'][name].get('libc') != libc
+                      or 'libc' in lock['packages'][name]):
+                  raise RuntimeError('An expected baseline libc field was not merely omitted.')
+              restored['packages'][name]['libc'] = copy.deepcopy(libc)
+          if not same_json(restored, expected_lock):
+              raise RuntimeError('Restoring the baseline libc fields left other differences.')
+
+          # OpenAI-Codex: Rebuild only approved fragments from npm and preserve other bytes.
+          def replace_once(text, old, new, changes):
+              if text.count(old) != 1:
+                  raise RuntimeError('An approved JSON fragment is missing or ambiguous.')
+              changes.append((old, new))
+              return text.replace(old, new, 1)
+
+          def replace_plugin_record(original, generated, name, changes):
+              marker = json.dumps('node_modules/' + name) + ': '
+              if original.count(marker) != 1 or generated.count(marker) != 1:
+                  raise RuntimeError('An npm plugin record is missing or ambiguous.')
+              original_start = original.index(marker) + len(marker)
+              generated_start = generated.index(marker) + len(marker)
+              _, original_end = json.JSONDecoder().raw_decode(original, original_start)
+              _, generated_end = json.JSONDecoder().raw_decode(generated, generated_start)
+              old = original[original_start:original_end]
+              new = generated[generated_start:generated_end]
+              newline = '\r\n' if '\r\n' in old else '\n'
+              new = new.replace('\r\n', '\n').replace('\n', newline)
+              return replace_once(original, old, new, changes)
+
+          def restore_and_check(text, changes, baseline_text):
+              for old, new in reversed(changes):
+                  if text.count(new) != 1:
+                      raise RuntimeError('An inverse JSON fragment is missing or ambiguous.')
+                  text = text.replace(new, old, 1)
+              if text != baseline_text:
+                  raise RuntimeError('Unrelated baseline JSON bytes changed.')
+
+          package_text = before_package_bytes.decode('utf-8')
+          lock_text = before_lock_bytes.decode('utf-8')
+          generated_lock_text = generated_lock_bytes.decode('utf-8')
+          package_changes = []
+          lock_changes = []
+          for name in plugins:
+              old = json.dumps(name) + ': ' + json.dumps(before_package['dependencies'][name])
+              new = json.dumps(name) + ': ' + json.dumps(package['dependencies'][name])
+              package_text = replace_once(package_text, old, new, package_changes)
+              old = json.dumps(name) + ': ' + json.dumps(before_lock['packages']['']['dependencies'][name])
+              new = json.dumps(name) + ': ' + json.dumps(lock['packages']['']['dependencies'][name])
+              lock_text = replace_once(lock_text, old, new, lock_changes)
+              lock_text = replace_plugin_record(lock_text, generated_lock_text, name, lock_changes)
+          restore_and_check(package_text, package_changes, before_package_bytes.decode('utf-8'))
+          restore_and_check(lock_text, lock_changes, before_lock_bytes.decode('utf-8'))
+          package_bytes = package_text.encode('utf-8')
+          lock_bytes = lock_text.encode('utf-8')
+          if not same_json(json.loads(package_bytes), expected_package):
+              raise RuntimeError('The assembled package manifest differs from the npm candidate.')
+          if not same_json(json.loads(lock_bytes), expected_lock):
+              raise RuntimeError('The assembled lock differs from the approved baseline and npm plugins.')
           if lock['packages']['node_modules/@tauri-apps/api']['version'] != '2.12.4':
               raise RuntimeError('The Tauri npm API version changed.')
           cargo_digest = hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest()
@@ -236,6 +312,9 @@ jobs:
               'plugin_versions': {name: '2.7.2' for name in plugins},
               'tauri_api_version': '2.12.4',
               'cargo_lock_sha256': cargo_digest,
+              'npm_generated_package_sha256': hashlib.sha256(generated_package_bytes).hexdigest(),
+              'npm_generated_lock_sha256': hashlib.sha256(generated_lock_bytes).hexdigest(),
+              'preserved_baseline_libc_packages': sorted(libc_packages),
               'package_json_sha256': hashlib.sha256(package_bytes).hexdigest(),
               'package_lock_sha256': hashlib.sha256(lock_bytes).hexdigest(),
           }
