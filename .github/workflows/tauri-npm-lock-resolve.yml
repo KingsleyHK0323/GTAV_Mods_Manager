@@ -1,0 +1,212 @@
+# OpenAI-Codex: Prepare a review-only npm lock candidate on GitHub-hosted Windows.
+name: Resolve Tauri npm plugin lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed Source_Code workflow commit (40 lowercase hex characters)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    if: github.repository == 'KingsleyHK0323/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      APPROVED_SHA: ${{ inputs.approved_sha }}
+      DISPATCH_SHA: ${{ github.sha }}
+    steps:
+      - name: Validate reviewed revision
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows') {
+            throw 'GitHub-hosted Windows is required.'
+          }
+          if ($env:APPROVED_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:APPROVED_SHA -cne $env:DISPATCH_SHA) {
+            throw 'Dispatch must match the exact reviewed Source_Code revision.'
+          }
+
+      - name: Checkout reviewed revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.approved_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20.20.2'
+
+      - name: Set up standard-library JSON parser
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Snapshot and validate baseline
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+
+          base = '678137806e4b88dc9850c6acb61475ace23bac73'
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
+          if revision != os.environ['APPROVED_SHA'] or parent != base:
+              raise RuntimeError('The reviewed resolver commit or its product parent changed.')
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only', base + '..HEAD'], text=True).splitlines())
+          if changed != {'.github/workflows/tauri-npm-lock-resolve.yml', 'Change Log.md'}:
+              raise RuntimeError('The resolver commit contains unexpected paths.')
+          if subprocess.check_output(
+                  ['git', 'status', '--porcelain', '--untracked-files=all'], text=True).strip():
+              raise RuntimeError('The checked-out workspace is not clean.')
+
+          app = Path('crates/gtavmm-app')
+          package_bytes = (app / 'package.json').read_bytes()
+          lock_bytes = (app / 'package-lock.json').read_bytes()
+          package = json.loads(package_bytes)
+          lock = json.loads(lock_bytes)
+          if lock.get('lockfileVersion') != 3:
+              raise RuntimeError('Expected npm lockfile version 3.')
+          expected = {'@tauri-apps/plugin-opener': '2.5.4',
+                      '@tauri-apps/plugin-dialog': '2.8.4'}
+          for name, version in expected.items():
+              if lock['packages']['node_modules/' + name]['version'] != version:
+                  raise RuntimeError('An initial npm plugin version changed.')
+          if lock['packages']['node_modules/@tauri-apps/api']['version'] != '2.12.4':
+              raise RuntimeError('The initial Tauri npm API version changed.')
+          cargo_bytes = Path('Cargo.lock').read_bytes()
+          cargo = tomllib.loads(cargo_bytes.decode('utf-8'))
+          for name in ('tauri-plugin-opener', 'tauri-plugin-dialog'):
+              matches = [item for item in cargo['package'] if item['name'] == name]
+              if len(matches) != 1 or matches[0]['version'] != '2.7.2':
+                  raise RuntimeError('A Rust plugin version changed.')
+
+          root = Path(os.environ['RUNNER_TEMP']) / (
+              'gtavmm-tauri-npm-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          root.mkdir(exist_ok=False)
+          (root / 'before-package.json').write_bytes(package_bytes)
+          (root / 'before-package-lock.json').write_bytes(lock_bytes)
+          snapshot = {'source_sha': revision, 'product_parent_sha': parent,
+                      'cargo_lock_sha256': hashlib.sha256(cargo_bytes).hexdigest()}
+          (root / 'baseline.json').write_text(json.dumps(snapshot, indent=2) + '\n', encoding='utf-8')
+
+      - name: Resolve only the npm lock candidate
+        working-directory: crates/gtavmm-app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:NPM_CONFIG_USERCONFIG = Join-Path $env:RUNNER_TEMP 'gtavmm-empty-user.npmrc'
+          $env:NPM_CONFIG_GLOBALCONFIG = Join-Path $env:RUNNER_TEMP 'gtavmm-empty-global.npmrc'
+          $env:NPM_CONFIG_CACHE = Join-Path $env:RUNNER_TEMP 'gtavmm-npm-cache'
+          $nodeVersion = (& node --version)
+          if ($LASTEXITCODE -ne 0 -or $nodeVersion -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'Could not determine the Node.js version.'
+          }
+          $npmVersion = (& npm --version)
+          if ($LASTEXITCODE -ne 0 -or $npmVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'Could not determine the npm version.'
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RESOLVER_NODE_VERSION=$nodeVersion"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RESOLVER_NPM_VERSION=$npmVersion"
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --save-exact --fetch-retries=0 --registry=https://registry.npmjs.org/ '@tauri-apps/plugin-opener@2.7.2' '@tauri-apps/plugin-dialog@2.7.2'
+          if ($LASTEXITCODE -ne 0) { throw 'npm lock resolution failed.' }
+
+      - name: Verify candidate scope and integrity metadata format
+        shell: python
+        run: |
+          import base64
+          import copy
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          root = Path(os.environ['RUNNER_TEMP']) / (
+              'gtavmm-tauri-npm-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          baseline = json.loads((root / 'baseline.json').read_text(encoding='utf-8'))
+          if baseline['source_sha'] != os.environ['APPROVED_SHA']:
+              raise RuntimeError('The baseline revision changed.')
+          before_package = json.loads((root / 'before-package.json').read_bytes())
+          before_lock = json.loads((root / 'before-package-lock.json').read_bytes())
+          app = Path('crates/gtavmm-app')
+          package_bytes = (app / 'package.json').read_bytes()
+          lock_bytes = (app / 'package-lock.json').read_bytes()
+          package = json.loads(package_bytes)
+          lock = json.loads(lock_bytes)
+          plugins = {'@tauri-apps/plugin-opener': '^2.12.0',
+                     '@tauri-apps/plugin-dialog': '^2.11.0'}
+
+          expected_package = copy.deepcopy(before_package)
+          expected_lock = copy.deepcopy(before_lock)
+          for name, api_constraint in plugins.items():
+              expected_package['dependencies'][name] = '2.7.2'
+              expected_lock['packages']['']['dependencies'][name] = '2.7.2'
+              key = 'node_modules/' + name
+              item = lock['packages'][key]
+              short = name.rsplit('/', 1)[-1]
+              expected_url = 'https://registry.npmjs.org/@tauri-apps/' + short + '/-/' + short + '-2.7.2.tgz'
+              if item.get('version') != '2.7.2' or item.get('resolved') != expected_url:
+                  raise RuntimeError('A resolved npm plugin version or registry URL is unexpected.')
+              if item.get('dependencies') != {'@tauri-apps/api': api_constraint}:
+                  raise RuntimeError('A resolved npm plugin dependency changed unexpectedly.')
+              integrity = item.get('integrity', '')
+              if not integrity.startswith('sha512-'):
+                  raise RuntimeError('A resolved npm plugin is missing SHA-512 integrity.')
+              try:
+                  digest = base64.b64decode(integrity[7:], validate=True)
+              except ValueError as error:
+                  raise RuntimeError('A resolved npm integrity value is malformed.') from error
+              if len(digest) != 64:
+                  raise RuntimeError('A resolved npm integrity value has an unexpected length.')
+              expected_lock['packages'][key] = item
+          if package != expected_package or lock != expected_lock:
+              raise RuntimeError('The candidate includes unrelated package or lock changes.')
+          if lock['packages']['node_modules/@tauri-apps/api']['version'] != '2.12.4':
+              raise RuntimeError('The Tauri npm API version changed.')
+          cargo_digest = hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest()
+          if cargo_digest != baseline['cargo_lock_sha256']:
+              raise RuntimeError('Cargo.lock changed during npm resolution.')
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only'], text=True).splitlines())
+          if changed != {'crates/gtavmm-app/package.json', 'crates/gtavmm-app/package-lock.json'}:
+              raise RuntimeError('The resolver changed an unexpected tracked path.')
+
+          output = root / 'candidate'
+          output.mkdir(exist_ok=False)
+          (output / 'package.json').write_bytes(package_bytes)
+          (output / 'package-lock.json').write_bytes(lock_bytes)
+          summary = {
+              'source_sha': baseline['source_sha'],
+              'product_parent_sha': baseline['product_parent_sha'],
+              'node_version': os.environ['RESOLVER_NODE_VERSION'],
+              'npm_version': os.environ['RESOLVER_NPM_VERSION'],
+              'plugin_versions': {name: '2.7.2' for name in plugins},
+              'tauri_api_version': '2.12.4',
+              'cargo_lock_sha256': cargo_digest,
+              'package_json_sha256': hashlib.sha256(package_bytes).hexdigest(),
+              'package_lock_sha256': hashlib.sha256(lock_bytes).hexdigest(),
+          }
+          (output / 'resolution.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+
+      - name: Upload only the reviewed candidate files and digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tauri-npm-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gtavmm-tauri-npm-${{ github.run_id }}-${{ github.run_attempt }}/candidate/package.json
+            ${{ runner.temp }}/gtavmm-tauri-npm-${{ github.run_id }}-${{ github.run_attempt }}/candidate/package-lock.json
+            ${{ runner.temp }}/gtavmm-tauri-npm-${{ github.run_id }}-${{ github.run_attempt }}/candidate/resolution.json
+          if-no-files-found: error
+          retention-days: 3
