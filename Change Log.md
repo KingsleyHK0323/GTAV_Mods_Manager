@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Prepare a manually dispatched, read-only GitHub-hosted Windows installer preflight for the reviewed product revision; it does not publish or upload installers and does not test installation. <!-- OpenAI-Codex -->
+
 - Pin the Tauri opener and dialog npm packages to 2.7.2 to match the Rust plugin versions. Candidate registry metadata was resolved on GitHub-hosted Windows; npm ci, installer build, and runtime behavior remain unverified. <!-- OpenAI-Codex -->
 
 - Preserve five existing platform libc metadata fields only if npm omits all five and no unrelated changes occur; assemble candidates from baseline bytes and npm-generated plugin records for review. <!-- OpenAI-Codex -->

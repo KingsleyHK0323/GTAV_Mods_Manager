@@ -1,0 +1,99 @@
+# OpenAI-Codex: Build a reviewed Windows installer without publishing a release.
+name: Windows installer preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_workflow_sha:
+        description: Exact reviewed Source_Code workflow commit
+        required: true
+        type: string
+      approved_target_sha:
+        description: Exact reviewed product commit to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'KingsleyHK0323/GTAV_Mods_Manager' && github.ref == 'refs/heads/Source_Code'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      WORKFLOW_SHA: ${{ inputs.approved_workflow_sha }}
+      TARGET_SHA: ${{ inputs.approved_target_sha }}
+      DISPATCH_SHA: ${{ github.sha }}
+    steps:
+      - name: Validate reviewed revisions
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows') {
+            throw 'GitHub-hosted Windows is required.'
+          }
+          if ($env:WORKFLOW_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:WORKFLOW_SHA -cne $env:DISPATCH_SHA) {
+            throw 'Dispatch must match the reviewed workflow revision.'
+          }
+          if ($env:TARGET_SHA -cne 'b05fd9b752b7b1f5a0dac86c8d9af86c9b8d4b7c') {
+            throw 'The installer target does not match the reviewed product revision.'
+          }
+
+      - name: Checkout reviewed product revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.approved_target_sha }}
+          persist-credentials: false
+
+      - name: Confirm checkout
+        shell: pwsh
+        run: |
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:TARGET_SHA) {
+            throw 'The checkout does not match the reviewed product revision.'
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: crates/gtavmm-app
+        run: npm ci
+
+      - name: Build Windows Tauri installers
+        id: tauri_build
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        with:
+          projectPath: crates/gtavmm-app
+
+      - name: Check installer outputs without uploading
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri_build.outputs.artifactPaths }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const paths = JSON.parse(process.env.ARTIFACT_PATHS || "[]");
+          const installers = paths.filter((file) =>
+            [".msi", ".exe"].includes(path.extname(file).toLowerCase())
+          );
+          if (installers.length === 0) throw new Error("No Windows installer was reported.");
+          const names = new Set();
+          for (const file of installers) {
+            const name = path.basename(file);
+            const info = fs.lstatSync(file);
+            if (!info.isFile() || info.size === 0 || names.has(name.toLowerCase())) {
+              throw new Error("A reported Windows installer is invalid or duplicated.");
+            }
+            names.add(name.toLowerCase());
+            console.log(JSON.stringify({ name, bytes: info.size }));
+          }
+          NODE
