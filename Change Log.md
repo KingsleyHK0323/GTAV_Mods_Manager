@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Pin the Tauri opener and dialog npm packages to 2.7.2 to match the Rust plugin versions. Candidate registry metadata was resolved on GitHub-hosted Windows; npm ci, installer build, and runtime behavior remain unverified. <!-- OpenAI-Codex -->
+
 - Preserve five existing platform libc metadata fields only if npm omits all five and no unrelated changes occur; assemble candidates from baseline bytes and npm-generated plugin records for review. <!-- OpenAI-Codex -->
 
 - Report bounded JSON paths without values when the npm resolver rejects unrelated candidate changes; the resolver still rejects the candidate and uploads nothing on that failure. <!-- OpenAI-Codex -->
