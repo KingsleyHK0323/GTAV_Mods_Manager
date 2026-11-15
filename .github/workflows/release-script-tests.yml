@@ -1,0 +1,30 @@
+# OpenAI-Codex_release_tests_workflow: Exercise release helpers on GitHub-hosted runners.
+name: Release Script Tests
+
+on:
+  push:
+    branches: [Source_Code]
+  pull_request:
+    branches: [Source_Code]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-script-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Test release and recovery scripts
+        run: node --test .github/scripts/*.test.mjs
