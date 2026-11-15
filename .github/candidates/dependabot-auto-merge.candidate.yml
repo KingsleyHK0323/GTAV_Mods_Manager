@@ -1,0 +1,742 @@
+name: Dependabot PR Merge
+
+# OpenAI-Codex
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  check_suite:
+    types: [completed]
+  schedule:
+    - cron: "17,47 * * * *"
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge-dependabot-pull-request:
+    # OpenAI-Codex: Pause direct merges until server-side base protection is verified.
+    if: >-
+      false && (
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'check_suite' &&
+       github.event.check_suite.conclusion == 'success') ||
+      github.event_name == 'schedule'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Merge eligible Dependabot pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const apiBase = (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+          const repository = process.env.GITHUB_REPOSITORY;
+          const token = process.env.GH_TOKEN;
+          const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+          const shaPattern = /^[0-9a-f]{40}$/i;
+
+          async function request(path, options = {}) {
+            const response = await fetch(apiBase + path, {
+              method: options.method || "GET",
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: "Bearer " + token,
+                "X-GitHub-Api-Version": "2022-11-28",
+                ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+              },
+              ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+            });
+            const responseText = await response.text();
+            let data = null;
+            if (responseText) {
+              try {
+                data = JSON.parse(responseText);
+              } catch {
+                throw new Error("GitHub returned a non-JSON response.");
+              }
+            }
+            const acceptedStatuses = options.acceptStatuses || [];
+            if (!response.ok && !acceptedStatuses.includes(response.status)) {
+              throw new Error("GitHub API request failed with HTTP " + response.status + ".");
+            }
+            return options.withStatus ? { status: response.status, data } : data;
+          }
+
+          function singlePullRequestNumber(pullRequests) {
+            if (!Array.isArray(pullRequests) || pullRequests.length !== 1) return null;
+            const number = pullRequests[0]?.number;
+            return Number.isSafeInteger(number) ? number : null;
+          }
+
+          async function scheduledPullRequestContexts(repositoryPath) {
+            const pullRequests = [];
+            for (let page = 1; ; page += 1) {
+              const query = new URLSearchParams({
+                state: "open",
+                base: "Source_Code",
+                per_page: "100",
+                page: String(page),
+              });
+              const pagePullRequests = await request(repositoryPath + "/pulls?" + query.toString());
+              if (!Array.isArray(pagePullRequests)) {
+                throw new Error("GitHub returned an invalid open pull request list.");
+              }
+              pullRequests.push(...pagePullRequests);
+              if (pagePullRequests.length < 100) break;
+            }
+
+            return pullRequests
+              .filter(isEligiblePullRequest)
+              .filter(
+                (pullRequest) =>
+                  Number.isSafeInteger(pullRequest.number) && shaPattern.test(pullRequest.head?.sha || ""),
+              )
+              .map((pullRequest) => ({
+                pullRequestNumber: pullRequest.number,
+                observedHeadSha: pullRequest.head.sha,
+              }));
+          }
+
+          async function triggerContexts(event, repositoryPath) {
+            const eventName = process.env.GITHUB_EVENT_NAME;
+            if (eventName === "schedule") {
+              const contexts = await scheduledPullRequestContexts(repositoryPath);
+              console.log("Scheduled scan found " + contexts.length + " eligible Dependabot pull request(s).");
+              return contexts;
+            }
+
+            if (event.repository?.full_name !== repository) {
+              console.log("Skipping an event from another repository.");
+              return [];
+            }
+
+            if (eventName === "workflow_run") {
+              const runId = event.workflow_run?.id;
+              if (!Number.isSafeInteger(runId)) {
+                throw new Error("The completed workflow run ID is missing or invalid.");
+              }
+              const run = await request(repositoryPath + "/actions/runs/" + runId);
+              if (
+                run.name !== "CI" ||
+                run.event !== "pull_request" ||
+                run.status !== "completed" ||
+                run.conclusion !== "success" ||
+                run.repository?.full_name !== repository ||
+                run.head_repository?.full_name !== repository ||
+                !shaPattern.test(run.head_sha || "") ||
+                !Number.isSafeInteger(run.workflow_id)
+              ) {
+                console.log("Skipping a run that is not a successful same-repository CI pull request.");
+                return [];
+              }
+              const workflow = await request(repositoryPath + "/actions/workflows/" + run.workflow_id);
+              if (workflow.name !== "CI" || workflow.path !== ".github/workflows/ci.yml") {
+                console.log("Skipping a run that did not use the repository CI workflow file.");
+                return [];
+              }
+              const pullRequestNumber = singlePullRequestNumber(run.pull_requests);
+              if (pullRequestNumber === null) {
+                console.log("Skipping a CI run that is not associated with exactly one pull request.");
+                return [];
+              }
+              return [{ pullRequestNumber, observedHeadSha: run.head_sha }];
+            }
+
+            if (eventName === "check_suite") {
+              const suite = event.check_suite;
+              const pullRequestNumber = singlePullRequestNumber(suite?.pull_requests);
+              if (
+                suite?.conclusion !== "success" ||
+                !shaPattern.test(suite?.head_sha || "") ||
+                pullRequestNumber === null
+              ) {
+                console.log("Skipping a successful check suite without one valid pull request.");
+                return [];
+              }
+              return [{ pullRequestNumber, observedHeadSha: suite.head_sha }];
+            }
+
+            console.log("Skipping an unsupported event.");
+            return [];
+          }
+
+          // OpenAI-Codex_policy_design: This candidate is fail-closed and does not enable the job.
+          const policyExpectedBases = new Map();
+          const policyBotId = 49699333;
+          const policyManifest = "crates/gtavmm-app/package.json";
+          const policyLock = "crates/gtavmm-app/package-lock.json";
+          const policyFileLimit = 1000000;
+
+          // OpenAI-Codex_policy_design: Enforce exact SHA length; a dollar anchor alone admits a trailing newline.
+          function policySha(value) {
+            return typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/i.test(value);
+          }
+          function policySameIdentity(pr, number, head, base) {
+            // OpenAI-Codex_policy_design: Missing draft/auto-merge fields are not evidence of safety.
+            if (pr?.draft !== false || pr?.auto_merge !== null) return false;
+            if (!policySha(head) || !policySha(base)) return false;
+            const repoId = Number(process.env.GITHUB_REPOSITORY_ID);
+            return Number.isSafeInteger(repoId) && repoId > 0 &&
+              isEligiblePullRequest(pr) && pr.number === number &&
+              pr.user?.login === "dependabot[bot]" && pr.user?.id === policyBotId && pr.user?.type === "Bot" &&
+              pr.base?.repo?.id === repoId && pr.head?.repo?.id === repoId &&
+              shaPattern.test(head || "") && shaPattern.test(base || "") &&
+              pr.head?.sha === head && pr.base?.sha === base;
+          }
+
+          async function policyBaseStillCurrent(repositoryPath, base) {
+            const branch = await request(repositoryPath + "/branches/Source_Code");
+            return branch.name === "Source_Code" && branch.commit?.sha === base;
+          }
+
+          // Reject duplicate JSON object keys instead of silently accepting JSON.parse's last key.
+          function policyUniqueJson(text) {
+            let index = 0;
+            const whitespace = () => { while (index < text.length && /\s/.test(text[index])) index += 1; };
+            function stringValue() {
+              const start = index;
+              if (text[index++] !== '"') throw new Error("Expected JSON string.");
+              while (index < text.length) {
+                const char = text[index++];
+                if (char === '"') return JSON.parse(text.slice(start, index));
+                if (char === "\\") index += 1;
+              }
+              throw new Error("Unterminated JSON string.");
+            }
+            function value(depth) {
+              if (depth > 120) throw new Error("JSON nesting limit exceeded.");
+              whitespace();
+              if (text[index] === '"') { stringValue(); return; }
+              if (text[index] === "{") {
+                index += 1; whitespace();
+                const keys = new Set();
+                if (text[index] === "}") { index += 1; return; }
+                while (true) {
+                  whitespace();
+                  const key = stringValue();
+                  if (keys.has(key)) throw new Error("Duplicate JSON key.");
+                  keys.add(key); whitespace();
+                  if (text[index++] !== ":") throw new Error("Expected JSON colon.");
+                  value(depth + 1); whitespace();
+                  const next = text[index++];
+                  if (next === "}") return;
+                  if (next !== ",") throw new Error("Expected JSON comma.");
+                }
+              }
+              if (text[index] === "[") {
+                index += 1; whitespace();
+                if (text[index] === "]") { index += 1; return; }
+                while (true) {
+                  value(depth + 1); whitespace();
+                  const next = text[index++];
+                  if (next === "]") return;
+                  if (next !== ",") throw new Error("Expected JSON comma.");
+                }
+              }
+              const start = index;
+              while (index < text.length && !/[\s,\]}]/.test(text[index])) index += 1;
+              if (index === start) throw new Error("Expected JSON value.");
+              // OpenAI-Codex_policy_design: Prevent distinct numeric JSON lexemes from collapsing into the same Number.
+              const scalar = text.slice(start, index);
+              if (scalar !== "true" && scalar !== "false" && scalar !== "null") {
+                if (!/^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(scalar)) throw new Error("Non-canonical JSON number.");
+                const number = Number(scalar);
+                if (!Number.isSafeInteger(number) || String(number) !== scalar) throw new Error("Unsafe JSON number.");
+              }
+
+            }
+            const parsed = JSON.parse(text);
+            value(0); whitespace();
+            if (index !== text.length) throw new Error("Trailing JSON data.");
+            return parsed;
+          }
+
+          function policyVersion(spec) {
+            if (typeof spec !== "string") return null;
+            const match = /^([~^]?)([1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(spec);
+            // OpenAI-Codex_policy_design: The JS dollar anchor permits a final line break; require the entire input.
+            if (match && match[0] !== spec) return null;
+            if (!match) return null;
+            const parts = match.slice(2).map(Number);
+            if (!parts.every(Number.isSafeInteger)) return null;
+            return { prefix: match[1], major: parts[0], minor: parts[1], patch: parts[2], bare: match.slice(2).join(".") };
+          }
+
+          function policyOneDependency(before, after) {
+            if (!before || !after || typeof before !== "object" || typeof after !== "object" ||
+                Array.isArray(before) || Array.isArray(after)) return null;
+            const copy = JSON.parse(JSON.stringify(before));
+            let changed = null;
+            for (const group of ["dependencies", "devDependencies"]) {
+              const oldGroup = before[group];
+              const newGroup = after[group];
+              if (!oldGroup && !newGroup) continue;
+              if (!oldGroup || !newGroup || typeof oldGroup !== "object" || typeof newGroup !== "object" ||
+                  Array.isArray(oldGroup) || Array.isArray(newGroup)) return null;
+              if (JSON.stringify(Object.keys(oldGroup).sort()) !== JSON.stringify(Object.keys(newGroup).sort())) return null;
+              for (const name of Object.keys(oldGroup)) {
+                if (oldGroup[name] === newGroup[name]) continue;
+                if (changed) return null;
+                const oldVersion = policyVersion(oldGroup[name]);
+                const newVersion = policyVersion(newGroup[name]);
+                if (!oldVersion || !newVersion || oldVersion.prefix !== newVersion.prefix ||
+                    oldVersion.major !== newVersion.major || oldVersion.minor !== newVersion.minor ||
+                    newVersion.patch <= oldVersion.patch) return null;
+                if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name) || name.includes("..")) return null;
+                changed = { group, name, oldSpec: oldGroup[name], newSpec: newGroup[name], oldVersion, newVersion };
+                copy[group][name] = newGroup[name];
+              }
+            }
+            return changed && JSON.stringify(copy) === JSON.stringify(after) ? changed : null;
+          }
+
+          function policyValidIntegrity(value) {
+            if (typeof value !== "string" || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(value)) return false;
+            const bytes = Buffer.from(value.slice(7), "base64");
+            return bytes.length === 64 && bytes.toString("base64") === value.slice(7);
+          }
+
+          function policyRegistryUrl(value, name, version) {
+            if (typeof value !== "string") return false;
+            let url;
+            try { url = new URL(value); } catch { return false; }
+            const shortName = name.split("/").pop();
+            // OpenAI-Codex_policy_design: URL parsing can strip control characters, so require the exact raw URL.
+            if (value !== "https://registry.npmjs.org/" + name + "/-/" + shortName + "-" + version + ".tgz") return false;
+            return url.protocol === "https:" && url.hostname === "registry.npmjs.org" &&
+              !url.port && !url.username && !url.password && !url.search && !url.hash &&
+              url.pathname === "/" + name + "/-/" + shortName + "-" + version + ".tgz";
+          }
+
+          function policyLockMatches(before, after, change) {
+            if (!before || !after || before.lockfileVersion !== 3 || after.lockfileVersion !== 3 ||
+                !before.packages || !after.packages || !before.packages[""] || !after.packages[""]) return false;
+            const node = "node_modules/" + change.name;
+            const oldItem = before.packages[node];
+            const newItem = after.packages[node];
+            const oldRoot = before.packages[""][change.group];
+            const newRoot = after.packages[""][change.group];
+            if (!oldItem || !newItem || !oldRoot || !newRoot ||
+                oldRoot[change.name] !== change.oldSpec || newRoot[change.name] !== change.newSpec ||
+                oldItem.version !== change.oldVersion.bare || newItem.version !== change.newVersion.bare ||
+                !policyRegistryUrl(oldItem.resolved, change.name, change.oldVersion.bare) ||
+                !policyRegistryUrl(newItem.resolved, change.name, change.newVersion.bare) ||
+                !policyValidIntegrity(oldItem.integrity) || !policyValidIntegrity(newItem.integrity) ||
+                oldItem.integrity === newItem.integrity) return false;
+            const copy = JSON.parse(JSON.stringify(before));
+            copy.packages[""][change.group][change.name] = change.newSpec;
+            copy.packages[node].version = newItem.version;
+            copy.packages[node].resolved = newItem.resolved;
+            copy.packages[node].integrity = newItem.integrity;
+            return JSON.stringify(copy) === JSON.stringify(after);
+          }
+
+          // OpenAI-Codex_policy_design: Inspect complete immutable trees; contents APIs can follow symlinks.
+          const policyExpectedBlobs = new Map();
+          async function policyValidateTrees(repositoryPath, base, head, headCommit, files) {
+            policyExpectedBlobs.clear();
+            const baseCommit = await request(repositoryPath + "/git/commits/" + base);
+            const baseTree = baseCommit.tree?.sha;
+            const headTree = headCommit.commit?.tree?.sha;
+            if (!policySha(baseTree) || !policySha(headTree)) return false;
+            if (baseCommit.sha !== base || !shaPattern.test(baseTree || "") || !shaPattern.test(headTree || "")) return false;
+            for (const [ref, treeSha] of [[base, baseTree], [head, headTree]]) {
+              const tree = await request(repositoryPath + "/git/trees/" + treeSha + "?recursive=1");
+              if (tree.sha !== treeSha || tree.truncated !== false || !Array.isArray(tree.tree) || tree.tree.length > 10000) return false;
+              const seen = new Set();
+              for (const item of tree.tree) {
+                if (typeof item.path !== "string" || seen.has(item.path)) return false;
+                seen.add(item.path);
+                if (item.path === policyManifest || item.path === policyLock) {
+                  if (!policySha(item.sha)) return false;
+                  if (item.mode !== "100644" || item.type !== "blob" || !shaPattern.test(item.sha || "")) return false;
+                  policyExpectedBlobs.set(ref + "\0" + item.path, item.sha);
+                }
+              }
+              if (!policyExpectedBlobs.has(ref + "\0" + policyManifest) || !policyExpectedBlobs.has(ref + "\0" + policyLock)) return false;
+            }
+            return files.every((file) => policyExpectedBlobs.get(head + "\0" + file.filename) === file.sha);
+          }
+
+          async function policyReadJson(repositoryPath, filePath, ref, expectedBlob) {
+            const query = new URLSearchParams({ ref });
+            const file = await request(repositoryPath + "/contents/" + filePath + "?" + query.toString());
+            // OpenAI-Codex_policy_design: The contents result must match the verified regular-file tree entry.
+            if (policyExpectedBlobs.get(ref + "\0" + filePath) !== file.sha) return null;
+
+            if (file.type !== "file" || file.encoding !== "base64" || !shaPattern.test(file.sha || "") ||
+                (expectedBlob && file.sha !== expectedBlob) || !Number.isSafeInteger(file.size) ||
+                file.size < 1 || file.size > policyFileLimit || typeof file.content !== "string") return null;
+            const encoded = file.content.replace(/\r?\n/g, "");
+            if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return null;
+            const bytes = Buffer.from(encoded, "base64");
+            if (bytes.length !== file.size || bytes.toString("base64") !== encoded) return null;
+            const crypto = require("node:crypto");
+            const hash = crypto.createHash("sha1").update("blob " + bytes.length + "\0").update(bytes).digest("hex");
+            if (hash !== file.sha) return null;
+            try { return policyUniqueJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { return null; }
+          }
+
+          async function policyExactCi(repositoryPath, number, head, base) {
+            const repoId = Number(process.env.GITHUB_REPOSITORY_ID);
+            const wf = await request(repositoryPath + "/actions/workflows/ci.yml");
+            if (wf.name !== "CI" || wf.path !== ".github/workflows/ci.yml" || !Number.isSafeInteger(wf.id)) return false;
+            const runs = [];
+            for (let page = 1; page <= 30; page += 1) {
+              const query = new URLSearchParams({ head_sha: head, event: "pull_request", per_page: "100", page: String(page) });
+              const result = await request(repositoryPath + "/actions/workflows/" + wf.id + "/runs?" + query.toString());
+              if (!Array.isArray(result.workflow_runs)) return false;
+              runs.push(...result.workflow_runs);
+              if (result.workflow_runs.length < 100) break;
+              if (page === 30) return false;
+            }
+            // OpenAI-Codex_policy_design: Incomplete or ambiguous run ordering must not fall back to an older success.
+            const runIdentities = new Set();
+            for (const run of runs) {
+              if (run.workflow_id !== wf.id || run.event !== "pull_request" || run.head_sha !== head ||
+                  run.repository?.id !== repoId || run.repository?.full_name !== repository ||
+                  run.head_repository?.id !== repoId || run.head_repository?.full_name !== repository ||
+                  !Number.isSafeInteger(run.run_number) || run.run_number < 1 ||
+                  !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) return false;
+              const key = run.run_number + ":" + run.run_attempt;
+              if (runIdentities.has(key)) return false;
+              runIdentities.add(key);
+            }
+
+            const candidates = runs.filter((r) => r.workflow_id === wf.id && r.event === "pull_request" && r.head_sha === head)
+              .sort((a, b) => (b.run_number || 0) - (a.run_number || 0) || (b.run_attempt || 1) - (a.run_attempt || 1));
+            const run = candidates[0];
+            if (!run || run.status !== "completed" || run.conclusion !== "success" ||
+                run.repository?.id !== repoId || run.repository?.full_name !== repository ||
+                run.head_repository?.id !== repoId || run.head_repository?.full_name !== repository ||
+                !Array.isArray(run.pull_requests) || run.pull_requests.length !== 1) return false;
+            const associated = run.pull_requests[0];
+            // OpenAI-Codex_policy_design: Same SHA on another base branch is not the required CI association.
+            if (associated.base?.ref !== "Source_Code") return false;
+            return associated.number === number && associated.head?.sha === head && associated.base?.sha === base &&
+              associated.head?.repo?.id === repoId && associated.base?.repo?.id === repoId;
+          }
+
+          async function policyFresh(repositoryPath, number, head, base) {
+            const pr = await request(repositoryPath + "/pulls/" + number);
+            // OpenAI-Codex_policy_design: An armed native request may merge independently; never proceed with it.
+            if (pr.auto_merge) return false;
+            return policySameIdentity(pr, number, head, base) && await policyBaseStillCurrent(repositoryPath, base);
+          }
+
+          // OpenAI-Codex_policy_design: GitHub attribution and verified=true do not prove bot signer identity.
+          // No trustworthy signer-identity proof is implemented; this candidate is permanently fail-closed.
+          function policyTrustedDependabotSigner() {
+            return false;
+          }
+          async function policyPreflight(repositoryPath, pr, head, base) {
+            if (!policySameIdentity(pr, pr.number, head, base) || !await policyBaseStillCurrent(repositoryPath, base) ||
+                pr.changed_files !== 2 || pr.commits !== 1) return false;
+            const commit = await request(repositoryPath + "/commits/" + head);
+            if (commit.sha !== head || commit.author?.login !== "dependabot[bot]" ||
+                commit.author?.id !== policyBotId || commit.author?.type !== "Bot" ||
+                commit.commit?.verification?.verified !== true || !Array.isArray(commit.parents) ||
+                commit.parents.length !== 1 || commit.parents[0]?.sha !== base) return false;
+            // OpenAI-Codex_policy_design: Require the GitHub-resolved committer to be the same bot.
+            if (commit.committer?.login !== "dependabot[bot]" || commit.committer?.id !== policyBotId ||
+                commit.committer?.type !== "Bot" || commit.commit?.verification?.reason !== "valid") return false;
+
+            const files = await request(repositoryPath + "/pulls/" + pr.number + "/files?per_page=100&page=1");
+            if (!Array.isArray(files) || files.length !== 2) return false;
+            const expected = new Set([policyManifest, policyLock]);
+            for (const file of files) {
+              if (!expected.delete(file.filename) || file.status !== "modified" ||
+                  file.previous_filename != null || !shaPattern.test(file.sha || "")) return false;
+            }
+            if (expected.size !== 0) return false;
+            const manifestFile = files.find((file) => file.filename === policyManifest);
+            const lockFile = files.find((file) => file.filename === policyLock);
+            // OpenAI-Codex_policy_design: Reject incomplete trees, links and unknown file identities.
+            if (!await policyValidateTrees(repositoryPath, base, head, commit, files)) return false;
+
+            const oldManifest = await policyReadJson(repositoryPath, policyManifest, base);
+            const newManifest = await policyReadJson(repositoryPath, policyManifest, head, manifestFile.sha);
+            const oldLock = await policyReadJson(repositoryPath, policyLock, base);
+            const newLock = await policyReadJson(repositoryPath, policyLock, head, lockFile.sha);
+            if (!oldManifest || !newManifest || !oldLock || !newLock) return false;
+            const change = policyOneDependency(oldManifest, newManifest);
+            if (!change || !policyLockMatches(oldLock, newLock, change)) return false;
+            if (!await policyExactCi(repositoryPath, pr.number, head, base)) return false;
+            return policyFresh(repositoryPath, pr.number, head, base);
+          }
+
+          async function disableExistingAutoMerge(repositoryPath, pullRequestNumber, expectedHeadSha) {
+            const pullRequest = await request(repositoryPath + "/pulls/" + pullRequestNumber);
+            if (!isEligiblePullRequest(pullRequest) || pullRequest.head?.sha !== expectedHeadSha) {
+              console.log("Skipping native Auto-merge cancellation because the pull request changed.");
+              return false;
+            }
+            // OpenAI-Codex_policy_design: Check identity, files, versions and exact-base CI before mutation.
+            // OpenAI-Codex_policy_design: Never cancel an existing native auto-merge in this candidate.
+            // Skipping does not prevent GitHub from merging an already-armed native request.
+            if (pullRequest.auto_merge) {
+              console.log("Skipping an existing native auto-merge; no cancellation is attempted.");
+              return false;
+            }
+
+            const expectedBase = policyExpectedBases.get(pullRequestNumber);
+            if (!expectedBase || !await policyPreflight(repositoryPath, pullRequest, expectedHeadSha, expectedBase)) {
+              console.log("Skipping native Auto-merge cancellation: conservative policy was not satisfied.");
+              return false;
+            }
+
+            // OpenAI-Codex_policy_design: Do not mutate until bot signer identity has independently verifiable proof.
+            if (!policyTrustedDependabotSigner()) {
+              console.log("Skipping mutation: Dependabot signer identity cannot be independently verified.");
+              return false;
+            }
+            if (!pullRequest.auto_merge) return true;
+
+            const result = await request("/graphql", {
+              method: "POST",
+              body: {
+                query:
+                  "mutation DisableDependabotAutoMerge($input: DisablePullRequestAutoMergeInput!) { disablePullRequestAutoMerge(input: $input) { pullRequest { number } } }",
+                variables: { input: { pullRequestId: pullRequest.node_id } },
+              },
+            });
+            if (
+              result.errors?.length ||
+              result.data?.disablePullRequestAutoMerge?.pullRequest?.number !== pullRequest.number
+            ) {
+              throw new Error("GitHub did not disable an existing native auto-merge request.");
+            }
+
+            const updatedPullRequest = await request(repositoryPath + "/pulls/" + pullRequestNumber);
+            // OpenAI-Codex_policy_design: A successful cancellation does not authorize a changed base or head.
+            if (!await policyFresh(repositoryPath, pullRequestNumber, expectedHeadSha, expectedBase)) {
+              console.log("Skipping merge because the PR or base changed after cancellation.");
+              return false;
+            }
+
+            if (!isEligiblePullRequest(updatedPullRequest) || updatedPullRequest.head?.sha !== expectedHeadSha) {
+              console.log("Skipping merge because the pull request changed while disabling native Auto-merge.");
+              return false;
+            }
+            if (updatedPullRequest.auto_merge) {
+              throw new Error("GitHub still reports a native auto-merge request after disabling it.");
+            }
+            console.log("Disabled an existing native auto-merge request before applying the direct-merge checks.");
+            return true;
+          }
+
+          function isEligiblePullRequest(pullRequest) {
+            return (
+              pullRequest.state === "open" &&
+              !pullRequest.draft &&
+              pullRequest.user?.login === "dependabot[bot]" &&
+              pullRequest.base?.repo?.full_name === repository &&
+              pullRequest.base?.ref === "Source_Code" &&
+              pullRequest.head?.repo?.full_name === repository
+            );
+          }
+
+          async function changedWorkflowFiles(repositoryPath, pullRequestNumber) {
+            const changedFiles = [];
+            for (let page = 1; page <= 30; page += 1) {
+              const files = await request(
+                repositoryPath + "/pulls/" + pullRequestNumber + "/files?per_page=100&page=" + page,
+              );
+              if (!Array.isArray(files)) {
+                throw new Error("GitHub returned an invalid pull request file list.");
+              }
+              changedFiles.push(...files);
+              if (files.length < 100) break;
+              if (page === 30) {
+                throw new Error("The changed file list exceeded the supported pagination limit.");
+              }
+            }
+
+            const isWorkflowPath = (path) =>
+              typeof path === "string" && (path === ".github/workflows" || path.startsWith(".github/workflows/"));
+            return changedFiles.some(
+              (file) => isWorkflowPath(file.filename) || isWorkflowPath(file.previous_filename),
+            );
+          }
+
+          async function latestCiRunSucceeded(repositoryPath, pullRequestNumber, headSha) {
+            const workflow = await request(repositoryPath + "/actions/workflows/ci.yml");
+            if (
+              workflow.name !== "CI" ||
+              workflow.path !== ".github/workflows/ci.yml" ||
+              !Number.isSafeInteger(workflow.id)
+            ) {
+              throw new Error("The repository CI workflow could not be verified.");
+            }
+
+            const runs = [];
+            for (let page = 1; page <= 30; page += 1) {
+              const query = new URLSearchParams({
+                head_sha: headSha,
+                event: "pull_request",
+                per_page: "100",
+                page: String(page),
+              });
+              const result = await request(
+                repositoryPath + "/actions/workflows/" + workflow.id + "/runs?" + query.toString(),
+              );
+              if (!Array.isArray(result.workflow_runs)) {
+                throw new Error("GitHub returned an invalid CI workflow run list.");
+              }
+              runs.push(...result.workflow_runs);
+              if (result.workflow_runs.length < 100) break;
+              if (page === 30) {
+                throw new Error("The CI workflow run list exceeded the supported pagination limit.");
+              }
+            }
+
+            const candidates = runs
+              .filter(
+                (run) =>
+                  run.workflow_id === workflow.id &&
+                  run.event === "pull_request" &&
+                  run.head_sha === headSha &&
+                  run.repository?.full_name === repository &&
+                  run.head_repository?.full_name === repository &&
+                  Array.isArray(run.pull_requests) &&
+                  run.pull_requests.some((pullRequest) => pullRequest.number === pullRequestNumber),
+              )
+              .sort(
+                (left, right) =>
+                  (right.run_number || 0) - (left.run_number || 0) ||
+                  (right.run_attempt || 1) - (left.run_attempt || 1),
+              );
+
+            const latestRun = candidates[0];
+            return latestRun?.status === "completed" && latestRun.conclusion === "success";
+          }
+
+          async function processPullRequest(repositoryPath, context) {
+            let pullRequest = await request(repositoryPath + "/pulls/" + context.pullRequestNumber);
+            if (!isEligiblePullRequest(pullRequest)) {
+              console.log("Skipping a pull request that is not an open same-repository Dependabot PR for Source_Code.");
+              return;
+            }
+            if (pullRequest.head?.sha !== context.observedHeadSha) {
+              console.log("Skipping a stale event before changing native Auto-merge state.");
+              return;
+            }
+
+            // OpenAI-Codex_policy_design: Fix the base observed before any cancellation or merge.
+            if (!shaPattern.test(pullRequest.base?.sha || "")) {
+              console.log("Skipping a pull request without a verifiable base SHA.");
+              return;
+            }
+            policyExpectedBases.set(context.pullRequestNumber, pullRequest.base.sha);
+
+            if (!(await disableExistingAutoMerge(repositoryPath, context.pullRequestNumber, context.observedHeadSha))) {
+              return;
+            }
+            pullRequest = await request(repositoryPath + "/pulls/" + context.pullRequestNumber);
+            if (!isEligiblePullRequest(pullRequest)) {
+              console.log("Skipping a pull request whose eligibility changed during processing.");
+              return;
+            }
+            if (pullRequest.head?.sha !== context.observedHeadSha) {
+              console.log("Skipping a stale event because the pull request head has changed.");
+              return;
+            }
+
+            if (await changedWorkflowFiles(repositoryPath, pullRequest.number)) {
+              console.log("Skipping a Dependabot pull request that adds, changes, renames, or removes workflow definitions.");
+              return;
+            }
+
+            if (!(await latestCiRunSucceeded(repositoryPath, pullRequest.number, pullRequest.head.sha))) {
+              console.log("Skipping a pull request without a successful latest CI run for its current head SHA.");
+              return;
+            }
+
+            pullRequest = await request(repositoryPath + "/pulls/" + context.pullRequestNumber);
+            if (!isEligiblePullRequest(pullRequest) || pullRequest.head?.sha !== context.observedHeadSha) {
+              console.log("Skipping a pull request whose eligibility or head SHA changed before merge.");
+              return;
+            }
+
+            if (!(await disableExistingAutoMerge(repositoryPath, context.pullRequestNumber, context.observedHeadSha))) {
+              return;
+            }
+            pullRequest = await request(repositoryPath + "/pulls/" + context.pullRequestNumber);
+            if (!isEligiblePullRequest(pullRequest) || pullRequest.head?.sha !== context.observedHeadSha) {
+              console.log("Skipping a pull request whose eligibility or head SHA changed before merge.");
+              return;
+            }
+            // OpenAI-Codex_policy_design: This recheck narrows, but cannot remove, the REST base race.
+            const finalBase = policyExpectedBases.get(context.pullRequestNumber);
+            if (!finalBase || !await policyFresh(repositoryPath, context.pullRequestNumber, context.observedHeadSha, finalBase)) {
+              console.log("Skipping merge because final PR or base verification failed.");
+              return;
+            }
+
+            const mergeResult = await request(repositoryPath + "/pulls/" + pullRequest.number + "/merge", {
+              method: "PUT",
+              body: { sha: context.observedHeadSha, merge_method: "squash" },
+              acceptStatuses: [404, 405, 409],
+              withStatus: true,
+            });
+
+            if (mergeResult.status === 405) {
+              console.log("GitHub did not permit the merge under the current repository rules; the PR remains open.");
+              return;
+            }
+            if (mergeResult.status === 409) {
+              console.log("The pull request head changed before merge; GitHub did not merge it.");
+              return;
+            }
+            if (mergeResult.status === 404) {
+              const currentPullRequest = await request(repositoryPath + "/pulls/" + pullRequest.number);
+              if (currentPullRequest.merged) {
+                console.log("The pull request was already merged by another actor.");
+                return;
+              }
+              throw new Error("GitHub could not find the pull request during merge.");
+            }
+            if (mergeResult.status !== 200 || mergeResult.data?.merged !== true) {
+              throw new Error("GitHub did not confirm that the pull request was merged.");
+            }
+            console.log("Merged Dependabot pull request #" + pullRequest.number + " through GitHub's standard merge API.");
+          }
+
+          async function main() {
+            if (!token || !repository || !repositoryPattern.test(repository)) {
+              throw new Error("The GitHub repository or workflow token is unavailable.");
+            }
+
+            const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+            const repositoryPath = "/repos/" + repository;
+            const contexts = await triggerContexts(event, repositoryPath);
+            if (contexts.length === 0) return;
+
+            let failedCandidates = 0;
+            for (const context of contexts) {
+              try {
+                await processPullRequest(repositoryPath, context);
+              } catch (error) {
+                failedCandidates += 1;
+                console.error("Failed to process Dependabot pull request #" + context.pullRequestNumber + ": " + error.message);
+              }
+            }
+            if (failedCandidates > 0) {
+              throw new Error("One or more eligible Dependabot pull requests could not be processed.");
+            }
+          }
+
+          main().catch((error) => {
+            console.error(error.message);
+            process.exitCode = 1;
+          });
+          NODE
