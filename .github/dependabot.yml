@@ -11,6 +11,13 @@ updates:
 
   - package-ecosystem: npm
     directory: "/crates/gtavmm-app"
+    # OpenAI-Codex: Group related Vite version updates for review together.
+    groups:
+      vite-toolchain:
+        applies-to: version-updates
+        patterns:
+          - "vite"
+          - "@vitejs/plugin-react"
     schedule:
       interval: weekly
       day: monday
