@@ -11,6 +11,7 @@
 - Find a canonical versioned Windows EXE for newer updates when the legacy asset is absent, with release-page fallback when matching fails or is ambiguous. Beta and final 1.0.0 still compare equal; same-version upgrade is unverified. <!-- OpenAI-Codex_safety_review -->
 
 - Prepare a one-time beta attachment that verifies the existing MSI and reconciles the missing EXE and checksum using their public asset names; the recovery has not yet been tested. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+- Group Vite and its React plugin for Dependabot version updates; grouped updates and effects on existing pull requests remain unverified. <!-- OpenAI-Codex -->
 
 - Prepare a one-time GitHub-hosted attachment of the verified Windows installers to the existing public beta; mismatched existing assets are refused, and release asset verification remains pending. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
 
