@@ -206,7 +206,9 @@ function checksumAsset(name, installers) {
 export async function collectExpectedAssets(root, collect = collectInstallerFiles) {
   const windows = await collect(path.join(root, 'installers-windows'), ['.msi', '.exe']);
   if (!Array.isArray(windows) || windows.length === 0) throw new Error('A Windows installer artifact is missing.');
-  const assets = [...windows, checksumAsset('SHA256SUMS-windows.txt', windows)];
+  // OpenAI-Codex_release_work: Use stable public names for GitHub uploads and checksums.
+  const publicWindows = windows.map((asset) => ({ ...asset, name: validateAssetName(asset.name).replaceAll(' ', '.') }));
+  const assets = [...publicWindows, checksumAsset('SHA256SUMS-windows.txt', publicWindows)];
   planAssetChanges(assets, []);
   return assets;
 }
@@ -331,6 +333,18 @@ function createGithubApi({ repository, token, tag, commit }) {
   return { json, verifyTag, getRelease, listReleases, listAssets, getAssetDigest, uploadAsset, createDraft };
 }
 
+// OpenAI-Codex_release_work: Verify the created draft by ID, without assuming list visibility or repository permissions metadata.
+export async function prepareDraftRelease({ tag, expectedAssets, api }) {
+  await api.verifyTag();
+  const releases = await collectPages(api.listReleases);
+  let release = selectDraftRelease(releases, tag);
+  if (!release) release = await api.createDraft();
+  validateRelease(await api.getRelease(release.id), release.id, tag);
+  const result = await reconcileDraftAssets({ releaseId: release.id, tag, expectedAssets, api });
+  validateRelease(await api.getRelease(result.releaseId), result.releaseId, tag);
+  return result;
+}
+
 async function main() {
   const repository = process.env.GH_REPOSITORY || '';
   const token = process.env.GH_TOKEN || '';
@@ -340,20 +354,7 @@ async function main() {
   if (!path.isAbsolute(runnerTemp)) throw new Error('Runner temporary directory is unavailable.');
   const expectedAssets = await collectExpectedAssets(path.join(runnerTemp, 'release-assets'));
   const api = createGithubApi({ repository, token, tag, commit });
-  const repositoryInfo = await api.json('/repos/' + repository);
-  if (repositoryInfo?.permissions?.push !== true) throw new Error('GitHub did not confirm release write access.');
-  await api.verifyTag();
-  let releases = await collectPages(api.listReleases);
-  let release = selectDraftRelease(releases, tag);
-  if (!release) {
-    release = await api.createDraft();
-    releases = await collectPages(api.listReleases);
-    const selected = selectDraftRelease(releases, tag);
-    if (!selected || selected.id !== release.id) throw new Error('New draft is missing or ambiguous.');
-  }
-  const result = await reconcileDraftAssets({ releaseId: release.id, tag, expectedAssets, api });
-  const selected = selectDraftRelease(await collectPages(api.listReleases), tag);
-  if (!selected || selected.id !== result.releaseId) throw new Error('Draft release identity changed.');
+  const result = await prepareDraftRelease({ tag, expectedAssets, api });
   const lines = [
     '## Verified release draft', '',
     'Tag: ' + tag, 'Commit: ' + commit, 'Release ID: ' + result.releaseId,

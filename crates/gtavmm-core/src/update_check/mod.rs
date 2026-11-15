@@ -79,7 +79,8 @@ pub fn check(current_version: &str) -> CoreResult<UpdateCheckResult> {
 
     let latest_version = release.tag_name.trim_start_matches('v').to_string();
     let update_available = is_newer(&latest_version, current_version);
-    let platform_download_url = find_platform_asset(&release.assets, std::env::consts::OS);
+    let platform_download_url = find_platform_asset(&release.assets, std::env::consts::OS)
+        .or_else(|| find_windows_installer(&release.assets, std::env::consts::OS, &latest_version));
 
     Ok(UpdateCheckResult {
         current_version: current_version.to_string(),
@@ -96,6 +97,33 @@ fn find_platform_asset(assets: &[GitHubReleaseAsset], os: &str) -> Option<String
         .iter()
         .find(|asset| asset.name == expected_name)
         .map(|asset| asset.browser_download_url.clone())
+}
+
+// OpenAI-Codex_upgrade_work: Match the canonical public Tauri installer name.
+// If the result is ambiguous, callers fall back to the release page.
+fn find_windows_installer(
+    assets: &[GitHubReleaseAsset],
+    os: &str,
+    version: &str,
+) -> Option<String> {
+    if os != "windows" {
+        return None;
+    }
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    let expected = format!("GTAV.Mods.Manager_{version}_x64-setup.exe");
+    let mut matches = assets.iter().filter(|asset| asset.name == expected);
+    let asset = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(asset.browser_download_url.clone())
 }
 
 /// `true` if `candidate` (e.g. "1.2.0") is a newer version than `baseline` (e.g.
@@ -169,6 +197,39 @@ mod tests {
             find_platform_asset(&sample_assets(), "linux"),
             Some("https://example.com/gtavmm-linux-x64".to_string())
         );
+    }
+
+    #[test]
+    fn finds_the_canonical_installer_for_the_release_version() {
+        let assets = vec![GitHubReleaseAsset {
+            name: "GTAV.Mods.Manager_1.0.1_x64-setup.exe".to_string(),
+            browser_download_url: "https://example.com/installer.exe".to_string(),
+        }];
+        assert_eq!(
+            find_windows_installer(&assets, "windows", "1.0.1"),
+            Some("https://example.com/installer.exe".to_string())
+        );
+        assert_eq!(find_windows_installer(&assets, "windows", "1.0.0"), None);
+        assert_eq!(find_windows_installer(&assets, "linux", "1.0.1"), None);
+        assert_eq!(
+            find_windows_installer(&assets, "windows", "1.0.1-beta"),
+            None
+        );
+    }
+
+    #[test]
+    fn refuses_ambiguous_canonical_installers() {
+        let assets = vec![
+            GitHubReleaseAsset {
+                name: "GTAV.Mods.Manager_1.0.1_x64-setup.exe".to_string(),
+                browser_download_url: "https://example.com/one.exe".to_string(),
+            },
+            GitHubReleaseAsset {
+                name: "GTAV.Mods.Manager_1.0.1_x64-setup.exe".to_string(),
+                browser_download_url: "https://example.com/two.exe".to_string(),
+            },
+        ];
+        assert_eq!(find_windows_installer(&assets, "windows", "1.0.1"), None);
     }
 
     #[test]

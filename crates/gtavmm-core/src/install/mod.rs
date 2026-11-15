@@ -1562,18 +1562,35 @@ fn perform_writes(
             // If auto_backup is off, the user has explicitly opted out of the
             // safety net (see the MVP spec's default-on warning requirement) — the
             // pre-existing file is overwritten with no recorded original to restore.
+            std::fs::copy(&planned.source, &planned.target)?;
         } else {
-            tx_log.record(InstallAction::FileWritten {
-                target: planned.target.clone(),
-            });
+            copy_to_new_target(&planned.source, &planned.target, tx_log)?;
         }
-
-        std::fs::copy(&planned.source, &planned.target)?;
         let hash = hash_file(&planned.target)?;
         hashes.insert(planned.target.clone(), hash);
     }
 
     Ok(hashes)
+}
+
+// OpenAI-Codex_safety_review: Reserve a new target before recording or writing it.
+fn copy_to_new_target(
+    source: &Path,
+    target: &Path,
+    tx_log: &mut InstallTransaction,
+) -> CoreResult<()> {
+    let mut input = std::fs::File::open(source)?;
+    let permissions = input.metadata()?.permissions();
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    tx_log.record(InstallAction::FileWritten {
+        target: target.to_path_buf(),
+    });
+    std::io::copy(&mut input, &mut output)?;
+    output.set_permissions(permissions)?;
+    Ok(())
 }
 
 fn rollback_failed_install(
@@ -2663,6 +2680,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(failed_event_count, 1);
+    }
+
+    // OpenAI-Codex_safety_review: An arrival after preflight must not be overwritten or rolled back.
+    #[test]
+    fn new_target_writer_preserves_a_file_that_appeared_after_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.asi");
+        let target = dir.path().join("target.asi");
+        std::fs::write(&source, b"planned payload").unwrap();
+        assert!(!target.exists());
+        std::fs::write(&target, b"external payload").unwrap();
+
+        let mut tx = InstallTransaction::default();
+        assert!(matches!(
+            copy_to_new_target(&source, &target, &mut tx),
+            Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert!(tx.actions.is_empty());
+        tx.rollback().unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"external payload");
+    }
+
+    // OpenAI-Codex_safety_review: A reserved target remains eligible for rollback.
+    #[test]
+    fn new_target_writer_records_its_created_file_for_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.asi");
+        let target = dir.path().join("target.asi");
+        std::fs::write(&source, b"planned payload").unwrap();
+
+        let mut tx = InstallTransaction::default();
+        copy_to_new_target(&source, &target, &mut tx).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"planned payload");
+        tx.rollback().unwrap();
+        assert!(!target.exists());
     }
 
     #[test]

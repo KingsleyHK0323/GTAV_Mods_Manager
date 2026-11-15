@@ -335,3 +335,35 @@ test('Windows-only release requires an installer and its checksum', async () => 
   assert.match(assets[1].data.toString('utf8'), /^a{64}  setup\.exe\n$/);
   await assert.rejects(collectExpectedAssets('fixture-root', async () => []), /Windows installer artifact is missing/);
 });
+
+// OpenAI-Codex_release_work: Verify public names, collisions, and draft lookup behavior.
+test('installer names and checksum use stable public names and reject collisions', async () => {
+  const { collectExpectedAssets } = await import('./prepare-release.mjs');
+  const install = { name: 'GTAV Mods Setup.exe', path: '/fixture/setup.exe', size: 3, sha256: digest };
+  const assets = await collectExpectedAssets('fixture-root', async () => [install]);
+  assert.equal(assets[0].name, 'GTAV.Mods.Setup.exe');
+  assert.equal(assets[0].path, install.path);
+  assert.equal(assets[1].data.toString('utf8'), `${digest}  GTAV.Mods.Setup.exe\n`);
+  await assert.rejects(collectExpectedAssets('fixture-root', async () => [install, { ...install, name: 'GTAV.Mods.Setup.exe' }]), /not unique/);
+});
+
+test('new draft is verified by ID when the release list is not yet consistent', async () => {
+  const { prepareDraftRelease } = await import('./prepare-release.mjs');
+  const { api, calls } = mockReleaseApi([]);
+  api.listReleases = async () => { calls.push(['listReleases']); return []; };
+  api.createDraft = async () => { calls.push(['createDraft']); return { id: 42, tag_name: 'v1.2.3', draft: true }; };
+  const result = await prepareDraftRelease({ tag: 'v1.2.3', expectedAssets: [expected('setup.exe')], api });
+  assert.equal(result.releaseId, 42);
+  assert.equal(calls.filter(([name]) => name === 'listReleases').length, 1);
+  assert.deepEqual(calls.filter(([name]) => name === 'uploadAsset'), [['uploadAsset', 42, 'setup.exe']]);
+});
+
+test('new draft identity mismatch stops before an asset upload', async () => {
+  const { prepareDraftRelease } = await import('./prepare-release.mjs');
+  const { api, calls } = mockReleaseApi([]);
+  api.listReleases = async () => [];
+  api.createDraft = async () => ({ id: 42, tag_name: 'v1.2.3', draft: true });
+  api.getRelease = async () => ({ id: 43, tag_name: 'v1.2.3', draft: true });
+  await assert.rejects(prepareDraftRelease({ tag: 'v1.2.3', expectedAssets: [expected('setup.exe')], api }));
+  assert.equal(calls.some(([name]) => name === 'uploadAsset'), false);
+});

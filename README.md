@@ -1,4 +1,12 @@
 # GTAV Mods Manager
+<!-- OpenAI-Codex_safety_review -->
+### Pending stable-release changes
+
+The stable release preparation now verifies a newly created draft directly by its returned ID, rather than requiring immediate list visibility or repository permission metadata. Windows installer and checksum names use the public names expected on GitHub. The workflow still prepares a draft for review; live stable-release creation and upload remain unverified.
+
+If the writer observes an installation target as absent, it now requests exclusive file creation before recording its rollback action and copies through that handle; a target appearing between that observation and the open is refused. A target appearing after preflight but before the writer observes it can still enter the existing-target overwrite branch when automatic backup is off. Later directory or file replacement can cause rollback to remove a different file, and copied read-only permissions can prevent rollback removal on Windows. Partial writes and reinstall recovery also remain unresolved. Existing targets can still be overwritten without recovery when automatic backup is off and the applicable override is granted. Backup remains paused.
+
+For a newer numeric Windows release, update checking can select the canonical versioned EXE when the legacy asset name is absent; missing or ambiguous matching falls back to the release page. The published beta and final 1.0.0 share the same numeric version, so beta users should check the final release page manually; installation or upgrade between these same-version packages remains unverified. These source changes have not yet been built or tested.
 
 > **Development status:** Mod classification and backup are paused and pending further development. Their existing code paths have not been disabled by this documentation update, so do not rely on these features. This update does not change or remove existing classifications, backups, or files. <!-- OpenAI-Codex_index_review -->
 
