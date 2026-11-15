@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- Prepare a one-time beta attachment that verifies the existing MSI and reconciles the missing EXE and checksum using their public asset names; the recovery has not yet been tested. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+
 - Prepare a one-time GitHub-hosted attachment of the verified Windows installers to the existing public beta; mismatched existing assets are refused, and release asset verification remains pending. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
 
 - Prepare a one-time GitHub-hosted beta release recovery using the approved tag and existing Windows build artifact; publication and release asset verification remain pending. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
