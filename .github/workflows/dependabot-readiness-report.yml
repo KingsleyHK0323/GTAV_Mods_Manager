@@ -1,0 +1,22 @@
+# OpenAI-Codex_report_impl: Public read-only observations; no merge authorization.
+name: Dependabot Readiness Observations
+
+on:
+  pull_request:
+    branches: [Source_Code]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Observe public Dependabot pull requests
+        run: env -u GITHUB_TOKEN -u GH_TOKEN node .github/scripts/dependabot-readiness-report.mjs

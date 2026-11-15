@@ -6,6 +6,7 @@
 <!-- Updated by OpenAI-Codex: corrected Tauri v2 Ubuntu dependencies for CI and Release. -->
 
 ## Unreleased
+- Prepare a public read-only Dependabot PR and CI observations workflow; incomplete observations do not establish merge readiness. <!-- OpenAI-Codex_GitHub -->
 - Prepare an inactive fail-closed Dependabot policy candidate; a preserved conflicting assertion remains a known full-suite failure. <!-- OpenAI-Codex_GitHub -->
 - Add isolated direct policy and synthetic dispatcher tests without changing the historical full-suite results. <!-- OpenAI-Codex_GitHub -->
 - Prepare stable draft release assets using normalized public installer names and verify the returned draft ID directly; live creation and upload remain unverified. <!-- OpenAI-Codex_safety_review -->
