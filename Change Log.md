@@ -6,6 +6,7 @@
 <!-- Updated by OpenAI-Codex: corrected Tauri v2 Ubuntu dependencies for CI and Release. -->
 
 ## Unreleased
+- Add a mock-only test candidate for the paused Dependabot merge workflow; it does not enable merging and has not been run. <!-- OpenAI-Codex_GitHub -->
 - Add a separate GitHub-hosted workflow for release and recovery script tests on Source_Code pushes and pull requests; it is not a required branch check or release gate, and it has not run. <!-- OpenAI-Codex -->
 - The preceding entry records its preparation-time status; initial PR #40 validation later passed 44 release-script tests and Windows CI for head 43e658c. <!-- OpenAI-Codex -->
 - Prepare stable draft release assets using normalized public installer names and verify the returned draft ID directly; live creation and upload remain unverified. <!-- OpenAI-Codex_safety_review -->
