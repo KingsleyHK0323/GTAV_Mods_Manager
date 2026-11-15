@@ -22,6 +22,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # OpenAI-Codex_GitHub: Do not retain the checkout token for later build steps.
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -46,6 +49,10 @@ jobs:
       # OpenAI-Codex: Verify beta release checks in shared CI and the release gate.
       - name: Test public beta release checks
         run: node --test .github/scripts/prepare-beta-release.test.mjs
+
+      # OpenAI-Codex_GitHub: Include recovery and attachment tests in the shared CI gate.
+      - name: Test beta recovery and attachment checks
+        run: node --test .github/scripts/publish-beta-recovery.test.mjs .github/scripts/publish-beta-attachment.test.mjs .github/scripts/publish-beta-canonical.test.mjs
 
       - name: Install frontend dependencies
         working-directory: crates/gtavmm-app

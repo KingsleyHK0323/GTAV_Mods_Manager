@@ -84,9 +84,16 @@ pub enum InstallAction {
 #[derive(Debug, Default)]
 pub struct InstallTransaction {
     actions: Vec<InstallAction>,
+    // OpenAI-Codex_Source_Code: Only observed unowned files are eligible for overwrite.
+    observed_existing_targets: Option<std::collections::HashSet<PathBuf>>,
 }
 
 impl InstallTransaction {
+    // OpenAI-Codex_Source_Code: Retain the conflict-analysis snapshot for the writer.
+    fn set_observed_existing_targets(&mut self, targets: std::collections::HashSet<PathBuf>) {
+        self.observed_existing_targets = Some(targets);
+    }
+
     pub fn record(&mut self, action: InstallAction) {
         self.actions.push(action);
     }
@@ -639,6 +646,42 @@ fn refuse_source_path_overlaps(
     Ok(())
 }
 
+// OpenAI-Codex_Source_Code: Check all payloads before an irreversible unbacked write.
+fn check_unbacked_sources_readable(plan: &ModPlan) -> CoreResult<()> {
+    for file in &plan.files {
+        // OpenAI-Codex_Source_Code: Refuse an observed special file before opening it.
+        if !std::fs::metadata(&file.source)?.is_file() {
+            return Err(CoreError::UnsupportedFormat {
+                reason: format!(
+                    "install source is not a regular file: {}",
+                    file.source.display()
+                ),
+            });
+        }
+        let mut source = std::fs::File::open(&file.source)?;
+        if !source.metadata()?.is_file() {
+            return Err(CoreError::UnsupportedFormat {
+                reason: format!(
+                    "install source is not a regular file: {}",
+                    file.source.display()
+                ),
+            });
+        }
+        std::io::copy(&mut source, &mut std::io::sink())?;
+    }
+    Ok(())
+}
+
+// OpenAI-Codex_Source_Code: Capture only paths actually seen during conflict analysis.
+fn observed_existing_targets(report: &ConflictReport) -> std::collections::HashSet<PathBuf> {
+    report
+        .foreign_conflicts
+        .iter()
+        .filter(|conflict| conflict.owner_mod_id.is_none())
+        .map(|conflict| conflict.path.clone())
+        .collect()
+}
+
 // OpenAI-Codex: Preserve new sources from the old active mod's removal.
 fn refuse_reinstall_sources_overlapping_old_paths(
     conn: &Connection,
@@ -848,6 +891,8 @@ fn install_with_expected_restores(
     // OpenAI-Codex: Protect sources and the original package before writes.
     refuse_source_path_overlaps(plan, source_path, backup_root, options.auto_backup)?;
     let mut report = conflict::analyze(conn, &targets)?;
+    // OpenAI-Codex_Source_Code: Capture before expected reinstall restores are filtered.
+    let observed_targets = observed_existing_targets(&report);
     retain_unexpected_conflicts(&mut report, expected_restores)?;
 
     if report.has_protected_hits() {
@@ -868,6 +913,9 @@ fn install_with_expected_restores(
     if options.auto_backup && plan_requires_backup(plan)? {
         ensure_install_backup_available()?;
     }
+    if !options.auto_backup {
+        check_unbacked_sources_readable(plan)?;
+    }
     // OpenAI-Codex: Persist manual registration intent before the first file write.
     let owned_operation;
     let manual_operation = match manual_operation {
@@ -887,6 +935,7 @@ fn install_with_expected_restores(
 
     // --- Backing_Up + Writing ---
     let mut tx_log = InstallTransaction::default();
+    tx_log.set_observed_existing_targets(observed_targets);
     let result = perform_writes(plan, backup_root, options.auto_backup, &mut tx_log);
 
     let mut file_hashes = match result {
@@ -1479,6 +1528,13 @@ fn reinstall_impl(
     if options.auto_backup && reinstall_requires_backup(conn, mod_id, &status, &plan)? {
         ensure_install_backup_available()?;
     }
+    // OpenAI-Codex_Source_Code: Refuse unreadable new payloads before removing the old mod.
+    if options.auto_backup {
+        check_unbacked_sources_readable(&plan)?;
+    }
+    if !options.auto_backup {
+        check_unbacked_sources_readable(&plan)?;
+    }
     // OpenAI-Codex: One compound intent spans both versions, including partial failure.
     let mut packs = dlc_manual::pack_names_for_paths(game_root, &targets)?;
     packs.extend(dlc_manual::pack_names_for_mod(conn, mod_id, game_root)?);
@@ -1536,6 +1592,18 @@ fn perform_writes(
 
         if let Some(parent) = planned.target.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        // OpenAI-Codex_Source_Code: A post-analysis arrival was never approved for overwrite.
+        if tx_log
+            .observed_existing_targets
+            .as_ref()
+            .is_some_and(|observed| !observed.contains(&planned.target))
+        {
+            copy_to_new_target(&planned.source, &planned.target, tx_log)?;
+            let hash = hash_file(&planned.target)?;
+            hashes.insert(planned.target.clone(), hash);
+            continue;
         }
 
         if planned.target.exists() {
@@ -2153,6 +2221,202 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    // OpenAI-Codex_Source_Code: A late target must not inherit overwrite approval.
+    #[test]
+    fn target_created_after_conflict_analysis_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let source = write_source(dir.path(), "source.asi", b"payload");
+        let target = game_root.join("new.asi");
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
+                source,
+                target: target.clone(),
+            }],
+        );
+        let conn = crate::db::open_in_memory().unwrap();
+        let report = conflict::analyze(&conn, std::slice::from_ref(&target)).unwrap();
+        let mut transaction = InstallTransaction::default();
+        transaction.set_observed_existing_targets(observed_existing_targets(&report));
+        std::fs::write(&target, b"external file").unwrap();
+        let result = perform_writes(&plan, &dir.path().join("backup"), false, &mut transaction);
+        assert!(
+            matches!(result, Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        transaction.rollback().unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"external file");
+    }
+
+    // OpenAI-Codex_Source_Code: An observed, confirmed unowned target keeps its existing behavior.
+    #[test]
+    fn observed_existing_target_can_be_overwritten_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let source = write_source(dir.path(), "source.asi", b"payload");
+        let target = write_source(&game_root, "existing.asi", b"original");
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let result = install(
+            &mut conn,
+            "test",
+            &plan,
+            &game_root,
+            &dir.path().join("backup"),
+            InstallOptions {
+                auto_backup: false,
+                override_foreign_conflicts: true,
+            },
+            &source,
+        );
+        assert!(matches!(result, Ok(InstallOutcome::Success { .. })));
+        assert_eq!(std::fs::read(&target).unwrap(), b"payload");
+    }
+
+    // OpenAI-Codex_Source_Code: A later missing source must be found before the first overwrite.
+    #[test]
+    fn unbacked_install_checks_all_sources_before_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let source = write_source(dir.path(), "source.asi", b"payload");
+        let target = write_source(&game_root, "existing.asi", b"original");
+        let other_target = game_root.join("other.asi");
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![
+                PlannedFile {
+                    source: source.clone(),
+                    target: target.clone(),
+                },
+                PlannedFile {
+                    source: dir.path().join("missing.asi"),
+                    target: other_target.clone(),
+                },
+            ],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        let result = install(
+            &mut conn,
+            "test",
+            &plan,
+            &game_root,
+            &dir.path().join("backup"),
+            InstallOptions {
+                auto_backup: false,
+                override_foreign_conflicts: true,
+            },
+            &source,
+        );
+        assert!(
+            matches!(result, Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert!(!other_target.exists());
+        let after: i64 = conn
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, before);
+    }
+
+    // OpenAI-Codex_Source_Code: Both supported CLI workspaces can commit page metadata.
+    #[test]
+    fn install_commits_selected_legacy_page_metadata() {
+        for page in ["legacy-sp", "legacy-lspdfr"] {
+            let dir = tempfile::tempdir().unwrap();
+            let game_root = dir.path().join("game");
+            std::fs::create_dir(&game_root).unwrap();
+            let source = write_source(dir.path(), "source.asi", b"payload");
+            let target = game_root.join("source.asi");
+            let plan = ModPlan::new(
+                ModFormat::Asi,
+                vec![PlannedFile {
+                    source: source.clone(),
+                    target,
+                }],
+            );
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let result = install_with_page_metadata(
+                &mut conn,
+                "test",
+                &plan,
+                &game_root,
+                &dir.path().join("backup"),
+                InstallOptions::default(),
+                &source,
+                PageInstallMetadata::new(page, None).unwrap(),
+            )
+            .unwrap();
+            let InstallOutcome::Success {
+                installed_mod_id, ..
+            } = result
+            else {
+                panic!("expected installation success");
+            };
+            let stored: (Option<String>, i64) = conn
+                .query_row(
+                    "SELECT mode, mode_inferred FROM installed_mod WHERE id = ?1",
+                    [installed_mod_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, (Some(page.to_string()), 0));
+        }
+    }
+
+    // OpenAI-Codex_Source_Code: A metadata failure cannot restore an unbacked overwrite.
+    #[test]
+    fn page_metadata_failure_reports_unrecoverable_unbacked_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_root = dir.path().join("game");
+        std::fs::create_dir(&game_root).unwrap();
+        let source = write_source(dir.path(), "source.asi", b"payload");
+        let target = write_source(&game_root, "existing.asi", b"original");
+        let plan = ModPlan::new(
+            ModFormat::Asi,
+            vec![PlannedFile {
+                source: source.clone(),
+                target: target.clone(),
+            }],
+        );
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_mode_update BEFORE UPDATE OF mode ON installed_mod \
+             BEGIN SELECT RAISE(ABORT, 'metadata update refused'); END;",
+        )
+        .unwrap();
+        let result = install_with_page_metadata(
+            &mut conn,
+            "test",
+            &plan,
+            &game_root,
+            &dir.path().join("backup"),
+            InstallOptions {
+                auto_backup: false,
+                override_foreign_conflicts: true,
+            },
+            &source,
+            PageInstallMetadata::new("legacy-sp", None).unwrap(),
+        );
+        assert!(matches!(result, Err(CoreError::Database(_))));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installed_mod", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(std::fs::read(&target).unwrap(), b"payload");
     }
 
     #[test]

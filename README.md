@@ -1,4 +1,13 @@
 # GTAV Mods Manager
+<!-- OpenAI-Codex_Source_Code -->
+### Unreleased install safety and CLI page records
+
+The CLI now supplies its selected Legacy page metadata to the existing install transaction. Existing records and reinstallation metadata are unchanged; reinstallation can still lose page information and a caller can select a different provider from the recorded mode.
+
+For installation and reinstallation with automatic backup disabled, the source checks read every planned payload before the first game-target write; reinstall also checks before removing the old mod. These reads add disk I/O and cannot prevent a later source change or failure. The writer uses exclusive creation for targets not observed as existing by conflict analysis; a target observed earlier can still be replaced or changed before writing, and the override does not identify every concurrent change. Other rollback and recovery limitations below remain. These changes are awaiting validation.
+
+Reinstallation with automatic backup enabled also reads planned sources before removing the old mod. A no-backup reinstall reads them again before writing. The App's overwrite confirmation uses a Boolean, so a new untracked conflict appearing after a prior confirmation but before the next conflict analysis may still be overwritten without having been listed. The CLI's page-metadata update and verification add database failure points after target writes; an unbacked overwritten original may then be unrecoverable. <!-- OpenAI-Codex_Source_Code -->
+
 <!-- OpenAI-Codex_safety_review -->
 ### Pending stable-release changes
 

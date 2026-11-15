@@ -6,6 +6,7 @@
 <!-- Updated by OpenAI-Codex: corrected Tauri v2 Ubuntu dependencies for CI and Release. -->
 
 ## Unreleased
+- Add beta recovery and attachment tests to shared CI and disable persisted checkout credentials; this candidate has not been run. <!-- OpenAI-Codex_GitHub -->
 - Prepare stable draft release assets using normalized public installer names and verify the returned draft ID directly; live creation and upload remain unverified. <!-- OpenAI-Codex_safety_review -->
 - Reserve new install targets with exclusive creation before recording rollback and copy through the opened handle. Existing-target opt-out behavior is unchanged; later replacement, rollback identity, partial writes and reinstall recovery remain unresolved. Tests have not yet run. <!-- OpenAI-Codex_safety_review -->
 - Find a canonical versioned Windows EXE for newer updates when the legacy asset is absent, with release-page fallback when matching fails or is ambiguous. Beta and final 1.0.0 still compare equal; same-version upgrade is unverified. <!-- OpenAI-Codex_safety_review -->
@@ -237,3 +238,8 @@
 ### Profile switching safeguards (source validation pending)
 
 - Preflight overlaps within planned outgoing or incoming mods, between outgoing and other active mods, and between incoming and active or other incoming mods; refuse planned enable/disable work when any active mod in the same database has no recorded files. Preflight also refuses an observed missing outgoing target or non-regular planned target. Retained active mods are not compared with one another. Unrelated or previously switchable records may be blocked. Unknown target contents, filesystem aliases, sequential operations, partial failure and recovery remain unresolved. Source and tests have not been compiled or executed. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+
+### Unreleased install safety and CLI page metadata
+
+- Check all planned source bytes before an unbacked install and before an unbacked reinstall removes the old mod; reads can be costly and cannot prevent later changes or failures. Use exclusive creation for targets not seen as existing during conflict analysis. Existing-target replacement, concurrent changes, rollback identity, and complete reinstall recovery remain unresolved. Record the CLI's selected Legacy page in the existing installation transaction; existing records and reinstall metadata are unchanged. These changes await validation. <!-- OpenAI-Codex_Source_Code -->
+- Reinstall source preflight also applies when automatic backup is enabled. No-backup reinstalls read planned sources twice; the App's Boolean overwrite approval can still cover a newly observed conflict after the user confirmed an earlier report. CLI page-metadata database updates may fail after an unbacked overwrite, leaving the original unrecoverable. <!-- OpenAI-Codex_Source_Code -->

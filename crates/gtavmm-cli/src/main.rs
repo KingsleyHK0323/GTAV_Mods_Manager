@@ -563,7 +563,18 @@ fn run(cli: Cli) -> Result<()> {
                 override_foreign_conflicts: yes,
             };
 
-            let operation = gtavmm_core::install::install(
+            // OpenAI-Codex_Source_Code: Record the selected workspace in the install transaction.
+            let page = match cli.mode {
+                Mode::Sp => "legacy-sp",
+                Mode::Lspdfr => "legacy-lspdfr",
+                Mode::FivemClient => {
+                    return Err(anyhow::anyhow!("FiveM support is under development"))
+                }
+            };
+            let metadata = gtavmm_core::install::PageInstallMetadata::new(page, None)
+                .ok_or_else(|| anyhow::anyhow!("unsupported installation page: {page}"))?;
+
+            let operation = gtavmm_core::install::install_with_page_metadata(
                 &mut conn,
                 &name,
                 &plan,
@@ -571,6 +582,7 @@ fn run(cli: Cli) -> Result<()> {
                 &backup_root,
                 options,
                 input_path,
+                metadata,
             );
             report_manual_dlc_tasks(&conn);
             match operation? {
