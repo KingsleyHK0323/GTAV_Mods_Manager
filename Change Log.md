@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+- Prepare a one-time GitHub-hosted attachment of the verified Windows installers to the existing public beta; mismatched existing assets are refused, and release asset verification remains pending. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+
+- Prepare a one-time GitHub-hosted beta release recovery using the approved tag and existing Windows build artifact; publication and release asset verification remain pending. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
+
 - Add a manually dispatched GitHub-hosted Windows installer preflight bound to the exact reviewed dispatch commit; it does not publish or upload installers and has not yet run. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
 
 - Replace the writer-only rars legacy-link API call with equivalent rars 0.12.3 metadata conditions while retaining redirection rejection, and add focused metadata boundary assertions. This change has not been built or tested. <!-- OpenAI-Codex; OpenAI-Codex_Responsible: Source_Code -->
