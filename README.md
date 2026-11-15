@@ -1,5 +1,14 @@
 # GTAV Mods Manager
 <!-- OpenAI-Codex_Source_Code -->
+### Reinstallation workspace metadata (validation pending)
+
+This note supersedes the earlier statement below that reinstallation mode metadata is unchanged. <!-- OpenAI-Codex_Source_Code -->
+
+The candidate also checks that a new row was inserted and compares the old row's captured root, status, mode, and inference flag at defined checkpoints. These are observations, not locks across filesystem operations; other fields and later concurrent changes remain outside the check. <!-- OpenAI-Codex_Source_Code -->
+
+Reinstallation checks a recorded workspace against the selected provider before removal and preserves the old mode and inference flag in the new installation transaction. Providers without a workspace identity cannot reinstall a record with a known mode. A NULL historical mode remains NULL and cannot establish that the selected route is correct; provider identities are self-reported. The captured mode is checked again before uninstall intent and during the new database transaction, but later concurrent changes and filesystem/database races remain possible. Category, notes, and link preservation are not addressed. A metadata or later installation failure may occur after the old mod was uninstalled, and unbacked overwritten files may not be recoverable. Tests and real-game behavior remain unverified until separately validated.
+
+<!-- OpenAI-Codex_Source_Code -->
 ### Unreleased install safety and CLI page records
 
 The CLI now supplies its selected Legacy page metadata to the existing install transaction. Existing records and reinstallation metadata are unchanged; reinstallation can still lose page information and a caller can select a different provider from the recorded mode.

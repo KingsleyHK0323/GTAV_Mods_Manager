@@ -243,3 +243,7 @@
 
 - Check all planned source bytes before an unbacked install and before an unbacked reinstall removes the old mod; reads can be costly and cannot prevent later changes or failures. Use exclusive creation for targets not seen as existing during conflict analysis. Existing-target replacement, concurrent changes, rollback identity, and complete reinstall recovery remain unresolved. Record the CLI's selected Legacy page in the existing installation transaction; existing records and reinstall metadata are unchanged. These changes await validation. <!-- OpenAI-Codex_Source_Code -->
 - Reinstall source preflight also applies when automatic backup is enabled. No-backup reinstalls read planned sources twice; the App's Boolean overwrite approval can still cover a newly observed conflict after the user confirmed an earlier report. CLI page-metadata database updates may fail after an unbacked overwrite, leaving the original unrecoverable. <!-- OpenAI-Codex_Source_Code -->
+
+### Unreleased reinstallation workspace metadata
+
+- Preserve a reinstalled mod's recorded workspace and inference flag in the new installation transaction, checking the selected provider for known modes and detecting changes to the captured record. NULL modes remain unknown; providers self-report identity, other mod details remain unpreserved, and recovery across filesystem and database operations is not guaranteed. Source tests await validation. <!-- OpenAI-Codex_Source_Code -->

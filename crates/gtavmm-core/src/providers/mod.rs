@@ -29,6 +29,10 @@ use crate::mod_analyzer::{MenyooCategory, MENYOO_ROOT_FOLDER, MODS_SUBFOLDER, SC
 /// name, a category, a path relative to some mod's own root) and returns an absolute
 /// target path under this provider's `game_root()`.
 pub trait ModeProvider {
+    /// OpenAI-Codex_Source_Code: Explicit workspace identity; unknown providers fail closed.
+    fn workspace_mode(&self) -> Option<&'static str> {
+        None
+    }
     /// The detected game/resource installation root this provider operates against.
     fn game_root(&self) -> &Path;
 
@@ -58,6 +62,9 @@ impl LegacySpProvider {
 }
 
 impl ModeProvider for LegacySpProvider {
+    fn workspace_mode(&self) -> Option<&'static str> {
+        Some("legacy-sp")
+    }
     fn game_root(&self) -> &Path {
         &self.game_root
     }
@@ -235,6 +242,9 @@ impl LegacyLspdfrProvider {
 }
 
 impl ModeProvider for LegacyLspdfrProvider {
+    fn workspace_mode(&self) -> Option<&'static str> {
+        Some("legacy-lspdfr")
+    }
     fn game_root(&self) -> &Path {
         &self.game_root
     }

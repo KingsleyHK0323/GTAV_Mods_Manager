@@ -234,6 +234,67 @@ impl PageInstallMetadata {
     }
 }
 
+// OpenAI-Codex_Source_Code: Preserve uncertainty from the original record.
+#[derive(Debug)]
+struct ReinstallPageMetadata {
+    mod_id: i64,
+    mode: Option<String>,
+    inferred: i64,
+    root: String,
+    initial_status: String,
+}
+
+fn capture_reinstall_page_metadata(
+    conn: &Connection,
+    mod_id: i64,
+    provider: &dyn crate::providers::ModeProvider,
+) -> CoreResult<ReinstallPageMetadata> {
+    let (mode, inferred, root, initial_status): (Option<String>, i64, String, String) = conn
+        .query_row(
+            "SELECT mode, mode_inferred, install_path, status FROM installed_mod WHERE id = ?1",
+            [mod_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    if !matches!(inferred, 0 | 1) {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "the recorded workspace inference flag is invalid".to_string(),
+        });
+    }
+    if let Some(ref recorded) = mode {
+        if provider.workspace_mode() != Some(recorded.as_str()) {
+            return Err(CoreError::UnsupportedFormat {
+                reason: "the selected provider does not match the recorded workspace".to_string(),
+            });
+        }
+    }
+    Ok(ReinstallPageMetadata {
+        mod_id,
+        mode,
+        inferred,
+        root,
+        initial_status,
+    })
+}
+
+// OpenAI-Codex_Source_Code: Detect changes to the captured historical identity.
+fn ensure_reinstall_page_unchanged(
+    conn: &Connection,
+    metadata: &ReinstallPageMetadata,
+    expected_status: &str,
+) -> CoreResult<()> {
+    let unchanged: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM installed_mod WHERE id = ?1 AND mode IS ?2 AND mode_inferred = ?3 AND install_path = ?4 AND status = ?5)",
+        rusqlite::params![metadata.mod_id, metadata.mode, metadata.inferred, metadata.root, expected_status],
+        |row| row.get(0),
+    )?;
+    if !unchanged {
+        return Err(CoreError::UnsupportedFormat {
+            reason: "the recorded workspace changed during reinstallation".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn verify_page_install_metadata(
     conn: &Connection,
     installed_mod_id: i64,
@@ -819,6 +880,7 @@ pub fn install(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -847,6 +909,7 @@ pub fn install_with_page_metadata(
         None,
         None,
         Some(page_metadata),
+        None,
     )
 }
 
@@ -863,6 +926,7 @@ fn install_with_expected_restores(
     manual_operation: Option<&ManualDlcOperationToken>,
     preserved_mode: Option<&str>,
     page_metadata: Option<PageInstallMetadata>,
+    reinstall_page: Option<&ReinstallPageMetadata>,
 ) -> CoreResult<InstallOutcome> {
     // OpenAI-Codex: Shared protection for callers that already hold a plan.
     crate::providers::ensure_game_root_available(game_root)?;
@@ -999,6 +1063,15 @@ fn install_with_expected_restores(
             db_tx.last_insert_rowid()
         };
 
+        // OpenAI-Codex_Source_Code: An ignored INSERT must never reuse an old row id.
+        if let Some(metadata) = reinstall_page {
+            if db_tx.changes() != 1 || installed_mod_id == metadata.mod_id {
+                return Err(CoreError::UnsupportedFormat {
+                    reason: "reinstallation did not create a new mod record".to_string(),
+                });
+            }
+        }
+
         for planned in &plan.files {
             let hash = file_hashes.remove(&planned.target).unwrap_or_default();
             let backup_path = tx_log_backup_path_for(&tx_log, &planned.target);
@@ -1039,6 +1112,27 @@ fn install_with_expected_restores(
             let finalize_result = statement.finalize();
             update_result.and(finalize_result)?;
             verify_page_install_metadata(&db_tx, installed_mod_id, metadata)?;
+        }
+        // OpenAI-Codex_Source_Code: Keep the previous mode and its inference flag together.
+        if let Some(metadata) = reinstall_page {
+            ensure_reinstall_page_unchanged(&db_tx, metadata, "uninstalled")?;
+            let changed = db_tx.execute(
+                "UPDATE installed_mod SET mode = ?1, mode_inferred = ?2 WHERE id = ?3",
+                rusqlite::params![metadata.mode, metadata.inferred, installed_mod_id],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::StatementChangedRows(changed).into());
+            }
+            let matches: bool = db_tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM installed_mod WHERE id = ?1 AND mode IS ?2 AND mode_inferred = ?3 AND status = 'active' AND name = ?4 AND source_type = ?5 AND install_path = ?6 AND source_path = ?7)",
+                rusqlite::params![installed_mod_id, metadata.mode, metadata.inferred, name, source_type, game_root.to_string_lossy(), source_path.to_string_lossy()],
+                |row| row.get(0),
+            )?;
+            if !matches {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            // OpenAI-Codex_Source_Code: A trigger may also alter the original row.
+            ensure_reinstall_page_unchanged(&db_tx, metadata, "uninstalled")?;
         }
         db_tx.commit()?;
         Ok(installed_mod_id)
@@ -1334,6 +1428,8 @@ fn reinstall_impl(
     // OpenAI-Codex: Check both workspaces before uninstalling the previous version.
     crate::providers::ensure_installed_mod_available(conn, mod_id)?;
     crate::providers::ensure_game_root_available(game_root)?;
+    // OpenAI-Codex_Source_Code: Validate the provider before any uninstall or intent.
+    let reinstall_page = capture_reinstall_page_metadata(conn, mod_id, provider)?;
     let (old_name, status): (String, String) = conn
         .query_row(
             "SELECT name, status FROM installed_mod WHERE id = ?1",
@@ -1535,6 +1631,7 @@ fn reinstall_impl(
     if !options.auto_backup {
         check_unbacked_sources_readable(&plan)?;
     }
+    ensure_reinstall_page_unchanged(conn, &reinstall_page, &reinstall_page.initial_status)?;
     // OpenAI-Codex: One compound intent spans both versions, including partial failure.
     let mut packs = dlc_manual::pack_names_for_paths(game_root, &targets)?;
     packs.extend(dlc_manual::pack_names_for_mod(conn, mod_id, game_root)?);
@@ -1545,6 +1642,8 @@ fn reinstall_impl(
         ManualDlcOperation::Reinstall,
         Some(mod_id),
     )?;
+    // OpenAI-Codex_Source_Code: Intent triggers can also change the original row.
+    ensure_reinstall_page_unchanged(conn, &reinstall_page, &reinstall_page.initial_status)?;
     if status != "uninstalled" {
         crate::uninstall::uninstall_for_reinstall(
             conn,
@@ -1569,6 +1668,7 @@ fn reinstall_impl(
         Some(&manual_operation),
         preserved_mode,
         None,
+        Some(&reinstall_page),
     )
 }
 
@@ -2221,6 +2321,278 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    // OpenAI-Codex_Source_Code: Reinstall keeps known, inferred, and unknown page metadata.
+    #[test]
+    fn reinstall_preserves_page_metadata_and_rejects_the_wrong_provider() {
+        for (mode, inferred) in [
+            (Some("legacy-sp"), 0),
+            (Some("legacy-sp"), 1),
+            (Some("legacy-lspdfr"), 0),
+            (Some("legacy-lspdfr"), 1),
+            (None, 0),
+            (None, 1),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let game = dir.path().join("game");
+            std::fs::create_dir(&game).unwrap();
+            let sp = crate::providers::LegacySpProvider::new(game.clone());
+            let lspdfr = crate::providers::LegacyLspdfrProvider::new(game.clone());
+            let provider: &dyn ModeProvider = if mode == Some("legacy-lspdfr") {
+                &lspdfr
+            } else {
+                &sp
+            };
+            let other: &dyn ModeProvider = if mode == Some("legacy-lspdfr") {
+                &sp
+            } else {
+                &lspdfr
+            };
+            let old_source = write_source(dir.path(), "old.asi", b"old");
+            let new_source = write_source(dir.path(), "new.asi", b"new");
+            let plan = crate::mod_analyzer::classify(&old_source, provider).unwrap();
+            let mut conn = crate::db::open_in_memory().unwrap();
+            let InstallOutcome::Success {
+                installed_mod_id: old_id,
+                ..
+            } = install(
+                &mut conn,
+                "old",
+                &plan,
+                &game,
+                &dir.path().join("backup"),
+                InstallOptions::default(),
+                &old_source,
+            )
+            .unwrap()
+            else {
+                panic!("initial install failed")
+            };
+            conn.execute(
+                "UPDATE installed_mod SET mode = ?1, mode_inferred = ?2 WHERE id = ?3",
+                rusqlite::params![mode, inferred, old_id],
+            )
+            .unwrap();
+            if mode.is_some() {
+                let result = reinstall(
+                    &mut conn,
+                    old_id,
+                    &new_source,
+                    "v2",
+                    other,
+                    &game,
+                    &dir.path().join("backup"),
+                    &dir.path().join("recycle"),
+                    InstallOptions::default(),
+                );
+                assert!(matches!(result, Err(CoreError::UnsupportedFormat { .. })));
+                assert_eq!(std::fs::read(game.join("old.asi")).unwrap(), b"old");
+                let status: String = conn
+                    .query_row(
+                        "SELECT status FROM installed_mod WHERE id = ?1",
+                        [old_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(status, "active");
+            }
+            let InstallOutcome::Success {
+                installed_mod_id: new_id,
+                ..
+            } = reinstall(
+                &mut conn,
+                old_id,
+                &new_source,
+                "v2",
+                provider,
+                &game,
+                &dir.path().join("backup"),
+                &dir.path().join("recycle"),
+                InstallOptions::default(),
+            )
+            .unwrap()
+            else {
+                panic!("reinstall failed")
+            };
+            let saved: (Option<String>, i64) = conn
+                .query_row(
+                    "SELECT mode, mode_inferred FROM installed_mod WHERE id = ?1",
+                    [new_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(saved, (mode.map(str::to_string), inferred));
+        }
+    }
+
+    // OpenAI-Codex_Source_Code: Preserve an old row and detect trigger-altered metadata.
+    #[test]
+    fn reinstall_rejects_metadata_tampering_in_the_install_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        let provider = crate::providers::LegacySpProvider::new(game.clone());
+        let old_source = write_source(dir.path(), "old.asi", b"old");
+        let new_source = write_source(dir.path(), "new.asi", b"new");
+        let plan = crate::mod_analyzer::classify(&old_source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let InstallOutcome::Success {
+            installed_mod_id: old_id,
+            ..
+        } = install(
+            &mut conn,
+            "old",
+            &plan,
+            &game,
+            &dir.path().join("backup"),
+            InstallOptions::default(),
+            &old_source,
+        )
+        .unwrap()
+        else {
+            panic!("initial install failed")
+        };
+        conn.execute(
+            "UPDATE installed_mod SET mode = 'legacy-sp', mode_inferred = 1 WHERE id = ?1",
+            [old_id],
+        )
+        .unwrap();
+        conn.execute_batch(&format!("CREATE TRIGGER mutate_new_mode AFTER UPDATE OF mode ON installed_mod WHEN NEW.id != {old_id} BEGIN UPDATE installed_mod SET mode_inferred = 0 WHERE id = NEW.id; END;")).unwrap();
+        let result = reinstall(
+            &mut conn,
+            old_id,
+            &new_source,
+            "v2",
+            &provider,
+            &game,
+            &dir.path().join("backup"),
+            &dir.path().join("recycle"),
+            InstallOptions::default(),
+        );
+        assert!(result.is_err());
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod WHERE id != ?1",
+                [old_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [old_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "uninstalled");
+    }
+
+    // OpenAI-Codex_Source_Code: A trigger must not mutate the old page during new-row updates.
+    #[test]
+    fn reinstall_detects_trigger_mutating_original_page_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        let provider = crate::providers::LegacySpProvider::new(game.clone());
+        let old_source = write_source(dir.path(), "old.asi", b"old");
+        let new_source = write_source(dir.path(), "new.asi", b"new");
+        let plan = crate::mod_analyzer::classify(&old_source, &provider).unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let InstallOutcome::Success {
+            installed_mod_id: old_id,
+            ..
+        } = install(
+            &mut conn,
+            "old",
+            &plan,
+            &game,
+            &dir.path().join("backup"),
+            InstallOptions::default(),
+            &old_source,
+        )
+        .unwrap()
+        else {
+            panic!("initial install failed")
+        };
+        conn.execute(
+            "UPDATE installed_mod SET mode = 'legacy-sp', mode_inferred = 1 WHERE id = ?1",
+            [old_id],
+        )
+        .unwrap();
+        conn.execute_batch(&format!("CREATE TRIGGER mutate_old_mode AFTER UPDATE OF mode ON installed_mod WHEN NEW.id != {old_id} BEGIN UPDATE installed_mod SET mode_inferred = 0 WHERE id = {old_id}; END;")).unwrap();
+        let result = reinstall(
+            &mut conn,
+            old_id,
+            &new_source,
+            "v2",
+            &provider,
+            &game,
+            &dir.path().join("backup"),
+            &dir.path().join("recycle"),
+            InstallOptions::default(),
+        );
+        assert!(result.is_err());
+        let (status, inferred): (String, i64) = conn
+            .query_row(
+                "SELECT status, mode_inferred FROM installed_mod WHERE id = ?1",
+                [old_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), inferred), ("uninstalled", 1));
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod WHERE id != ?1",
+                [old_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // OpenAI-Codex_Source_Code: IGNORE must not attach new files to an old row.
+    #[test]
+    fn reinstall_rejects_ignored_new_mod_insert() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        let provider = crate::providers::LegacySpProvider::new(game.clone());
+        let source = write_source(dir.path(), "new.asi", b"new");
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute("INSERT INTO installed_mod(name,source_type,install_path,status,mode) VALUES('old','asi',?1,'uninstalled','legacy-sp')", [game.to_string_lossy().as_ref()]).unwrap();
+        let old_id = conn.last_insert_rowid();
+        conn.execute_batch("CREATE TRIGGER ignore_new_mod BEFORE INSERT ON installed_mod BEGIN SELECT RAISE(IGNORE); END;").unwrap();
+        let result = reinstall(
+            &mut conn,
+            old_id,
+            &source,
+            "v2",
+            &provider,
+            &game,
+            &dir.path().join("backup"),
+            &dir.path().join("recycle"),
+            InstallOptions::default(),
+        );
+        assert!(result.is_err());
+        assert!(!game.join("new.asi").exists());
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_mod_file WHERE installed_mod_id = ?1",
+                [old_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM installed_mod WHERE id = ?1",
+                [old_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "uninstalled");
     }
 
     // OpenAI-Codex_Source_Code: A late target must not inherit overwrite approval.
@@ -3477,6 +3849,9 @@ mod tests {
     struct CalloutReinstallProvider(crate::providers::LegacyLspdfrProvider);
 
     impl ModeProvider for CalloutReinstallProvider {
+        fn workspace_mode(&self) -> Option<&'static str> {
+            Some("legacy-lspdfr")
+        }
         fn game_root(&self) -> &Path {
             self.0.game_root()
         }

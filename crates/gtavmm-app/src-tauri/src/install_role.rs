@@ -41,6 +41,10 @@ pub struct RoleProvider<'a> {
 }
 
 impl ModeProvider for RoleProvider<'_> {
+    // OpenAI-Codex_Source_Code: Preserve the wrapped provider's workspace identity.
+    fn workspace_mode(&self) -> Option<&'static str> {
+        self.inner.workspace_mode()
+    }
     fn game_root(&self) -> &Path {
         self.inner.game_root()
     }
