@@ -6,6 +6,8 @@
 <!-- Updated by OpenAI-Codex: corrected Tauri v2 Ubuntu dependencies for CI and Release. -->
 
 ## Unreleased
+- Prepare an inactive fail-closed Dependabot policy candidate; a preserved conflicting assertion remains a known full-suite failure. <!-- OpenAI-Codex_GitHub -->
+- Add isolated direct policy and synthetic dispatcher tests without changing the historical full-suite results. <!-- OpenAI-Codex_GitHub -->
 - Prepare stable draft release assets using normalized public installer names and verify the returned draft ID directly; live creation and upload remain unverified. <!-- OpenAI-Codex_safety_review -->
 - Reserve new install targets with exclusive creation before recording rollback and copy through the opened handle. Existing-target opt-out behavior is unchanged; later replacement, rollback identity, partial writes and reinstall recovery remain unresolved. Tests have not yet run. <!-- OpenAI-Codex_safety_review -->
 - Find a canonical versioned Windows EXE for newer updates when the legacy asset is absent, with release-page fallback when matching fails or is ambiguous. Beta and final 1.0.0 still compare equal; same-version upgrade is unverified. <!-- OpenAI-Codex_safety_review -->
