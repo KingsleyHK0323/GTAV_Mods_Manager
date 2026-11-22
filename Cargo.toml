@@ -45,4 +45,4 @@ default-features = false
 features = ["tls", "json"]
 
 [workspace.dependencies.rust_xlsxwriter]
-version = "0.79"
+version = "0.103"
